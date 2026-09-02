@@ -7,6 +7,7 @@ are emitted.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import sys
@@ -25,6 +26,29 @@ target_id_var: ContextVar[str | None] = ContextVar("target_id", default=None)
 collector_var: ContextVar[str | None] = ContextVar("collector", default=None)
 
 _REDACTED = "[REDACTED]"
+
+
+class _StderrProxy:
+    """A stream that resolves ``sys.stderr`` at write time.
+
+    Binding the stream when logging is configured would capture whatever
+    ``sys.stderr`` happened to be at that moment — a problem whenever the
+    stream is later replaced or closed (pytest's capture, Typer's CliRunner,
+    a daemonised worker). Resolving on each write keeps logging correct.
+    """
+
+    def write(self, message: str) -> int:
+        try:
+            return sys.stderr.write(message)
+        except (ValueError, AttributeError):
+            # The stream was closed underneath us; losing a log line is far
+            # better than raising from inside a logging call.
+            return 0
+
+    def flush(self) -> None:
+        with contextlib.suppress(ValueError, AttributeError):
+            sys.stderr.flush()
+
 
 #: Patterns that must never reach a log sink. Deliberately broad.
 _SECRET_KEY_PATTERN = re.compile(
@@ -91,7 +115,7 @@ def configure_logging(level: str | None = None, fmt: str | None = None) -> None:
 
     logging.basicConfig(
         format="%(message)s",
-        stream=sys.stdout,
+        stream=_StderrProxy(),  # type: ignore[arg-type]
         level=getattr(logging, log_level, logging.INFO),
         force=True,
     )
@@ -118,7 +142,7 @@ def configure_logging(level: str | None = None, fmt: str | None = None) -> None:
         wrapper_class=structlog.make_filtering_bound_logger(
             getattr(logging, log_level, logging.INFO)
         ),
-        logger_factory=structlog.PrintLoggerFactory(),
+        logger_factory=structlog.PrintLoggerFactory(file=_StderrProxy()),  # type: ignore[arg-type]
         cache_logger_on_first_use=True,
     )
 

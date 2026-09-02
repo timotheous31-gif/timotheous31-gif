@@ -36,3 +36,47 @@ def test_scrubs_inside_lists():
     event = scrub_secrets(None, "info", {"items": ["Bearer abcdefghijklmnop", "safe"]})
     assert "abcdefghijklmnop" not in event["items"][0]
     assert event["items"][1] == "safe"
+
+
+def test_logging_survives_a_replaced_stream():
+    """Configuration must not capture whatever stderr happened to be.
+
+    pytest, Typer's CliRunner and daemonised workers all swap sys.stderr;
+    binding it at configure time leaves later logging writing to a closed file.
+    """
+    import io
+    import sys
+
+    from app.core.logging import configure_logging, get_logger
+
+    original = sys.stderr
+    captured = io.StringIO()
+    sys.stderr = captured
+    try:
+        configure_logging(level="INFO")
+        get_logger("test").info("first.event")
+        assert "first.event" in captured.getvalue()
+    finally:
+        sys.stderr = original
+    captured.close()
+
+    # The stream that was live at configure time is now closed; logging must
+    # still work against the current stderr rather than raising.
+    get_logger("test").info("second.event")
+
+
+def test_write_to_a_closed_stream_is_swallowed():
+    import io
+    import sys
+
+    from app.core.logging import _StderrProxy
+
+    original = sys.stderr
+    closed = io.StringIO()
+    closed.close()
+    sys.stderr = closed
+    try:
+        assert _StderrProxy().write("anything") == 0
+        _StderrProxy().flush()
+    finally:
+        sys.stderr = original

@@ -34,10 +34,35 @@ def privacy():
         ("private_key", "anything", Classification.RESTRICTED),
         ("ssn", "123-45-6789", Classification.RESTRICTED),
         ("iban", "GB29NWBK60161331926819", Classification.RESTRICTED),
+        ("note", "card 4111 1111 1111 1111", Classification.RESTRICTED),
+        # A DNS SOA record is a run of numbers; it must not read as a card.
+        (
+            "records",
+            "ns.icann.org. noc.icann.org. 2022091314 7200 3600 1209600",
+            Classification.PUBLIC,
+        ),
+        ("ttl", "1209600", Classification.PUBLIC),
+        ("serial_number", "03a1b2c3", Classification.PUBLIC),
     ],
 )
 def test_classification_levels(key, value, level):
     assert classify_value(key, value).level is level
+
+
+@pytest.mark.parametrize(
+    ("digits", "valid"),
+    [
+        ("4111111111111111", True),
+        ("4111 1111 1111 1111", True),
+        ("1234567890123", False),
+        ("2022091314 7200 3600", False),
+        ("123", False),
+    ],
+)
+def test_luhn_check(digits, valid):
+    from app.privacy.classifier import luhn_valid
+
+    assert luhn_valid(digits) is valid
 
 
 def test_ordering_helpers():

@@ -28,6 +28,7 @@ here, never lowered.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -60,6 +61,25 @@ def exceeds(value: Classification, maximum: Classification) -> bool:
     return _ORDER[value] > _ORDER[maximum]
 
 
+def luhn_valid(digits: str) -> bool:
+    """Luhn checksum, used to keep number-shaped text from being called a card.
+
+    Without it, a pattern loose enough to catch "4111 1111 1111 1111" also
+    catches things like a DNS SOA record's serial and timer values.
+    """
+    stripped = [int(char) for char in digits if char.isdigit()]
+    if not 13 <= len(stripped) <= 19:
+        return False
+    total = 0
+    for index, digit in enumerate(reversed(stripped)):
+        if index % 2:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        total += digit
+    return total % 10 == 0
+
+
 @dataclass(frozen=True, slots=True)
 class ClassificationRule:
     """One pattern that raises the classification of a value."""
@@ -72,11 +92,21 @@ class ClassificationRule:
     #: True when the matched value must be replaced rather than merely marked.
     redact: bool = False
     explanation: str = ""
+    #: Optional second check applied to a ``value_pattern`` match, for patterns
+    #: that would otherwise be too loose to be trusted on their own.
+    value_validator: Callable[[str], bool] | None = None
 
     def matches(self, key: str, value: str) -> bool:
         if self.key_pattern is not None and self.key_pattern.search(key):
             return True
-        return self.value_pattern is not None and bool(self.value_pattern.search(value))
+        if self.value_pattern is None:
+            return False
+        found = self.value_pattern.search(value)
+        if found is None:
+            return False
+        if self.value_validator is not None:
+            return self.value_validator(found.group(0))
+        return True
 
 
 #: Government identifiers, financial data and precise addresses. Patterns are
@@ -99,7 +129,9 @@ RULES: tuple[ClassificationRule, ...] = (
         key_pattern=re.compile(
             r"(?i)\b(card[_\-]?number|iban|bic|swift|account[_\-]?number)" + KEY_END
         ),
-        value_pattern=re.compile(r"\b(?:\d[ \-]?){13,19}\b(?![\d\-])"),
+        # Digit groups in card-like shapes, confirmed by the Luhn checksum.
+        value_pattern=re.compile(r"\b(?:\d{4}[ \-]?){3}\d{1,7}\b|\b\d{13,19}\b"),
+        value_validator=luhn_valid,
         redact=True,
         explanation="Financial account identifiers are never stored",
     ),

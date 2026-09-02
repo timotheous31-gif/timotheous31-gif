@@ -86,3 +86,48 @@ def test_target_add_requires_exactly_one_target(runner):
 def test_bad_uuid_is_rejected(runner):
     result = invoke(runner, "case", "show", "not-a-uuid")
     assert result.exit_code != 0
+
+
+def test_json_output_is_not_polluted_by_logs(runner):
+    """Machine-readable output must be the only thing on stdout."""
+    import json as _json
+
+    from app.core.logging import configure_logging, get_logger
+
+    configure_logging(level="INFO")
+    get_logger("test").info("noise.on.stderr", detail="should not reach stdout")
+
+    result = invoke(runner, "normalize", "example.com", "--json")
+    assert _json.loads(result.stdout)["normalized_value"] == "example.com"
+
+
+def test_report_command_writes_a_file(runner, tmp_path):
+    import json as _json
+
+    case_id = _json.loads(invoke(runner, "case", "create", "Report case", "--json").stdout)["id"]
+    invoke(runner, "target", "add", "--case", case_id, "--domain", "example.com")
+
+    destination = tmp_path / "report.html"
+    result = invoke(runner, "report", "--case", case_id, "-o", str(destination))
+    assert result.exit_code == 0, result.stdout
+    body = destination.read_text()
+    assert body.startswith("<!doctype html>")
+    assert "Report case" in body
+
+
+def test_report_command_supports_markdown_on_stdout(runner):
+    import json as _json
+
+    case_id = _json.loads(invoke(runner, "case", "create", "Markdown case", "--json").stdout)["id"]
+    result = invoke(runner, "report", "--case", case_id, "--format", "md")
+    assert result.exit_code == 0
+    assert "# Markdown case" in result.stdout
+    assert "## Limitations" in result.stdout
+
+
+def test_collectors_command_lists_the_registry(runner):
+    import json as _json
+
+    result = invoke(runner, "collectors", "--json")
+    names = {entry["name"] for entry in _json.loads(result.stdout)}
+    assert {"dns", "rdap", "http_meta", "ctlog", "wayback", "github"} <= names

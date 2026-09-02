@@ -13,6 +13,8 @@ import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
+import httpx
+
 from app.collectors.base import BaseCollector, CollectorContext, CollectorResult
 from app.core.errors import CollectorTimeout, CollectorUnavailable, OsintError
 from app.core.logging import collector_var, get_logger
@@ -77,6 +79,16 @@ async def run_collector(
             collector=collector.name,
             error_type=type(exc).__name__,
             error=exc.message,
+        )
+        return _outcome(collector, RunStatus.FAILED, started, exc)
+    except httpx.HTTPError as exc:
+        # An unreachable upstream is an expected outcome for a network
+        # collector, not a defect: record it without a stack trace.
+        log.warning(
+            "collector.network_failure",
+            collector=collector.name,
+            error_type=type(exc).__name__,
+            error=str(exc)[:200],
         )
         return _outcome(collector, RunStatus.FAILED, started, exc)
     except Exception as exc:

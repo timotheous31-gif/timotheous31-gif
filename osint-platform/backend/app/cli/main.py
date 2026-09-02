@@ -14,6 +14,7 @@ Examples::
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -22,7 +23,7 @@ from app import __version__
 from app.cli.output import console, emit_json, emit_table, fail, success, warn
 from app.core.errors import OsintError
 from app.core.logging import configure_logging
-from app.models.enums import CaseStatus, TargetType
+from app.models.enums import CaseStatus, Classification, ReportFormat, TargetType
 
 app = typer.Typer(
     name="osint",
@@ -352,6 +353,45 @@ def investigate(
 
 def _print_progress(fraction: float, message: str) -> None:
     console.print(f"  [dim]{fraction:>5.0%}[/dim] {message}")
+
+
+@app.command("report")
+def report(
+    case: Annotated[str, typer.Option("--case", help="Case UUID.")],
+    report_format: Annotated[
+        ReportFormat, typer.Option("--format", "-f", help="Output format.")
+    ] = ReportFormat.HTML,
+    output: Annotated[
+        Path | None, typer.Option("--output", "-o", help="Write to this file instead of stdout.")
+    ] = None,
+    max_classification: Annotated[
+        Classification,
+        typer.Option("--max-classification", help="Withhold content above this level."),
+    ] = Classification.PERSONAL,
+    min_confidence: Annotated[float, typer.Option("--min-confidence", min=0.0, max=1.0)] = 0.0,
+) -> None:
+    """Generate an investigation report.
+
+    Every claim in the output cites the stored artefact that supports it.
+    """
+    from app.core.db import session_scope
+    from app.reporting import render_report
+
+    with session_scope() as session:
+        body = render_report(
+            session,
+            _uuid(case, "case"),
+            report_format=report_format,
+            max_classification=max_classification,
+            min_confidence=min_confidence,
+        )
+
+    if output is None:
+        # The report itself is this command's output, so it goes to stdout raw.
+        print(body)
+        return
+    output.write_text(body, encoding="utf-8")
+    success(f"Wrote {report_format.value} report to [bold]{output}[/bold] ({len(body)} bytes)")
 
 
 @app.command("collectors")
