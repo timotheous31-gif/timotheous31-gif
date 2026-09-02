@@ -265,3 +265,72 @@ v2 model.
 
 Each phase ends with: tests, lint, fix, file list, summary, technical-debt note,
 commit. A phase is not left with failing core tests.
+
+---
+
+## 9. What actually shipped, and where it diverged
+
+All twelve phases are complete: 547 backend tests (93% statement coverage) and
+26 frontend tests pass; ruff, black, mypy, `tsc --noEmit` and `next build` are
+clean. Deviations from the plan above, and why:
+
+**Ordering.** Reporting (phase 10) was built before the frontend (phases 8–9),
+because the dashboard consumes the report endpoint. Core HTTP, SSRF, rate
+limiting and caching moved from phase 3 into phase 1, since they are
+infrastructure the collectors merely use.
+
+**Evidence is many-to-many with findings.** The plan gave `evidence` a
+`finding_id` foreign key. That is wrong: a single HTTP response yields page
+metadata, security headers *and* outbound links, so one artefact supports
+several findings. The acceptance test caught findings silently citing no
+evidence. Replaced with a `finding_evidence` join table, which keeps
+content-addressed deduplication and complete provenance.
+
+**Per-request and per-run timeouts are separate.** `timeout` is the per-request
+budget passed to the HTTP client; `run_timeout` bounds a whole collector run. A
+collector that makes many requests keeps a small per-request timeout and a
+larger run budget.
+
+**Confidence combination has ceilings, not just scores.** Noisy-OR alone would
+let twenty username matches out-score a self-published link. Each rule declares
+a ceiling for its class of evidence, and the combined score clamps to the
+highest ceiling present.
+
+**The test suite is hermetic by construction.** An autouse fixture answers name
+resolution from a fixed table and raises otherwise. This was added after the
+engine tests were found reaching the live network through the real collector
+registry.
+
+### Defects found by running the real thing
+
+Each was found by exercising the system rather than by reading it, and each is
+now covered by a test:
+
+| Found by | Defect |
+|---|---|
+| Real run against PostgreSQL | Payment-card classifier matched any long digit run, redacting a DNS SOA record's serial as a card number. Now requires a card-shaped grouping *and* a Luhn checksum. |
+| Real run against PostgreSQL | structlog wrote to stdout, corrupting `--json` output. Logs go to stderr. |
+| Test-ordering failure | Binding `sys.stderr` at configure time captured pytest's temporary stream; later logging wrote to a closed file. The stream is now resolved per write. |
+| Browser verification | `NEXT_PUBLIC_API_URL` is inlined at build time, so the compose runtime variable could never have worked. Now a Docker build arg. |
+| Browser verification | CORS allowed only `localhost:3000`, so `127.0.0.1` failed opaquely. |
+| Browser screenshot | `example.com`'s null MX (`0 .`) became an empty hostname and a blank graph node. Null MX is now recorded as the fact it is, and extraction refuses an entity with no canonical value. |
+| Security test | The redirect limit was unenforceable — the loop returned the final 302 as content and the raise after it was unreachable. Now a typed `TooManyRedirects`. |
+| Acceptance test | Evidence could cite only one finding (see above). |
+
+### Known limitations and technical debt
+
+- **`registrable_domain()` uses a small suffix heuristic**, not the Public
+  Suffix List. It is only ever a grouping hint, never an assertion, but a
+  bundled PSL would be more accurate.
+- **The graph backend is NetworkX only.** The `GraphBackend` ABC exists so a
+  Neo4j backend can be added, but none is written.
+- **Job progress is coarse** — one step per target plus correlation and
+  timeline. Per-collector progress events would be finer.
+- **No authentication or multi-tenancy.** The API assumes a trusted network or
+  an authenticating reverse proxy. Anyone who can reach it can read every case.
+- **Docker images were not built during development** (no daemon available);
+  the compose file validates and the Dockerfiles were reviewed statically.
+- **PDF reports are not implemented**, as planned; HTML prints cleanly.
+- **The frontend has no component tests** — the API client and formatters are
+  unit-tested, and the routes are verified end to end in a real browser, but
+  rendering logic is not covered by unit tests.
