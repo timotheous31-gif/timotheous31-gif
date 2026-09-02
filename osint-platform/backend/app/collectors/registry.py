@@ -111,9 +111,15 @@ def plan_collectors(
 def load_builtin_collectors() -> None:
     """Import every built-in collector module so the decorators run."""
     from app.collectors import (  # noqa: F401 - imported for their side effects
+        ctlog,
         dns,
+        email,
+        github,
         http_meta,
         rdap,
+        search,
+        username,
+        wayback,
     )
 
 

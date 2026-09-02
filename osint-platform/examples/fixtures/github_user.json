@@ -1,0 +1,20 @@
+{
+  "login": "exampleuser",
+  "id": 583231,
+  "node_id": "MDQ6VXNlcjU4MzIzMQ==",
+  "html_url": "https://github.com/exampleuser",
+  "type": "User",
+  "name": "Example User",
+  "company": "@exampleorg",
+  "blog": "https://example.com",
+  "location": "Documentation Land",
+  "email": null,
+  "hireable": null,
+  "bio": "Maintains fictional example projects.",
+  "public_repos": 8,
+  "public_gists": 8,
+  "followers": 12000,
+  "following": 9,
+  "created_at": "2011-01-25T18:44:36Z",
+  "updated_at": "2025-04-02T10:12:00Z"
+}

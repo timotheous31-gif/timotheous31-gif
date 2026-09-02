@@ -1,0 +1,4 @@
+[
+  {"Name": "ExampleForum", "Title": "Example Forum", "Domain": "forum.example.com", "BreachDate": "2016-05-01", "AddedDate": "2016-08-01T00:00:00Z", "PwnCount": 1000000, "IsVerified": true, "DataClasses": ["Email addresses", "Passwords", "Usernames"]},
+  {"Name": "ExampleShop", "Title": "Example Shop", "Domain": "shop.example.org", "BreachDate": "2019-11-15", "AddedDate": "2020-02-01T00:00:00Z", "PwnCount": 500000, "IsVerified": false, "DataClasses": ["Email addresses", "Names"]}
+]
