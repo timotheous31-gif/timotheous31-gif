@@ -113,7 +113,6 @@ def populated_case(db_session):
 
     evidence = Evidence(
         case_id=case.id,
-        finding_id=strong.id,
         collector="dns",
         source_url="dns://example.com/A",
         retrieved_at=datetime(2024, 5, 1, 12, 0, tzinfo=UTC),
@@ -122,6 +121,7 @@ def populated_case(db_session):
         size_bytes=42,
         excerpt='{"records": ["93.184.215.14"]}',
     )
+    evidence.findings.append(strong)
     db_session.add(evidence)
 
     domain = Entity(

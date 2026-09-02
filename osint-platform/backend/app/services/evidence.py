@@ -104,8 +104,11 @@ class EvidenceStore:
             select(Evidence).where(Evidence.case_id == case_id, Evidence.sha256 == digest)
         )
         if existing is not None:
-            if finding is not None and existing.finding_id is None:
-                existing.finding_id = finding.id
+            # The same artefact often supports several findings; link each one
+            # rather than keeping only the first.
+            if finding is not None and all(linked.id != finding.id for linked in existing.findings):
+                existing.findings.append(finding)
+                session.flush()
             return StoredEvidence(evidence=existing, created=False, sha256=digest)
 
         raw_ref: str | None = None
@@ -114,7 +117,6 @@ class EvidenceStore:
 
         evidence = Evidence(
             case_id=case_id,
-            finding_id=finding.id if finding is not None else None,
             collector=collector,
             source_url=source_url[:2048] if source_url else None,
             retrieved_at=retrieved_at or datetime.now(UTC),
@@ -127,6 +129,8 @@ class EvidenceStore:
             ),
             redacted=redacted,
         )
+        if finding is not None:
+            evidence.findings.append(finding)
         session.add(evidence)
         session.flush()
         log.info(

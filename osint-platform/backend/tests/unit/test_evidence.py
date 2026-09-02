@@ -117,7 +117,34 @@ def test_evidence_links_to_its_finding(store, db_session, case):
     db_session.add(finding)
     db_session.flush()
     stored = store_payload(store, db_session, case, {"a": 1}, finding=finding)
-    assert stored.evidence.finding_id == finding.id
+    assert [row.id for row in stored.evidence.findings] == [finding.id]
+
+
+def test_one_artefact_can_support_several_findings(store, db_session, case):
+    """A single HTTP response yields several findings; all must cite it."""
+    findings = []
+    for index in range(2):
+        finding = Finding(
+            case_id=case.id,
+            kind=FindingKind.HTTP_METADATA,
+            title=f"finding {index}",
+            data={},
+            collector="http_meta",
+            dedupe_key=f"k{index}",
+        )
+        db_session.add(finding)
+        db_session.flush()
+        findings.append(finding)
+
+    first = store_payload(store, db_session, case, {"shared": True}, finding=findings[0])
+    second = store_payload(store, db_session, case, {"shared": True}, finding=findings[1])
+
+    assert second.created is False, "the artefact should be stored once"
+    assert first.evidence.id == second.evidence.id
+    assert {row.id for row in first.evidence.findings} == {f.id for f in findings}
+    for finding in findings:
+        db_session.refresh(finding)
+        assert [row.id for row in finding.evidence] == [first.evidence.id]
 
 
 def test_verification_detects_tampering(store, db_session, case):

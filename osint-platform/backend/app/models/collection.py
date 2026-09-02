@@ -14,12 +14,14 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     Boolean,
+    Column,
     DateTime,
     Float,
     ForeignKey,
     Index,
     Integer,
     String,
+    Table,
     Text,
     UniqueConstraint,
 )
@@ -35,6 +37,18 @@ from app.models.types import GUID, JSONType
 if TYPE_CHECKING:
     from app.models.case import Case
     from app.models.target import Target
+
+
+#: One stored artefact can support several findings — a single HTTP response
+#: yields page metadata, security headers and outbound links — and one finding
+#: can rest on several artefacts. A join table is the only shape that keeps
+#: both deduplication and complete provenance.
+finding_evidence = Table(
+    "finding_evidence",
+    Base.metadata,
+    Column("finding_id", GUID(), ForeignKey("findings.id", ondelete="CASCADE"), primary_key=True),
+    Column("evidence_id", GUID(), ForeignKey("evidence.id", ondelete="CASCADE"), primary_key=True),
+)
 
 
 class CollectorRun(UUIDMixin, TimestampMixin, Base):
@@ -136,7 +150,7 @@ class Finding(UUIDMixin, TimestampMixin, Base):
     case: Mapped[Case] = relationship(back_populates="findings")
     run: Mapped[CollectorRun | None] = relationship(back_populates="findings")
     evidence: Mapped[list[Evidence]] = relationship(
-        back_populates="finding", cascade="all, delete-orphan", lazy="selectin"
+        secondary=finding_evidence, back_populates="findings", lazy="selectin"
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
@@ -155,10 +169,6 @@ class Evidence(UUIDMixin, TimestampMixin, Base):
     case_id: Mapped[uuid.UUID] = mapped_column(
         GUID(), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    finding_id: Mapped[uuid.UUID | None] = mapped_column(
-        GUID(), ForeignKey("findings.id", ondelete="CASCADE"), default=None, index=True
-    )
-
     collector: Mapped[str] = mapped_column(String(64), nullable=False)
     source_url: Mapped[str | None] = mapped_column(String(2048), default=None)
     retrieved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -175,7 +185,9 @@ class Evidence(UUIDMixin, TimestampMixin, Base):
     redacted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     case: Mapped[Case] = relationship(back_populates="evidence")
-    finding: Mapped[Finding | None] = relationship(back_populates="evidence")
+    findings: Mapped[list[Finding]] = relationship(
+        secondary=finding_evidence, back_populates="evidence", lazy="selectin"
+    )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<Evidence {self.collector} {self.sha256[:12]}>"

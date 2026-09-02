@@ -52,11 +52,17 @@ test-frontend: ## Run frontend tests and typecheck
 cov: ## Run backend tests with a coverage report
 	cd $(BACKEND) && .venv/bin/python -m pytest --cov=app --cov-report=term-missing --cov-report=html
 
-lint: ## Run ruff, black --check and mypy
-	cd $(BACKEND) && .venv/bin/ruff check . && .venv/bin/black --check . && .venv/bin/mypy app
+lint: ## Run ruff, black --check and mypy over the backend and scripts
+	cd $(BACKEND) && .venv/bin/ruff check . && \
+	  .venv/bin/ruff check --config pyproject.toml ../scripts && \
+	  .venv/bin/black --check . && \
+	  .venv/bin/black --check --config pyproject.toml ../scripts && \
+	  .venv/bin/mypy app
 
 lint-fix: ## Auto-fix lint issues and format
-	cd $(BACKEND) && .venv/bin/ruff check --fix . && .venv/bin/black .
+	cd $(BACKEND) && .venv/bin/ruff check --fix . && \
+	  .venv/bin/ruff check --fix --config pyproject.toml ../scripts && \
+	  .venv/bin/black . && .venv/bin/black --config pyproject.toml ../scripts
 
 format: lint-fix ## Alias for lint-fix
 
@@ -72,8 +78,7 @@ migration: ## Create a migration: make migration m="add table"
 	cd $(BACKEND) && .venv/bin/alembic revision --autogenerate -m "$(m)"
 
 seed: ## Load the safe demonstration case (fictional targets only)
-	cd $(BACKEND) && .venv/bin/python -m scripts.seed 2>/dev/null || \
-	  $(PY) ../scripts/seed.py
+	$(PY) scripts/seed.py --reset
 
 cli: ## Show the CLI help
 	cd $(BACKEND) && .venv/bin/osint --help

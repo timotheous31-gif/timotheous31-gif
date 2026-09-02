@@ -22,7 +22,6 @@ class EvidenceRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    finding_id: uuid.UUID | None
     collector: str
     source_url: str | None
     retrieved_at: datetime
@@ -32,6 +31,23 @@ class EvidenceRead(BaseModel):
     excerpt: str | None
     redacted: bool
     created_at: datetime
+    finding_ids: list[uuid.UUID] = Field(default_factory=list)
+
+    @classmethod
+    def from_evidence(cls, evidence) -> EvidenceRead:
+        return cls(
+            id=evidence.id,
+            collector=evidence.collector,
+            source_url=evidence.source_url,
+            retrieved_at=evidence.retrieved_at,
+            sha256=evidence.sha256,
+            content_type=evidence.content_type,
+            size_bytes=evidence.size_bytes,
+            excerpt=evidence.excerpt,
+            redacted=evidence.redacted,
+            created_at=evidence.created_at,
+            finding_ids=[finding.id for finding in (evidence.findings or [])],
+        )
 
 
 class FindingRead(BaseModel):

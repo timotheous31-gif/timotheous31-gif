@@ -56,6 +56,7 @@ include = ["app*"]
 line-length = 100
 target-version = "py312"
 src = ["."]
+extend-exclude = []
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF", "ASYNC", "S"]

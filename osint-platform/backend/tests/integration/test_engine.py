@@ -211,7 +211,7 @@ def test_missing_credentials_are_skipped_with_a_reason(db_session, case, stub_re
 def test_evidence_is_linked_to_its_finding(db_session, case, stub_registry):
     InvestigationEngine().run(db_session, case.id)
     for evidence in db_session.scalars(select(Evidence)):
-        assert evidence.finding_id is not None
+        assert evidence.findings, "every stored artefact must cite the finding it supports"
         assert len(evidence.sha256) == 64
         assert evidence.source_url
 

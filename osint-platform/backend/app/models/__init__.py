@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from app.models.base import Base, TimestampMixin, UUIDMixin, utcnow
 from app.models.case import Case
-from app.models.collection import CollectorRun, Evidence, Finding
+from app.models.collection import CollectorRun, Evidence, Finding, finding_evidence
 from app.models.entity import Entity, Relationship, entity_sources, relationship_evidence
 from app.models.enums import (
     CaseStatus,
@@ -55,6 +55,7 @@ __all__ = [
     "UUIDMixin",
     "case_tags",
     "entity_sources",
+    "finding_evidence",
     "relationship_evidence",
     "target_tags",
     "utcnow",

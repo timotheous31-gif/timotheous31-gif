@@ -77,7 +77,7 @@ def list_evidence(
         session.scalars(stmt.order_by(Evidence.retrieved_at.desc()).limit(limit).offset(offset))
     )
     return Page[EvidenceRead](
-        items=[EvidenceRead.model_validate(item) for item in items],
+        items=[EvidenceRead.from_evidence(item) for item in items],
         total=total,
         limit=limit,
         offset=offset,

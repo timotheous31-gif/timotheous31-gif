@@ -1,8 +1,8 @@
 """initial schema
 
-Revision ID: 83331975329a
+Revision ID: d625ca41c9fd
 Revises:
-Create Date: 2026-09-02 14:37:09.290077
+Create Date: 2026-09-02 17:35:42.512136
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from sqlalchemy.dialects import postgresql
 import app.models.types
 from alembic import op
 
-revision: str = "83331975329a"
+revision: str = "d625ca41c9fd"
 down_revision: str | None = None
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
@@ -157,6 +157,41 @@ def upgrade() -> None:
     op.create_index(op.f("ix_entities_confidence"), "entities", ["confidence"], unique=False)
     op.create_index(op.f("ix_entities_created_at"), "entities", ["created_at"], unique=False)
     op.create_index(op.f("ix_entities_type"), "entities", ["type"], unique=False)
+    op.create_table(
+        "evidence",
+        sa.Column("id", app.models.types.GUID(), nullable=False),
+        sa.Column("case_id", app.models.types.GUID(), nullable=False),
+        sa.Column("collector", sa.String(length=64), nullable=False),
+        sa.Column("source_url", sa.String(length=2048), nullable=True),
+        sa.Column("retrieved_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("sha256", sa.String(length=64), nullable=False),
+        sa.Column("content_type", sa.String(length=128), nullable=True),
+        sa.Column("size_bytes", sa.Integer(), nullable=False),
+        sa.Column("raw_ref", sa.String(length=512), nullable=True),
+        sa.Column("excerpt", sa.Text(), nullable=True),
+        sa.Column("redacted", sa.Boolean(), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.ForeignKeyConstraint(["case_id"], ["cases.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("case_id", "sha256", name="uq_evidence_case_hash"),
+    )
+    op.create_index(
+        "ix_evidence_case_collector", "evidence", ["case_id", "collector"], unique=False
+    )
+    op.create_index(op.f("ix_evidence_case_id"), "evidence", ["case_id"], unique=False)
+    op.create_index(op.f("ix_evidence_created_at"), "evidence", ["created_at"], unique=False)
+    op.create_index(op.f("ix_evidence_sha256"), "evidence", ["sha256"], unique=False)
     op.create_table(
         "jobs",
         sa.Column("id", app.models.types.GUID(), nullable=False),
@@ -559,43 +594,13 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("entity_id", "finding_id"),
     )
     op.create_table(
-        "evidence",
-        sa.Column("id", app.models.types.GUID(), nullable=False),
-        sa.Column("case_id", app.models.types.GUID(), nullable=False),
-        sa.Column("finding_id", app.models.types.GUID(), nullable=True),
-        sa.Column("collector", sa.String(length=64), nullable=False),
-        sa.Column("source_url", sa.String(length=2048), nullable=True),
-        sa.Column("retrieved_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("sha256", sa.String(length=64), nullable=False),
-        sa.Column("content_type", sa.String(length=128), nullable=True),
-        sa.Column("size_bytes", sa.Integer(), nullable=False),
-        sa.Column("raw_ref", sa.String(length=512), nullable=True),
-        sa.Column("excerpt", sa.Text(), nullable=True),
-        sa.Column("redacted", sa.Boolean(), nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.ForeignKeyConstraint(["case_id"], ["cases.id"], ondelete="CASCADE"),
+        "finding_evidence",
+        sa.Column("finding_id", app.models.types.GUID(), nullable=False),
+        sa.Column("evidence_id", app.models.types.GUID(), nullable=False),
+        sa.ForeignKeyConstraint(["evidence_id"], ["evidence.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["finding_id"], ["findings.id"], ondelete="CASCADE"),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("case_id", "sha256", name="uq_evidence_case_hash"),
+        sa.PrimaryKeyConstraint("finding_id", "evidence_id"),
     )
-    op.create_index(
-        "ix_evidence_case_collector", "evidence", ["case_id", "collector"], unique=False
-    )
-    op.create_index(op.f("ix_evidence_case_id"), "evidence", ["case_id"], unique=False)
-    op.create_index(op.f("ix_evidence_created_at"), "evidence", ["created_at"], unique=False)
-    op.create_index(op.f("ix_evidence_finding_id"), "evidence", ["finding_id"], unique=False)
-    op.create_index(op.f("ix_evidence_sha256"), "evidence", ["sha256"], unique=False)
     op.create_table(
         "relationship_evidence",
         sa.Column("relationship_id", app.models.types.GUID(), nullable=False),
@@ -674,12 +679,7 @@ def downgrade() -> None:
     op.drop_index("ix_timeline_case_kind", table_name="timeline_events")
     op.drop_table("timeline_events")
     op.drop_table("relationship_evidence")
-    op.drop_index(op.f("ix_evidence_sha256"), table_name="evidence")
-    op.drop_index(op.f("ix_evidence_finding_id"), table_name="evidence")
-    op.drop_index(op.f("ix_evidence_created_at"), table_name="evidence")
-    op.drop_index(op.f("ix_evidence_case_id"), table_name="evidence")
-    op.drop_index("ix_evidence_case_collector", table_name="evidence")
-    op.drop_table("evidence")
+    op.drop_table("finding_evidence")
     op.drop_table("entity_sources")
     op.drop_index(op.f("ix_findings_target_id"), table_name="findings")
     op.drop_index(op.f("ix_findings_run_id"), table_name="findings")
@@ -722,6 +722,11 @@ def downgrade() -> None:
     op.drop_index("ix_jobs_case_state", table_name="jobs")
     op.drop_index(op.f("ix_jobs_case_id"), table_name="jobs")
     op.drop_table("jobs")
+    op.drop_index(op.f("ix_evidence_sha256"), table_name="evidence")
+    op.drop_index(op.f("ix_evidence_created_at"), table_name="evidence")
+    op.drop_index(op.f("ix_evidence_case_id"), table_name="evidence")
+    op.drop_index("ix_evidence_case_collector", table_name="evidence")
+    op.drop_table("evidence")
     op.drop_index(op.f("ix_entities_type"), table_name="entities")
     op.drop_index(op.f("ix_entities_created_at"), table_name="entities")
     op.drop_index(op.f("ix_entities_confidence"), table_name="entities")

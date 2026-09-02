@@ -14,11 +14,21 @@ RUN apt-get update \
 
 COPY backend/pyproject.toml backend/README.md ./
 COPY backend/app ./app
-RUN pip install --no-cache-dir -e ".[dev]"
+
+# The default image doubles as the CI/test image, so it carries the dev extras
+# and the test suite. Build with --build-arg INSTALL_DEV=false for a lean
+# production image.
+ARG INSTALL_DEV=true
+RUN if [ "$INSTALL_DEV" = "true" ]; then \
+        pip install --no-cache-dir -e ".[dev]"; \
+    else \
+        pip install --no-cache-dir -e .; \
+    fi
 
 COPY backend/alembic.ini ./alembic.ini
 COPY backend/alembic ./alembic
 COPY backend/tests ./tests
+COPY scripts ./scripts
 
 # Run as an unprivileged user: the service makes outbound requests on behalf of
 # investigators and should hold no more privilege than it needs.

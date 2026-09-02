@@ -97,7 +97,6 @@ export interface Target {
 
 export interface EvidenceRecord {
   id: string;
-  finding_id: string | null;
   collector: string;
   source_url: string | null;
   retrieved_at: string;
@@ -107,6 +106,8 @@ export interface EvidenceRecord {
   excerpt: string | null;
   redacted: boolean;
   created_at: string;
+  /** One artefact can support several findings, and vice versa. */
+  finding_ids: string[];
 }
 
 export interface Finding {
