@@ -32,6 +32,76 @@ def _settings() -> Iterator[None]:
     reset_settings_cache()
 
 
+#: Hostnames the suite is allowed to "resolve", all mapped to a documented
+#: public address. Anything else raises, so a test that would have reached the
+#: real network fails loudly instead of silently succeeding.
+TEST_DNS = {
+    "example.com": "93.184.215.14",
+    "www.example.com": "93.184.215.14",
+    "example.org": "93.184.215.14",
+    "example.net": "93.184.215.14",
+    "sub.example.com": "93.184.215.14",
+    "shop.example.com": "93.184.215.14",
+    "crt.sh": "93.184.215.14",
+    "rdap.org": "93.184.215.14",
+    "web.archive.org": "93.184.215.14",
+    "api.github.com": "93.184.215.14",
+    "github.com": "93.184.215.14",
+    "gitlab.com": "93.184.215.14",
+    "haveibeenpwned.com": "93.184.215.14",
+    "api.search.brave.com": "93.184.215.14",
+    "api.bing.microsoft.com": "93.184.215.14",
+    "google.serper.dev": "93.184.215.14",
+    "unrelated.test": "93.184.215.14",
+}
+
+#: A documented public address, used for every allowed host.
+TEST_ADDRESS = "93.184.215.14"
+
+
+def _allowed_hosts() -> dict[str, str]:
+    """Allowed hostnames: the fixed list plus every curated platform host."""
+    from urllib.parse import urlsplit
+
+    from app.collectors.platforms import PLATFORMS
+
+    hosts = dict(TEST_DNS)
+    for platform in PLATFORMS:
+        for template in (platform.url_template, platform.probe_template):
+            if not template:
+                continue
+            host = urlsplit(template.format(username="x")).hostname
+            if host:
+                hosts[host.lower()] = TEST_ADDRESS
+    return hosts
+
+
+@pytest.fixture(autouse=True)
+def _offline(monkeypatch) -> Iterator[None]:
+    """Make the suite hermetic.
+
+    Name resolution is answered from :data:`TEST_DNS` and anything else raises,
+    so a collector that slips past its mock cannot quietly contact a real host.
+    """
+    import socket
+
+    allowed = _allowed_hosts()
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        address = allowed.get(str(host).lower().rstrip("."))
+        if address is None:
+            raise AssertionError(
+                f"Test attempted to resolve {host!r}. Mock the request, or add the "
+                f"host to TEST_DNS in tests/conftest.py."
+            )
+        return [
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (address, port or 443))
+        ]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    yield
+
+
 @pytest.fixture(autouse=True)
 def _cache() -> Iterator[None]:
     """Give every test a clean in-process cache."""

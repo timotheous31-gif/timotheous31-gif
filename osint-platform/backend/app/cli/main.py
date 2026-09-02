@@ -19,7 +19,7 @@ from typing import Annotated
 import typer
 
 from app import __version__
-from app.cli.output import console, emit_json, emit_table, fail, success
+from app.cli.output import console, emit_json, emit_table, fail, success, warn
 from app.core.errors import OsintError
 from app.core.logging import configure_logging
 from app.models.enums import CaseStatus, TargetType
@@ -249,6 +249,129 @@ def target_list(
         emit_json({"items": rows, "total": total})
         return
     emit_table(f"Targets ({total})", rows, ["id", "type", "normalized_value", "status"])
+
+
+@app.command("investigate")
+def investigate(
+    case: Annotated[
+        str | None,
+        typer.Option("--case", help="Existing case UUID; a new case is created when omitted."),
+    ] = None,
+    value: Annotated[str | None, typer.Argument(help="Target value.")] = None,
+    domain: Annotated[str | None, typer.Option("--domain")] = None,
+    username: Annotated[str | None, typer.Option("--username")] = None,
+    email: Annotated[str | None, typer.Option("--email")] = None,
+    url: Annotated[str | None, typer.Option("--url")] = None,
+    org: Annotated[str | None, typer.Option("--org", "--organization")] = None,
+    ip: Annotated[str | None, typer.Option("--ip")] = None,
+    repository: Annotated[str | None, typer.Option("--repo", "--repository")] = None,
+    collector: Annotated[
+        list[str] | None, typer.Option("--collector", help="Run only these collectors.")
+    ] = None,
+    exclude_collector: Annotated[
+        list[str] | None, typer.Option("--exclude-collector", help="Skip these collectors.")
+    ] = None,
+    name: Annotated[
+        str | None, typer.Option("--name", help="Name for a newly created case.")
+    ] = None,
+    as_json: JsonOpt = False,
+) -> None:
+    """Run a full investigation against one target.
+
+    Creates a case when ``--case`` is not given, adds the target, runs every
+    applicable collector, correlates the results and prints a summary.
+    """
+    from app.core.db import session_scope
+    from app.schemas.case import CaseCreate, TargetCreate
+    from app.services import cases as service
+    from app.services.engine import InvestigationOptions, run_investigation
+
+    target_value, target_type = _single_target(
+        value=value,
+        domain=domain,
+        username=username,
+        email=email,
+        url=url,
+        org=org,
+        ip=ip,
+        repository=repository,
+    )
+
+    with session_scope() as session:
+        if case:
+            case_id = _uuid(case, "case")
+            service.get_case(session, case_id)
+        else:
+            created = service.create_case(
+                session, CaseCreate(name=name or f"Investigation: {target_value}")
+            )
+            case_id = created.id
+
+        try:
+            service.add_target(session, case_id, TargetCreate(value=target_value, type=target_type))
+        except OsintError as exc:
+            if exc.code != "conflict":
+                raise
+        session.commit()
+
+        result = run_investigation(
+            session,
+            case_id,
+            InvestigationOptions(
+                include_collectors=list(collector or []),
+                exclude_collectors=list(exclude_collector or []),
+                on_progress=None if as_json else _print_progress,
+            ),
+        )
+        payload = result.as_dict()
+
+    if as_json:
+        emit_json(payload)
+        return
+
+    success(f"Investigation complete for [bold]{target_value}[/bold]")
+    console.print(f"  case: {payload['case_id']}")
+    emit_table(
+        "Results",
+        [payload],
+        [
+            "collectors_run",
+            "collectors_failed",
+            "collectors_skipped",
+            "findings_created",
+            "entities_created",
+            "relationships_created",
+            "timeline_events",
+        ],
+    )
+    for note in payload["notes"][:10]:
+        console.print(f"  [dim]note:[/dim] {note}")
+    for error in payload["errors"][:10]:
+        warn(f"{error.get('collector') or error.get('stage')}: {error.get('error')}")
+
+
+def _print_progress(fraction: float, message: str) -> None:
+    console.print(f"  [dim]{fraction:>5.0%}[/dim] {message}")
+
+
+@app.command("collectors")
+def list_collectors(as_json: JsonOpt = False) -> None:
+    """List the available collectors and whether they can currently run."""
+    from app.collectors.registry import collector_metadata, load_builtin_collectors
+
+    load_builtin_collectors()
+    entries = collector_metadata()
+    if as_json:
+        emit_json(entries)
+        return
+    emit_table(
+        "Collectors",
+        [
+            {**entry, "supported_targets": ", ".join(entry["supported_targets"])}
+            for entry in entries
+        ],
+        ["name", "version", "supported_targets", "requires_api_key", "available"],
+    )
 
 
 @app.command("normalize")
