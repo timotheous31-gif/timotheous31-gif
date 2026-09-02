@@ -7,7 +7,9 @@ a real network endpoint.
 
 from __future__ import annotations
 
+import json
 import os
+import pathlib
 from collections.abc import Iterator
 
 import pytest
@@ -81,3 +83,44 @@ async def case_id(api_client):
     response = await api_client.post("/api/v1/cases", json={"name": "Example Domain Investigation"})
     assert response.status_code == 201, response.text
     return response.json()["id"]
+
+
+FIXTURE_DIR = pathlib.Path(__file__).resolve().parents[2] / "examples" / "fixtures"
+
+
+def load_fixture(name: str):
+    """Read a fixture file, parsing JSON when the name ends in ``.json``."""
+    path = FIXTURE_DIR / name
+    text = path.read_text(encoding="utf-8")
+    return json.loads(text) if name.endswith(".json") else text
+
+
+@pytest.fixture
+def fixture():
+    """Fixture loader, injected into tests that need canned API responses."""
+    return load_fixture
+
+
+@pytest.fixture
+def collector_ctx():
+    """A collector context bound to a throwaway case id."""
+    import uuid as _uuid
+
+    from app.collectors.base import CollectorContext
+    from app.core.settings import get_settings
+
+    return CollectorContext(case_id=_uuid.uuid4(), settings=get_settings())
+
+
+@pytest.fixture
+def mock_http():
+    """Install a respx-mockable httpx client as the shared HTTP client."""
+    import httpx
+
+    from app.core import http as http_module
+
+    client = httpx.AsyncClient(follow_redirects=False)
+    http_module.set_http_client(client)
+    http_module.get_limiter().reset()
+    yield
+    http_module.set_http_client(None)
