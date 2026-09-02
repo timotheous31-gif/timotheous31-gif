@@ -358,3 +358,33 @@ def test_malformed_finding_does_not_stop_extraction():
 @pytest.mark.parametrize("value", [{}, {"hostname": ""}, {"records": []}])
 def test_empty_dns_payloads_are_safe(value):
     assert extract([FakeFinding(FindingKind.DNS_RECORD, value)]).entities == {}
+
+
+def test_entities_with_no_identity_are_rejected():
+    """A blank canonical value would collide with every other blank one."""
+    from app.correlation.extraction import EntityDraft, ExtractionResult
+
+    result = ExtractionResult()
+    with pytest.raises(ValueError, match="empty canonical value"):
+        result.add_entity(
+            EntityDraft(type=EntityType.DOMAIN, canonical_value="  ", display_name="")
+        )
+
+
+def test_a_null_mx_finding_creates_no_blank_domain():
+    result = extract(
+        [
+            FakeFinding(
+                FindingKind.DNS_RECORD,
+                {
+                    "hostname": "example.com",
+                    "record_type": "MX",
+                    "records": ["0 ."],
+                    "mail_hosts": [],
+                    "null_mx": True,
+                },
+            )
+        ]
+    )
+    assert list(result.entities) == [(EntityType.DOMAIN, "example.com")]
+    assert result.relationships == {}

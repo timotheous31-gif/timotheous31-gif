@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg: 255 255 255;
+    --panel: 247 248 250;
+    --line: 226 229 234;
+    --fg: 22 24 29;
+    --muted: 92 99 112;
+    --accent: 31 95 169;
+    --likely: 26 127 75;
+    --probable: 138 109 0;
+    --possible: 154 91 0;
+    --weak: 107 114 128;
+    --danger: 161 28 28;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: 20 22 26;
+      --panel: 28 31 38;
+      --line: 42 46 54;
+      --fg: 230 232 236;
+      --muted: 154 161 173;
+      --accent: 110 168 255;
+      --likely: 76 195 138;
+      --probable: 217 176 60;
+      --possible: 224 138 60;
+      --weak: 154 161 173;
+      --danger: 255 107 107;
+    }
+  }
+
+  html {
+    color-scheme: light dark;
+  }
+
+  body {
+    @apply bg-bg text-fg antialiased;
+  }
+
+  /* Focus rings must stay visible: investigators use this dashboard with a
+     keyboard while reading from other windows. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-bg;
+  }
+}

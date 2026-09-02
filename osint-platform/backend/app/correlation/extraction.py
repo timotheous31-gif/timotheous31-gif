@@ -98,6 +98,10 @@ class ExtractionResult:
     relationships: dict[tuple, RelationshipDraft] = field(default_factory=dict)
 
     def add_entity(self, draft: EntityDraft) -> EntityDraft:
+        # An entity with no canonical value has no identity: it would collide
+        # with every other empty one and appear in the graph as a blank node.
+        if not draft.canonical_value.strip():
+            raise ValueError(f"{draft.type} entity has an empty canonical value")
         existing = self.entities.get(draft.key)
         if existing is None:
             self.entities[draft.key] = draft

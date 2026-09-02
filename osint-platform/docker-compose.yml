@@ -97,6 +97,10 @@ services:
     build:
       context: .
       dockerfile: docker/frontend.Dockerfile
+      args:
+        # Baked into the client bundle: the browser, not the container, calls
+        # the API, so this must be an address the browser can reach.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     image: osint-frontend:latest
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}

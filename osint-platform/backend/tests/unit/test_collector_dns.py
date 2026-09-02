@@ -165,3 +165,23 @@ def test_answer_without_rrset_is_empty(collector):
             return SimpleNamespace(rrset=None)
 
     assert asyncio.run(collector._query(_Resolver(), "example.com", "A")) == ([], None)
+
+
+def test_null_mx_records_no_empty_host(collector):
+    """A null MX ("0 .") says the domain accepts no mail; it names no host."""
+    finding = collector.normalize(payload("MX", ["0 ."]), normalize_target("example.com"))[0]
+    assert finding.data["mail_hosts"] == []
+    assert finding.data["null_mx"] is True
+
+
+def test_mixed_mx_keeps_only_real_hosts(collector):
+    finding = collector.normalize(
+        payload("MX", ["0 .", "10 mail.example.com."]), normalize_target("example.com")
+    )[0]
+    assert finding.data["mail_hosts"] == ["mail.example.com"]
+    assert finding.data["null_mx"] is False
+
+
+def test_root_nameserver_is_not_an_empty_host(collector):
+    finding = collector.normalize(payload("NS", ["."]), normalize_target("example.com"))[0]
+    assert finding.data["nameservers"] == []

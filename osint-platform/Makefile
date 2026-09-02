@@ -41,13 +41,13 @@ dev-frontend: ## Run the Next.js dev server on :3000
 worker: ## Run a Celery worker
 	cd $(BACKEND) && .venv/bin/celery -A app.workers.celery_app.celery_app worker --loglevel=info
 
-test: test-backend ## Run the full backend test suite
+test: test-backend test-frontend ## Run backend and frontend test suites
 
 test-backend: ## Run backend tests
 	cd $(BACKEND) && .venv/bin/python -m pytest
 
-test-frontend: ## Run frontend tests
-	cd $(FRONTEND) && npm test --if-present
+test-frontend: ## Run frontend tests and typecheck
+	cd $(FRONTEND) && npm run typecheck && npm test
 
 cov: ## Run backend tests with a coverage report
 	cd $(BACKEND) && .venv/bin/python -m pytest --cov=app --cov-report=term-missing --cov-report=html

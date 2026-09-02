@@ -133,11 +133,16 @@ class DNSCollector(BaseCollector):
         summary = f"{len(records)} {rtype} record(s) for {hostname}"
 
         if rtype == "MX":
-            data["mail_hosts"] = sorted(
-                {part.split()[-1].rstrip(".") for part in records if part.split()}
-            )
+            # A null MX ("0 .") is a published statement that the domain
+            # accepts no mail. It is a fact worth recording, but it names no
+            # host, so it must not become an empty hostname downstream.
+            hosts = {part.split()[-1].rstrip(".") for part in records if part.split()}
+            data["mail_hosts"] = sorted(host for host in hosts if host)
+            data["null_mx"] = "" in hosts and not data["mail_hosts"]
         elif rtype == "NS":
-            data["nameservers"] = sorted({record.rstrip(".") for record in records})
+            data["nameservers"] = sorted(
+                {host for host in (record.rstrip(".") for record in records) if host}
+            )
         elif rtype == "TXT":
             data["policies"] = sorted(
                 {
