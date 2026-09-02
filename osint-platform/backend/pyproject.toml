@@ -42,7 +42,7 @@ dev = [
 ]
 
 [project.scripts]
-osint = "app.cli.main:app"
+osint = "app.cli.main:run"
 
 [build-system]
 requires = ["setuptools>=75"]

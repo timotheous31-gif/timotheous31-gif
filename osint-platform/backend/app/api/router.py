@@ -11,5 +11,9 @@ from fastapi import APIRouter
 
 def build_api_router() -> APIRouter:
     """Assemble the versioned API router."""
+    from app.api import cases, targets
+
     router = APIRouter()
+    router.include_router(cases.router)
+    router.include_router(targets.router)
     return router

@@ -38,3 +38,46 @@ def _cache() -> Iterator[None]:
     set_cache(MemoryCache())
     yield
     set_cache(None)
+
+
+@pytest.fixture
+def db_session():
+    """A transactional SQLite session with the full schema created."""
+    from app.core.db import configure_engine, get_session_factory
+    from app.models import Base
+
+    engine = configure_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session = get_session_factory()()
+    try:
+        yield session
+    finally:
+        session.rollback()
+        session.close()
+        Base.metadata.drop_all(engine)
+
+
+@pytest.fixture
+async def api_client():
+    """An httpx client bound to the ASGI app with a fresh in-memory database."""
+    import httpx
+
+    from app.core.db import configure_engine
+    from app.main import create_app
+    from app.models import Base
+
+    engine = configure_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        yield client
+    Base.metadata.drop_all(engine)
+
+
+@pytest.fixture
+async def case_id(api_client):
+    """A created case, returned as its UUID string."""
+    response = await api_client.post("/api/v1/cases", json={"name": "Example Domain Investigation"})
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
