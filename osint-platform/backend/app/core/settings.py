@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "console"
     api_prefix: str = "/api/v1"
+    #: Ceiling on an inbound request body. Investigation payloads are small.
+    max_request_bytes: int = 1_000_000
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:3000", "http://127.0.0.1:3000"]
     )

@@ -77,6 +77,12 @@ class SSRFError(OsintError):
     code = "ssrf_blocked"
 
 
+class TooManyRedirects(OsintError):
+    """An upstream redirect chain exceeded the configured hop limit."""
+
+    code = "too_many_redirects"
+
+
 class ResponseTooLarge(OsintError):
     """An upstream response exceeded the configured size ceiling."""
 

@@ -14,6 +14,7 @@ from app.core.errors import (
     OsintError,
     PolicyError,
     SSRFError,
+    TooManyRedirects,
     ValidationError,
 )
 from app.core.logging import get_logger, request_id_var
@@ -28,6 +29,7 @@ _STATUS_BY_ERROR: dict[type[OsintError], int] = {
     ConfigurationError: status.HTTP_503_SERVICE_UNAVAILABLE,
     PolicyError: status.HTTP_403_FORBIDDEN,
     SSRFError: status.HTTP_400_BAD_REQUEST,
+    TooManyRedirects: status.HTTP_502_BAD_GATEWAY,
 }
 
 

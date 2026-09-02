@@ -19,7 +19,12 @@ from typing import Any
 import httpx
 
 from app.core.cache import cache_key, get_cache
-from app.core.errors import RateLimitExceeded, ResponseTooLarge, SSRFError
+from app.core.errors import (
+    RateLimitExceeded,
+    ResponseTooLarge,
+    SSRFError,
+    TooManyRedirects,
+)
 from app.core.logging import get_logger
 from app.core.ratelimit import RETRYABLE_STATUS, ProviderLimiter, RateLimit, RetryPolicy
 from app.core.settings import get_settings
@@ -215,7 +220,7 @@ async def request(
                 max_redirects=max_redirects,
                 validate=validate,
             )
-        except (SSRFError, ResponseTooLarge):
+        except (SSRFError, ResponseTooLarge, TooManyRedirects):
             raise
         except (httpx.TimeoutException, httpx.TransportError) as exc:
             last_error = exc
@@ -295,11 +300,18 @@ async def _attempt(
             )
             response = await client.send(req, stream=True)
             try:
-                if response.is_redirect and hop < max_redirects:
+                if response.is_redirect:
                     location = response.headers.get("location")
                     if not location:
+                        # A redirect status with no Location is not a redirect
+                        # in any useful sense; return it as the response.
                         content = await _read_capped(response, max_bytes, current_url)
                         return _build(url, current_url, response, content, started, redirects)
+                    if hop >= max_redirects:
+                        raise TooManyRedirects(
+                            f"{url} exceeded {max_redirects} redirects "
+                            f"(last hop: {current_url})"
+                        )
                     next_url = str(httpx.URL(current_url).join(location))
                     redirects.append(next_url)
                     current_url = next_url
@@ -321,7 +333,7 @@ async def _attempt(
             )
             return _build(url, current_url, response, content, started, redirects)
 
-    raise SSRFError(f"Exceeded {max_redirects} redirects starting from {url}")
+    raise TooManyRedirects(f"{url} exceeded {max_redirects} redirects")
 
 
 def _build(
