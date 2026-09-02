@@ -1,0 +1,15 @@
+"""Aggregate API router.
+
+Routers are imported lazily inside :func:`build_api_router` so importing this
+module (for example from the CLI) does not pull in the whole service layer.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter
+
+
+def build_api_router() -> APIRouter:
+    """Assemble the versioned API router."""
+    router = APIRouter()
+    return router
