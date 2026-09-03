@@ -49,6 +49,22 @@ Two rules are structural rather than advisory:
 Splitting `normalize()` out of `collect()` is what makes a collector testable
 against a fixture with no network at all.
 
+## Registration
+
+`@register_collector` records the class in a permanent **catalogue** and puts it
+in the live **registry** that investigations plan from. The split matters
+because the decorator fires at module import, and a module imports only once
+per process: without the catalogue, `load_builtin_collectors()` would be a
+no-op on its second call and could never restore the registry after
+`reset_registry()`.
+
+`load_builtin_collectors()` is therefore idempotent and restorative — it
+re-applies registration from the catalogue on every call — and it is invoked at
+one deterministic point per entry point: FastAPI's startup lifespan, the CLI's
+callback, and engine construction. Nothing registers collectors lazily in the
+middle of serving a request; doing so once meant that rendering a report
+changed which collectors the next investigation would plan.
+
 ## What the runner guarantees
 
 - Each collector runs as its own task with its own run budget.
@@ -91,7 +107,7 @@ against becoming a profile-aggregation tool.
 
 1. Create `app/collectors/<name>.py` and implement `BaseCollector`.
 2. Decorate it with `@register_collector`.
-3. Add it to `load_builtin_collectors()`.
+3. Add its module name to `BUILTIN_MODULES` in `collectors/registry.py`.
 4. Capture a fixture in `examples/fixtures/` and unit-test `normalize()`
    against it; mock the transport with `respx` for `collect()`.
 5. If it needs a credential, add the setting to `Settings` and `.env.example`,

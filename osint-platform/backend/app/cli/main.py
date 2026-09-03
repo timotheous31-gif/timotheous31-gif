@@ -48,8 +48,11 @@ def main(
         str | None, typer.Option("--database-url", help="Override DATABASE_URL.")
     ] = None,
 ) -> None:
-    """Configure logging and the database connection for this invocation."""
+    """Configure logging, collectors and the database for this invocation."""
+    from app.collectors.registry import load_builtin_collectors
+
     configure_logging(level="DEBUG" if verbose else "WARNING")
+    load_builtin_collectors()
     if database_url:
         from app.core.db import configure_engine
 
@@ -397,9 +400,8 @@ def report(
 @app.command("collectors")
 def list_collectors(as_json: JsonOpt = False) -> None:
     """List the available collectors and whether they can currently run."""
-    from app.collectors.registry import collector_metadata, load_builtin_collectors
+    from app.collectors.registry import collector_metadata
 
-    load_builtin_collectors()
     entries = collector_metadata()
     if as_json:
         emit_json(entries)

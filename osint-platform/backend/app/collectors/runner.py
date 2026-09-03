@@ -33,6 +33,7 @@ class RunOutcome:
 
     collector: str
     version: str
+    attribution: str
     status: RunStatus
     result: CollectorResult | None = None
     error_type: str | None = None
@@ -106,6 +107,7 @@ async def run_collector(
         return RunOutcome(
             collector=collector.name,
             version=collector.version,
+            attribution=collector.source_attribution,
             status=status,
             result=result,
             duration_ms=duration_ms,
@@ -122,6 +124,7 @@ def _outcome(
     return RunOutcome(
         collector=collector.name,
         version=collector.version,
+        attribution=collector.source_attribution,
         status=status,
         error_type=type(exc).__name__,
         error_message=message[:2000],
@@ -162,6 +165,7 @@ async def run_all(
             outcome = RunOutcome(
                 collector=collector.name,
                 version=collector.version,
+                attribution=collector.source_attribution,
                 status=RunStatus.SKIPPED,
                 error_type="Cancelled",
                 error_message="Investigation cancelled before this collector started",

@@ -79,6 +79,7 @@ class CollectorRunRead(BaseModel):
     target_id: uuid.UUID
     collector: str
     collector_version: str
+    source_attribution: str | None
     status: RunStatus
     started_at: datetime | None
     finished_at: datetime | None

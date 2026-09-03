@@ -72,6 +72,10 @@ class CollectorRun(UUIDMixin, TimestampMixin, Base):
 
     collector: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     collector_version: Mapped[str] = mapped_column(String(32), default="0.0.0", nullable=False)
+    #: How the collector described its source at the time it ran. Recorded here
+    #: so a report never has to consult the registry of whichever process
+    #: happens to render it.
+    source_attribution: Mapped[str | None] = mapped_column(String(200), default=None)
     status: Mapped[RunStatus] = mapped_column(
         SAEnum(RunStatus, name="run_status", native_enum=False, length=20),
         default=RunStatus.PENDING,

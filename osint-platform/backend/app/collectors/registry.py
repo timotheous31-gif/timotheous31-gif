@@ -10,9 +10,27 @@ Adding a source is one decorator away::
 
 The registry is also the planner: given a target type it returns the collectors
 that accept it, minus anything the caller excluded or that is unavailable.
+
+Two dictionaries, deliberately:
+
+``_CATALOGUE``
+    Every collector class the decorator has ever seen in this process. It is a
+    static fact about the codebase and is never cleared.
+
+``_REGISTRY``
+    The live set an investigation plans from. Normally identical to the
+    catalogue; tests and embedders may substitute it.
+
+The split exists because ``@register_collector`` fires at *module import* time,
+and a module imports only once per process. Without a permanent catalogue,
+:func:`load_builtin_collectors` would be a no-op on its second call and could
+never restore the registry after :func:`reset_registry` — registration would
+depend on Python's module cache rather than on the call itself.
 """
 
 from __future__ import annotations
+
+import importlib
 
 from app.collectors.base import BaseCollector
 from app.core.errors import ConfigurationError
@@ -23,23 +41,50 @@ from app.models.enums import TargetType
 
 log = get_logger(__name__)
 
+#: Module names under ``app.collectors`` that declare a built-in collector.
+BUILTIN_MODULES: tuple[str, ...] = (
+    "ctlog",
+    "dns",
+    "email",
+    "github",
+    "http_meta",
+    "rdap",
+    "search",
+    "username",
+    "wayback",
+)
+
+#: Every collector class declared in this process. Never cleared.
+_CATALOGUE: dict[str, type[BaseCollector]] = {}
+
+#: The live set used for planning. Substitutable.
 _REGISTRY: dict[str, type[BaseCollector]] = {}
 
 
 def register_collector(cls: type[BaseCollector]) -> type[BaseCollector]:
     """Class decorator registering a collector under its ``name``."""
-    if not cls.name:
-        raise ConfigurationError(f"{cls.__name__} must declare a non-empty `name`")
-    if not cls.supported_targets:
-        raise ConfigurationError(f"{cls.__name__} must declare `supported_targets`")
-    existing = _REGISTRY.get(cls.name)
+    _validate(cls)
+    existing = _REGISTRY.get(cls.name) or _CATALOGUE.get(cls.name)
     if existing is not None and existing is not cls:
         raise ConfigurationError(
             f"Collector name {cls.name!r} is already registered by {existing.__name__}"
         )
+    _CATALOGUE[cls.name] = cls
+    _activate(cls)
+    return cls
+
+
+def _validate(cls: type[BaseCollector]) -> None:
+    if not cls.name:
+        raise ConfigurationError(f"{cls.__name__} must declare a non-empty `name`")
+    if not cls.supported_targets:
+        raise ConfigurationError(f"{cls.__name__} must declare `supported_targets`")
+
+
+def _activate(cls: type[BaseCollector]) -> None:
+    """Put ``cls`` into the live registry and declare its rate limit."""
     _REGISTRY[cls.name] = cls
     register_provider(cls.name, cls.rate_limit)
-    return cls
 
 
 def get_collector_class(name: str) -> type[BaseCollector]:
@@ -108,21 +153,36 @@ def plan_collectors(
     return planned
 
 
+def builtin_collector_classes() -> dict[str, type[BaseCollector]]:
+    """Every built-in collector class, importing the modules if needed.
+
+    Reads the catalogue rather than the live registry, so a substituted
+    registry does not hide the built-ins from callers that legitimately want
+    the full set (the ``/collectors`` catalogue, the CLI listing).
+    """
+    for module in BUILTIN_MODULES:
+        importlib.import_module(f"app.collectors.{module}")
+    prefixes = {f"app.collectors.{module}" for module in BUILTIN_MODULES}
+    return {name: cls for name, cls in _CATALOGUE.items() if cls.__module__ in prefixes}
+
+
 def load_builtin_collectors() -> None:
-    """Import every built-in collector module so the decorators run."""
-    from app.collectors import (  # noqa: F401 - imported for their side effects
-        ctlog,
-        dns,
-        email,
-        github,
-        http_meta,
-        rdap,
-        search,
-        username,
-        wayback,
-    )
+    """Ensure every built-in collector is in the live registry.
+
+    Idempotent, and independent of the module cache: the import only has an
+    effect the first time, so activation is re-applied from the catalogue on
+    every call. That is what makes the function able to restore the registry
+    after :func:`reset_registry`.
+    """
+    for name, cls in builtin_collector_classes().items():
+        if _REGISTRY.get(name) is not cls:
+            _activate(cls)
 
 
 def reset_registry() -> None:
-    """Clear the registry (tests only)."""
+    """Clear the live registry (tests and embedders).
+
+    The catalogue survives, so :func:`load_builtin_collectors` can put the
+    built-ins back.
+    """
     _REGISTRY.clear()

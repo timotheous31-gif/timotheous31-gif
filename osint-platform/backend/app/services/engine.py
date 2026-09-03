@@ -270,6 +270,7 @@ class InvestigationEngine:
             job_id=job.id if job is not None else None,
             collector=outcome.collector,
             collector_version=outcome.version,
+            source_attribution=outcome.attribution or None,
             status=outcome.status,
             started_at=datetime.now(UTC),
             finished_at=datetime.now(UTC),

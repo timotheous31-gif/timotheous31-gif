@@ -486,18 +486,29 @@ def _timeline_item(event: TimelineEvent) -> dict[str, Any]:
 
 
 def _sources(runs: list[CollectorRun], findings: list[Finding]) -> list[SourceItem]:
-    from app.collectors.registry import load_builtin_collectors
+    """Summarise what ran, from the recorded runs.
 
-    load_builtin_collectors()
-    from app.collectors.registry import _REGISTRY
-
+    Attribution comes from the run rows, recorded when the collectors actually
+    ran. A report describes a past investigation, so it must not depend on
+    which collectors the rendering process happens to have loaded — and
+    rendering must never mutate that set.
+    """
     grouped: dict[str, dict[str, Any]] = {}
     for run in runs:
         entry = grouped.setdefault(
             run.collector,
-            {"version": run.collector_version, "runs": 0, "ok": 0, "failed": 0, "skipped": 0},
+            {
+                "version": run.collector_version,
+                "attribution": run.source_attribution or "",
+                "runs": 0,
+                "ok": 0,
+                "failed": 0,
+                "skipped": 0,
+            },
         )
         entry["runs"] += 1
+        if not entry["attribution"] and run.source_attribution:
+            entry["attribution"] = run.source_attribution
         if run.status in {RunStatus.SUCCESS, RunStatus.PARTIAL}:
             entry["ok"] += 1
         elif run.status is RunStatus.SKIPPED:
@@ -513,7 +524,6 @@ def _sources(runs: list[CollectorRun], findings: list[Finding]) -> list[SourceIt
 
     items = []
     for collector, entry in sorted(grouped.items()):
-        cls = _REGISTRY.get(collector)
         items.append(
             SourceItem(
                 collector=collector,
@@ -523,7 +533,7 @@ def _sources(runs: list[CollectorRun], findings: list[Finding]) -> list[SourceIt
                 failures=entry["failed"],
                 skipped=entry["skipped"],
                 findings=per_collector_findings.get(collector, 0),
-                attribution=getattr(cls, "source_attribution", "") if cls else "",
+                attribution=entry["attribution"],
             )
         )
     return items

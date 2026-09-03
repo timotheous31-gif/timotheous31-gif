@@ -135,6 +135,8 @@ export interface CollectorRun {
   target_id: string;
   collector: string;
   collector_version: string;
+  /** How the collector described its source when it ran. */
+  source_attribution: string | null;
   status: RunStatus;
   started_at: string | null;
   finished_at: string | null;

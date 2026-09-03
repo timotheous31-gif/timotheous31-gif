@@ -34,6 +34,12 @@ doxxing workflows.
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    # Register the built-in collectors once, here, rather than lazily from
+    # whichever request happens to need them first. Deterministic startup
+    # ordering means no request can change what an investigation would plan.
+    from app.collectors.registry import load_builtin_collectors
+
+    load_builtin_collectors()
     log.info(
         "app.startup",
         environment=settings.environment,

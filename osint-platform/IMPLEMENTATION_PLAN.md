@@ -316,6 +316,7 @@ now covered by a test:
 | Browser screenshot | `example.com`'s null MX (`0 .`) became an empty hostname and a blank graph node. Null MX is now recorded as the fact it is, and extraction refuses an entity with no canonical value. |
 | Security test | The redirect limit was unenforceable — the loop returned the final 302 as content and the raise after it was unreachable. Now a typed `TooManyRedirects`. |
 | Acceptance test | Evidence could cite only one finding (see above). |
+| Running the acceptance test alone | Collector registration depended on Python's module cache, so `load_builtin_collectors()` was a no-op after `reset_registry()` and could never restore the registry. Rendering a report called it, so in a process that had not yet imported the collector modules the first report registered all nine built-ins mid-request — changing which collectors the next investigation planned. Registration is now backed by a permanent catalogue and applied at one deterministic point per entry point; reports read source attribution from the run rows instead of the registry. |
 
 ### Known limitations and technical debt
 
@@ -331,6 +332,9 @@ now covered by a test:
 - **Docker images were not built during development** (no daemon available);
   the compose file validates and the Dockerfiles were reviewed statically.
 - **PDF reports are not implemented**, as planned; HTML prints cleanly.
+- **`source_attribution` is recorded per run**, so a report describes the
+  collectors as they were when they ran. Reports generated from runs created
+  before that column existed show a blank attribution column.
 - **The frontend has no component tests** — the API client and formatters are
   unit-tested, and the routes are verified end to end in a real browser, but
   rendering logic is not covered by unit tests.
