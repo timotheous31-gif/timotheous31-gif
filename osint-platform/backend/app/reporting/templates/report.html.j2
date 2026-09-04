@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{{ model.case_name }} — OSINT investigation report</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff; --fg: #16181d; --muted: #5c6370; --line: #e2e5ea;
+    --panel: #f7f8fa; --accent: #1f5fa9;
+    --likely: #1a7f4b; --probable: #8a6d00; --possible: #9a5b00; --weak: #6b7280;
+    --restricted: #a11c1c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --fg: #e6e8ec; --muted: #9aa1ad; --line: #2a2e36;
+      --panel: #1c1f26; --accent: #6ea8ff;
+      --likely: #4cc38a; --probable: #d9b03c; --possible: #e08a3c; --weak: #9aa1ad;
+      --restricted: #ff6b6b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1.25rem 4rem; background: var(--bg); color: var(--fg);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main { max-width: 62rem; margin: 0 auto; }
+  h1 { font-size: 1.7rem; margin: 0 0 .25rem; }
+  h2 { font-size: 1.2rem; margin: 2.5rem 0 .75rem; padding-bottom: .35rem; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 1rem; margin: 1.5rem 0 .5rem; }
+  p, li { margin: .4rem 0; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .86em; }
+  a { color: var(--accent); }
+  .sub { color: var(--muted); margin: 0 0 1.5rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: .75rem; margin: 1rem 0; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: .7rem .85rem; }
+  .stat .n { font-size: 1.5rem; font-weight: 600; display: block; }
+  .stat .l { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+  table { width: 100%; border-collapse: collapse; margin: .75rem 0; font-size: .9rem; }
+  .scroll { overflow-x: auto; }
+  th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .04em; }
+  .finding { border: 1px solid var(--line); border-radius: 8px; padding: .9rem 1rem; margin: .85rem 0; background: var(--panel); }
+  .finding h3 { margin-top: 0; }
+  .badge { display: inline-block; padding: .1rem .5rem; border-radius: 999px; font-size: .74rem;
+           font-weight: 600; border: 1px solid currentColor; }
+  .LIKELY_MATCH { color: var(--likely); } .PROBABLE_MATCH { color: var(--probable); }
+  .POSSIBLE_MATCH { color: var(--possible); } .WEAK_ASSOCIATION { color: var(--weak); }
+  .RESTRICTED, .SENSITIVE { color: var(--restricted); }
+  .reasons { margin: .5rem 0 .25rem; padding-left: 1.1rem; color: var(--muted); font-size: .88rem; }
+  .evidence { font-size: .84rem; color: var(--muted); margin-top: .5rem;
+              border-top: 1px dashed var(--line); padding-top: .5rem; }
+  .notice { border-left: 3px solid var(--accent); background: var(--panel); padding: .7rem .9rem;
+            margin: 1rem 0; font-size: .9rem; }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+        padding: .6rem .75rem; overflow-x: auto; font-size: .82rem; margin: .5rem 0 0; }
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--line);
+           color: var(--muted); font-size: .84rem; }
+  @media print { body { padding: 0; } .finding { break-inside: avoid; } }
+</style>
+</head>
+<body>
+<main>
+
+<h1>{{ model.case_name }}</h1>
+<p class="sub">
+  OSINT investigation report · case <span class="mono">{{ model.case_id }}</span> ·
+  status {{ model.case_status }} ·
+  generated {{ model.generated_at.strftime('%Y-%m-%d %H:%M UTC') }}
+  by osint-platform {{ model.platform_version }}
+</p>
+
+{% if model.case_description %}<p>{{ model.case_description }}</p>{% endif %}
+{% if model.case_tags %}<p class="sub">Tags: {{ model.case_tags | join(', ') }}</p>{% endif %}
+
+<div class="notice">
+  This report contains only information that was already published by its owner or by a public
+  registry. Every claim below links to a stored artefact identified by its SHA-256 hash, so it can
+  be independently re-verified. Read the <a href="#limitations">Limitations</a> section before
+  acting on anything here.
+</div>
+
+<h2 id="summary">Case summary</h2>
+<div class="grid">
+  {% for label, value in [
+      ('Targets', model.counts.targets), ('Findings', model.counts.findings),
+      ('Entities', model.counts.entities), ('Relationships', model.counts.relationships),
+      ('Evidence', model.counts.evidence), ('Timeline events', model.counts.timeline_events)] %}
+  <div class="stat"><span class="n">{{ value }}</span><span class="l">{{ label }}</span></div>
+  {% endfor %}
+</div>
+
+<h2 id="executive">Executive summary</h2>
+{% for line in model.executive_summary %}<p>{{ line }}</p>{% endfor %}
+
+<h2 id="targets">Targets</h2>
+{% if model.targets %}
+<div class="scroll"><table>
+  <thead><tr><th>Type</th><th>Normalised value</th><th>Original input</th><th>Status</th></tr></thead>
+  <tbody>
+  {% for target in model.targets %}
+    <tr>
+      <td>{{ target.type }}</td>
+      <td class="mono">{{ target.normalized_value }}</td>
+      <td class="mono">{{ target.raw_input }}</td>
+      <td>{{ target.status }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% else %}<p>No targets were added to this case.</p>{% endif %}
+
+<h2 id="key-findings">Key findings</h2>
+{% if model.key_findings %}
+  {% for finding in model.key_findings %}
+  <article class="finding" id="finding-{{ finding.id }}">
+    <h3>{{ finding.title }}</h3>
+    <p>
+      <span class="badge {{ finding.strength }}">{{ finding.strength.replace('_', ' ') }}
+        · {{ '%.2f' | format(finding.confidence) }}</span>
+      <span class="badge {{ finding.classification }}">{{ finding.classification }}</span>
+      <span class="mono">{{ finding.kind }}</span> ·
+      collector <span class="mono">{{ finding.collector }}</span>
+      {%- if finding.observed_at %} · observed {{ finding.observed_at.strftime('%Y-%m-%d') }}{% endif %}
+    </p>
+    {% if finding.summary %}<p>{{ finding.summary }}</p>{% endif %}
+    {% if finding.withheld %}
+      <p class="badge RESTRICTED">Content withheld by the export privacy policy</p>
+    {% elif finding.redacted %}
+      <p class="sub">Some values in this finding were redacted before storage.</p>
+    {% endif %}
+    {% if finding.confidence_reasons %}
+    <ul class="reasons">
+      {% for reason in finding.confidence_reasons %}<li>{{ reason }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+    <pre>{{ finding.data | tojson(indent=2) }}</pre>
+    <div class="evidence">
+      {% if finding.source_url %}Source: <a href="{{ finding.source_url }}" rel="noreferrer nofollow">{{ finding.source_url }}</a><br>{% endif %}
+      {% if finding.evidence %}
+        Evidence:
+        {% for ref in finding.evidence %}
+          <span class="mono" title="{{ ref.sha256 }}">sha256:{{ ref.short_hash }}</span>
+          (retrieved {{ ref.retrieved_at.strftime('%Y-%m-%d %H:%M UTC') }}){% if not loop.last %}, {% endif %}
+        {% endfor %}
+      {% else %}
+        <em>No stored artefact is attached to this finding.</em>
+      {% endif %}
+    </div>
+  </article>
+  {% endfor %}
+  {% if model.findings | length > model.key_findings | length %}
+  <p class="sub">
+    Showing the {{ model.key_findings | length }} highest-confidence of
+    {{ model.findings | length }} findings. The JSON report contains all of them.
+  </p>
+  {% endif %}
+{% else %}<p>No findings met the report's confidence threshold.</p>{% endif %}
+
+<h2 id="entities">Entities</h2>
+{% if model.entities %}
+<div class="scroll"><table>
+  <thead><tr><th>Type</th><th>Name</th><th>Canonical value</th><th>Confidence</th><th>Supported by</th></tr></thead>
+  <tbody>
+  {% for entity in model.entities %}
+    <tr id="entity-{{ entity.id }}">
+      <td>{{ entity.type }}</td>
+      <td>{{ entity.display_name }}</td>
+      <td class="mono">{{ entity.canonical_value }}</td>
+      <td>{{ '%.2f' | format(entity.confidence) }}</td>
+      <td>{{ entity.source_finding_ids | length }} finding(s)</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% else %}<p>No entities were derived.</p>{% endif %}
+
+<h2 id="relationships">Relationships</h2>
+{% if model.relationships %}
+<div class="scroll"><table>
+  <thead><tr><th>From</th><th>Relationship</th><th>To</th><th>Confidence</th><th>Why</th></tr></thead>
+  <tbody>
+  {% for edge in model.relationships %}
+    <tr>
+      <td>{{ edge.source_label }}</td>
+      <td><span class="mono">{{ edge.type }}</span></td>
+      <td>{{ edge.target_label }}</td>
+      <td><span class="badge {{ edge.strength }}">{{ '%.2f' | format(edge.confidence) }}</span></td>
+      <td>{% for reason in edge.confidence_reasons %}{{ reason }}{% if not loop.last %}; {% endif %}{% endfor %}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% else %}<p>No relationships were derived.</p>{% endif %}
+
+<h2 id="confidence">Confidence assessment</h2>
+<p>
+  Scores are produced by named rules and combined conservatively: several weak signals can raise a
+  score but never past what that class of evidence justifies. Mean finding confidence is
+  {{ '%.2f' | format(model.confidence.mean_finding_confidence) }}.
+</p>
+<div class="scroll"><table>
+  <thead><tr><th>Band</th><th>Range</th><th>Findings</th><th>Relationships</th></tr></thead>
+  <tbody>
+  {% for band, range_text in model.confidence.bands.items() %}
+    <tr>
+      <td><span class="badge {{ band }}">{{ band.replace('_', ' ') }}</span></td>
+      <td class="mono">{{ range_text }}</td>
+      <td>{{ model.confidence.finding_bands[band] }}</td>
+      <td>{{ model.confidence.relationship_bands[band] }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+
+<h2 id="timeline">Timeline</h2>
+{% if model.timeline %}
+<div class="scroll"><table>
+  <thead><tr><th>Date</th><th>Kind</th><th>Event</th><th>Collector</th></tr></thead>
+  <tbody>
+  {% for event in model.timeline %}
+    <tr>
+      <td class="mono">{{ event.occurred_at[:10] }}</td>
+      <td>{{ event.kind }}</td>
+      <td>{{ event.title }}</td>
+      <td class="mono">{{ event.collector }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% else %}<p>No dated events were recorded.</p>{% endif %}
+
+<h2 id="evidence">Evidence</h2>
+{% if model.evidence %}
+<p>
+  Each artefact is stored under its SHA-256 hash. Re-hashing the stored file reproduces the value
+  below; if it does not, the artefact has been altered since collection.
+</p>
+<div class="scroll"><table>
+  <thead><tr><th>SHA-256</th><th>Collector</th><th>Source</th><th>Retrieved</th><th>Redacted</th></tr></thead>
+  <tbody>
+  {% for ref in model.evidence %}
+    <tr>
+      <td class="mono" title="{{ ref.sha256 }}">{{ ref.short_hash }}…</td>
+      <td class="mono">{{ ref.collector }}</td>
+      <td class="mono">{{ ref.source_url or '—' }}</td>
+      <td class="mono">{{ ref.retrieved_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td>{{ 'yes' if ref.redacted else 'no' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% else %}<p>No evidence was stored.</p>{% endif %}
+
+<h2 id="sources">Sources</h2>
+{% if model.sources %}
+<div class="scroll"><table>
+  <thead><tr><th>Collector</th><th>Attribution</th><th>Runs</th><th>OK</th><th>Failed</th><th>Skipped</th><th>Findings</th></tr></thead>
+  <tbody>
+  {% for source in model.sources %}
+    <tr>
+      <td class="mono">{{ source.collector }} {{ source.version }}</td>
+      <td>{{ source.attribution or '—' }}</td>
+      <td>{{ source.runs }}</td><td>{{ source.successes }}</td>
+      <td>{{ source.failures }}</td><td>{{ source.skipped }}</td>
+      <td>{{ source.findings }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table></div>
+{% else %}<p>No collectors ran.</p>{% endif %}
+
+<h2 id="methodology">Methodology</h2>
+<ul>{% for line in model.methodology %}<li>{{ line }}</li>{% endfor %}</ul>
+
+<h2 id="limitations">Limitations</h2>
+<ul>{% for line in model.limitations %}<li>{{ line }}</li>{% endfor %}</ul>
+
+<footer>
+  Generated by osint-platform {{ model.platform_version }} on
+  {{ model.generated_at.strftime('%Y-%m-%d %H:%M UTC') }}.
+  Export policy: content above {{ model.policy.max_classification }} withheld
+  ({{ model.policy.withheld_findings }} finding(s));
+  minimum confidence {{ model.policy.min_confidence }}.
+</footer>
+
+</main>
+</body>
+</html>

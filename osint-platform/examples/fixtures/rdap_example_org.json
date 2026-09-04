@@ -1,0 +1,20 @@
+{
+  "objectClassName": "domain",
+  "ldhName": "example.org",
+  "status": ["active"],
+  "events": [
+    {"eventAction": "registration", "eventDate": "1995-08-31T04:00:00Z"},
+    {"eventAction": "expiration", "eventDate": "2026-08-30T04:00:00Z"}
+  ],
+  "nameservers": [{"ldhName": "a0.org.afilias-nst.info"}],
+  "entities": [
+    {
+      "roles": ["registrar"],
+      "vcardArray": ["vcard", [["version", {}, "text", "4.0"], ["fn", {}, "text", "Example Registrar LLC"]]]
+    },
+    {
+      "roles": ["registrant"],
+      "vcardArray": ["vcard", [["version", {}, "text", "4.0"], ["fn", {}, "text", "Example Documentation Trust"], ["org", {}, "text", "Example Documentation Trust"]]]
+    }
+  ]
+}

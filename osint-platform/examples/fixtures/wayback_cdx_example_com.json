@@ -1,0 +1,8 @@
+[
+  ["timestamp", "original", "statuscode", "mimetype", "digest"],
+  ["19970126045828", "http://example.com/", "200", "text/html", "AAAA1"],
+  ["20030412101500", "http://example.com/", "200", "text/html", "AAAA2"],
+  ["20140820120000", "http://www.example.com/index.html", "200", "text/html", "AAAA3"],
+  ["20200101000000", "https://example.com/", "200", "text/html", "AAAA4"],
+  ["20240615093000", "https://example.com/about", "200", "text/html", "AAAA5"]
+]

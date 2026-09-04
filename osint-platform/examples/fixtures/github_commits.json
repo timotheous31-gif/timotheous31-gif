@@ -1,0 +1,5 @@
+[
+  {"sha": "aaa111", "commit": {"author": {"name": "Example User", "email": "exampleuser@users.noreply.github.com", "date": "2025-01-09T16:58:52Z"}, "message": "Update README"}, "author": {"login": "exampleuser"}},
+  {"sha": "bbb222", "commit": {"author": {"name": "Example User", "date": "2024-12-30T09:10:00Z"}, "message": "Fix typo"}, "author": {"login": "exampleuser"}},
+  {"sha": "ccc333", "commit": {"author": {"name": "Second Contributor", "date": "2024-12-01T08:00:00Z"}, "message": "Add tests"}, "author": {"login": "contributor2"}}
+]

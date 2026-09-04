@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="OSINT platform">
+  <rect width="32" height="32" rx="7" fill="#1f5fa9"/>
+  <circle cx="14" cy="14" r="6.5" fill="none" stroke="#fff" stroke-width="2.4"/>
+  <line x1="18.8" y1="18.8" x2="25" y2="25" stroke="#fff" stroke-width="2.8" stroke-linecap="round"/>
+  <circle cx="14" cy="14" r="1.8" fill="#fff"/>
+</svg>
