@@ -1,0 +1,141 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Least privilege: nothing here needs to write to the repository.
+permissions:
+  contents: read
+
+# A new push supersedes an in-flight run for the same ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  backend:
+    name: Backend (lint, types, tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: osint-platform/backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: osint-platform/backend/pyproject.toml
+
+      - name: Install backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # Each check is its own step so a red run names the failure at a glance.
+      # The flags mirror `make lint`: scripts/ sits outside the backend, so the
+      # backend's configuration has to be named explicitly or ruff and black
+      # rediscover settings from a parent directory that has none.
+      - name: Ruff (backend)
+        run: ruff check .
+
+      - name: Ruff (scripts)
+        run: ruff check --config pyproject.toml ../scripts
+
+      - name: Black (backend)
+        run: black --check .
+
+      - name: Black (scripts)
+        run: black --check --config pyproject.toml ../scripts
+
+      - name: mypy
+        run: mypy app
+
+      # The suite is hermetic: SQLite in-memory via the portable GUID column
+      # type, an in-process cache, mocked HTTP transports, and an autouse
+      # fixture that answers DNS from a fixed table and raises on anything
+      # else. It needs no PostgreSQL and no Redis.
+      - name: pytest
+        run: pytest -q
+
+  frontend:
+    name: Frontend (typecheck, tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: osint-platform/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: osint-platform/frontend/package-lock.json
+
+      - name: Install frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: TypeScript typecheck
+        run: npm run typecheck
+
+      - name: Vitest
+        run: npm test
+
+  migrations:
+    name: Migrations (PostgreSQL)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: osint-platform/backend
+    # The test suite runs on SQLite, so nothing else in CI exercises the
+    # migration chain against the database the platform actually ships on —
+    # and the schema uses types that differ there (native uuid, JSONB).
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: osint
+          POSTGRES_PASSWORD: osint
+          POSTGRES_DB: osint
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://osint:osint@localhost:5432/osint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: osint-platform/backend/pyproject.toml
+
+      - name: Install backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Apply migrations
+        run: alembic upgrade head
+
+      - name: Models match migrations
+        # Fails if a model was changed without a migration to match.
+        run: alembic check
+
+      - name: Downgrade and re-apply
+        run: |
+          alembic downgrade base
+          alembic upgrade head
