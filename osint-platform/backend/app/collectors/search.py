@@ -15,6 +15,7 @@ import asyncio
 
 from app.collectors.base import (
     BaseCollector,
+    CollectorConfiguration,
     CollectorContext,
     CollectorResult,
     FindingDraft,
@@ -42,6 +43,7 @@ class SearchCollector(BaseCollector):
     supported_targets = [
         TargetType.DOMAIN,
         TargetType.ORGANIZATION,
+        TargetType.PERSON,
         TargetType.USERNAME,
         TargetType.EMAIL,
         TargetType.URL,
@@ -55,6 +57,25 @@ class SearchCollector(BaseCollector):
 
     def is_available(self) -> tuple[bool, str]:
         return get_search_provider(self.settings).is_available()
+
+    def configuration(self) -> CollectorConfiguration:
+        """Name the provider and the key it needs — never the key's value."""
+        provider = get_search_provider(self.settings)
+        configured, reason = provider.is_available()
+        required = ["SEARCH_PROVIDER"]
+        if provider.api_key_setting:
+            required.append(provider.api_key_setting.upper())
+        return CollectorConfiguration(
+            required_settings=required,
+            configured=configured,
+            mode=provider.key,
+            detail=(
+                f"Operational: querying {provider.display_name} "
+                f"with {provider.api_key_setting.upper()}."
+                if configured
+                else reason
+            ),
+        )
 
     def queries(self, target: NormalizedTarget) -> list[str]:
         """The queries to run for this target type.
@@ -70,6 +91,13 @@ class SearchCollector(BaseCollector):
         if target.type is TargetType.ORGANIZATION:
             display = str(target.attributes.get("display_name", value))
             return [f'"{display}"', f'"{display}" official site']
+        if target.type is TargetType.PERSON:
+            # Exactly one query: the name, quoted, and nothing else. Adding
+            # qualifiers ("<name> address", "<name> phone", "<name> employer")
+            # is how a name search turns into a dossier on a private person,
+            # which this platform does not build.
+            display = str(target.attributes.get("display_name", value))
+            return [f'"{display}"']
         if target.type is TargetType.USERNAME:
             return [f'"{value}"']
         if target.type is TargetType.EMAIL:
@@ -127,6 +155,8 @@ class SearchCollector(BaseCollector):
     def _normalize_result(
         self, item: SearchResult, query: str, target: NormalizedTarget
     ) -> list[FindingDraft]:
+        if target.type is TargetType.PERSON:
+            return [self._person_candidate(item, query, target)]
         # A search hit is weak on its own: it shows a page mentions the target.
         confidence = 0.5 if item.rank <= 3 else 0.4
         return [
@@ -153,3 +183,48 @@ class SearchCollector(BaseCollector):
                 dedupe_key=f"search:{item.url}",
             )
         ]
+
+    def _person_candidate(
+        self, item: SearchResult, query: str, target: NormalizedTarget
+    ) -> FindingDraft:
+        """One page that mentions the name — a candidate, not the person.
+
+        Searching a name returns pages about everyone who shares it. Each hit is
+        therefore recorded as its own candidate keyed on the page URL, so two
+        different people with the same name never collapse into one entity. The
+        confidence stays low by construction and the reasons say why.
+        """
+        display = str(target.attributes.get("display_name", target.value))
+        return FindingDraft(
+            kind=FindingKind.PERSON_CANDIDATE,
+            title=item.title or item.url,
+            summary=(
+                f"A page mentioning the name {display!r}. This may be a different "
+                f"person of the same name."
+            ),
+            data={
+                "url": item.url,
+                "host": item.host,
+                "title": item.title,
+                "snippet": item.snippet,
+                "rank": item.rank,
+                "query": query,
+                "provider": item.provider,
+                "subject_name": display,
+                "subject_value": target.value,
+                # Consumed by extraction to key the candidate on the page rather
+                # than on the name.
+                "candidate_key": item.url,
+            },
+            source_url=item.url,
+            # Deliberately below the POSSIBLE_MATCH band: a name match is not
+            # an identification, however highly the provider ranked the page.
+            confidence=0.2,
+            confidence_reasons=[
+                f"Returned at rank {item.rank} by {item.provider} for {query!r}",
+                "Matched on displayed name only; personal names are not unique",
+                "Kept as a separate candidate until independent evidence links it",
+            ],
+            classification=Classification.PERSONAL,
+            dedupe_key=f"person-candidate:{target.value}:{item.url}",
+        )

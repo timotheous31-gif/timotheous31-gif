@@ -105,8 +105,16 @@ def collector_metadata() -> list[dict]:
     settings = get_settings()
     entries = []
     for cls in all_collector_classes():
-        available, reason = cls(settings).is_available()
-        entries.append({**cls.metadata(), "available": available, "unavailable_reason": reason})
+        collector = cls(settings)
+        available, reason = collector.is_available()
+        entries.append(
+            {
+                **cls.metadata(),
+                "available": available,
+                "unavailable_reason": reason,
+                "configuration": collector.configuration().as_dict(),
+            }
+        )
     return entries
 
 

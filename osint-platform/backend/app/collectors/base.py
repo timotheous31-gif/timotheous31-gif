@@ -105,6 +105,37 @@ class CollectorResult:
 
 
 @dataclass(slots=True)
+class CollectorConfiguration:
+    """How a collector is configured right now, for the operator-facing UI.
+
+    This carries setting *names* and a status — never a credential value, and
+    never anything derived from one. It exists so that "search is skipped" can
+    be answered with "set SEARCH_PROVIDER and BRAVE_API_KEY" instead of leaving
+    an investigator to guess which of three keys the platform wanted.
+    """
+
+    #: Settings that must be present before the collector can run at all.
+    required_settings: list[str] = field(default_factory=list)
+    #: Settings that change how the collector runs but are not required.
+    optional_settings: list[str] = field(default_factory=list)
+    #: True when every required setting is present.
+    configured: bool = True
+    #: Short label for the operating mode ("unauthenticated", "brave", ...).
+    mode: str = ""
+    #: One sentence an operator can act on.
+    detail: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "required_settings": list(self.required_settings),
+            "optional_settings": list(self.optional_settings),
+            "configured": self.configured,
+            "mode": self.mode,
+            "detail": self.detail,
+        }
+
+
+@dataclass(slots=True)
 class CollectorContext:
     """Ambient state a collector may consult during a run."""
 
@@ -165,6 +196,15 @@ class BaseCollector(abc.ABC):
         available, reason = self.is_available()
         if not available:
             raise CollectorUnavailable(reason or f"{self.name} is not available")
+
+    def configuration(self) -> CollectorConfiguration:
+        """Which settings this collector uses, and whether they are present.
+
+        Collectors that read a credential override this so the Collectors and
+        Settings pages can name the variable to set. Overrides must return
+        setting names and status only.
+        """
+        return CollectorConfiguration()
 
     # -------------------------------------------------------------- contract
 

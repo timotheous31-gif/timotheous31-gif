@@ -699,6 +699,96 @@ def _handle_search_result(finding: Any, result: ExtractionResult) -> None:
     site.attributes.setdefault("discovered_via", "search")
 
 
+def _handle_person_candidate(finding: Any, result: ExtractionResult) -> None:
+    """Turn one name-matching page into a candidate, kept apart from the subject.
+
+    Two entities, never one. The *subject* is the person the case is about. Each
+    *candidate* is keyed on the page that mentions the name, so ten pages about
+    ten different people who share a name produce ten candidates rather than one
+    merged persona. They are joined by a ``POSSIBLY_SAME_ENTITY`` edge carrying
+    the ``same_person_name`` signal, whose ceiling (0.30) sits far below the
+    auto-merge threshold (0.95) — so no accumulation of name matches can ever
+    cause the resolver to fuse them. Only independent evidence, arriving through
+    another rule, can raise the association.
+    """
+    data = finding.data
+    url = str(data.get("url", ""))
+    subject_value = str(data.get("subject_value", "")).strip()
+    subject_name = str(data.get("subject_name", "")).strip() or subject_value
+    if not url or not subject_value:
+        return
+
+    subject = result.add_entity(
+        EntityDraft(
+            type=EntityType.PERSONA,
+            canonical_value=f"person:{subject_value}",
+            display_name=subject_name,
+            attributes={"role": "subject", "name": subject_name},
+            source_finding_ids=[finding.id],
+        )
+    )
+
+    host = str(data.get("host", "")) or (urlsplit(url).hostname or "")
+    candidate = result.add_entity(
+        EntityDraft(
+            type=EntityType.PERSONA,
+            # Keyed on the page, not the name: that is what keeps same-name
+            # candidates from collapsing into each other.
+            canonical_value=f"person-candidate:{url}",
+            display_name=f"{subject_name} (candidate on {host})" if host else subject_name,
+            attributes={
+                "role": "candidate",
+                "name_as_searched": subject_name,
+                "reference_url": url,
+                "reference_title": data.get("title"),
+                "host": host,
+                # Nothing here establishes identity; say so on the node itself
+                # so it survives into the graph view and the report.
+                "identity_established": False,
+            },
+            signals=[default_engine.signal("same_person_name")],
+            source_finding_ids=[finding.id],
+        )
+    )
+
+    page = result.add_entity(_website_entity(url, finding, "search_reference"))
+    page.attributes.setdefault("title", data.get("title"))
+    page.attributes.setdefault("discovered_via", "search")
+
+    result.add_relationship(
+        RelationshipDraft(
+            source=candidate.key,
+            target=page.key,
+            type=RelationshipType.REFERENCED_BY,
+            signals=[default_engine.signal("search_reference")],
+            evidence_finding_ids=[finding.id],
+            collector=finding.collector,
+            source_url=finding.source_url,
+            attributes={"rank": data.get("rank"), "provider": data.get("provider")},
+        )
+    )
+    result.add_relationship(
+        RelationshipDraft(
+            source=subject.key,
+            target=candidate.key,
+            type=RelationshipType.POSSIBLY_SAME_ENTITY,
+            signals=[
+                default_engine.signal(
+                    "same_person_name",
+                    detail=f"found by searching {subject_name!r}",
+                )
+            ],
+            evidence_finding_ids=[finding.id],
+            collector=finding.collector,
+            source_url=finding.source_url,
+            attributes={
+                "basis": "name_match_only",
+                "requires_corroboration": True,
+            },
+        )
+    )
+
+
 def _username_signal_key(username: str) -> str:
     """Distinctive handles are worth more than short, common ones."""
     return "same_unique_username" if len(username) >= 6 else "same_common_username"
@@ -729,4 +819,5 @@ _HANDLERS = {
     FindingKind.USERNAME_PRESENCE: _handle_username_presence,
     FindingKind.EMAIL_DOMAIN: _handle_email,
     FindingKind.SEARCH_RESULT: _handle_search_result,
+    FindingKind.PERSON_CANDIDATE: _handle_person_candidate,
 }

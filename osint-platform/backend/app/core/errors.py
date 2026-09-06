@@ -35,6 +35,19 @@ class ValidationError(OsintError):
     code = "validation_error"
 
 
+class AmbiguousTargetError(ValidationError):
+    """The input's type cannot be determined from its shape alone.
+
+    Raised for name-shaped free text, which reads identically whether it names
+    a person or an organisation. Guessing is the wrong answer: it silently
+    files a human being under the wrong type and runs the wrong collectors
+    against them. The caller is asked to choose instead, and ``detail`` carries
+    the candidate types so a UI can offer exactly those.
+    """
+
+    code = "ambiguous_target_type"
+
+
 class NotFoundError(OsintError):
     """A requested resource does not exist."""
 

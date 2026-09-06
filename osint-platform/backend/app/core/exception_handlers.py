@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.errors import (
+    AmbiguousTargetError,
     ConfigurationError,
     ConflictError,
     NotFoundError,
@@ -25,6 +26,8 @@ log = get_logger(__name__)
 _STATUS_BY_ERROR: dict[type[OsintError], int] = {
     NotFoundError: status.HTTP_404_NOT_FOUND,
     ValidationError: 422,
+    # A subclass of ValidationError, but the table is keyed on the exact type.
+    AmbiguousTargetError: 422,
     ConflictError: status.HTTP_409_CONFLICT,
     ConfigurationError: status.HTTP_503_SERVICE_UNAVAILABLE,
     PolicyError: status.HTTP_403_FORBIDDEN,

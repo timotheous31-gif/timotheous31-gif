@@ -194,6 +194,7 @@ def target_add(
     username: Annotated[str | None, typer.Option("--username")] = None,
     email: Annotated[str | None, typer.Option("--email")] = None,
     url: Annotated[str | None, typer.Option("--url")] = None,
+    person: Annotated[str | None, typer.Option("--person")] = None,
     org: Annotated[str | None, typer.Option("--org", "--organization")] = None,
     ip: Annotated[str | None, typer.Option("--ip")] = None,
     repository: Annotated[str | None, typer.Option("--repo", "--repository")] = None,
@@ -215,6 +216,7 @@ def target_add(
         username=username,
         email=email,
         url=url,
+        person=person,
         org=org,
         ip=ip,
         repository=repository,
@@ -266,6 +268,7 @@ def investigate(
     username: Annotated[str | None, typer.Option("--username")] = None,
     email: Annotated[str | None, typer.Option("--email")] = None,
     url: Annotated[str | None, typer.Option("--url")] = None,
+    person: Annotated[str | None, typer.Option("--person")] = None,
     org: Annotated[str | None, typer.Option("--org", "--organization")] = None,
     ip: Annotated[str | None, typer.Option("--ip")] = None,
     repository: Annotated[str | None, typer.Option("--repo", "--repository")] = None,
@@ -296,6 +299,7 @@ def investigate(
         username=username,
         email=email,
         url=url,
+        person=person,
         org=org,
         ip=ip,
         repository=repository,
@@ -445,6 +449,7 @@ def _single_target(**kwargs: str | None) -> tuple[str, TargetType | None]:
         "username": TargetType.USERNAME,
         "email": TargetType.EMAIL,
         "url": TargetType.URL,
+        "person": TargetType.PERSON,
         "org": TargetType.ORGANIZATION,
         "ip": TargetType.IP,
         "repository": TargetType.REPOSITORY,
@@ -452,7 +457,7 @@ def _single_target(**kwargs: str | None) -> tuple[str, TargetType | None]:
     supplied = [(key, value) for key, value in kwargs.items() if value]
     if not supplied:
         raise typer.BadParameter(
-            "Provide a target value, or one of --domain/--username/--email/--url/"
+            "Provide a target value, or one of --domain/--username/--email/--url/--person/"
             "--org/--ip/--repo"
         )
     if len(supplied) > 1:

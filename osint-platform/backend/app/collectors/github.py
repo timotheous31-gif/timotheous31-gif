@@ -25,6 +25,7 @@ from dateutil import parser as date_parser
 
 from app.collectors.base import (
     BaseCollector,
+    CollectorConfiguration,
     CollectorContext,
     CollectorResult,
     FindingDraft,
@@ -66,19 +67,52 @@ class GitHubCollector(BaseCollector):
     default_confidence = 0.9
     source_attribution = "GitHub public REST API"
 
+    def _token(self) -> str:
+        """The configured token, or ``""`` when there is none.
+
+        A present-but-blank secret is treated as absent. Settings already
+        normalises those to ``None``; this second check keeps the collector
+        correct even when it is constructed with a hand-built ``Settings``.
+        """
+        secret = self.settings.github_token
+        return secret.get_secret_value().strip() if secret is not None else ""
+
     def _headers(self) -> dict[str, str]:
         headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
-        token = self.settings.github_token
-        if token is not None:
-            headers["Authorization"] = f"Bearer {token.get_secret_value()}"
+        token = self._token()
+        # Never emit `Authorization: Bearer ` with no credential: it is not a
+        # weaker request, it is an illegal header value that fails the request
+        # before it is sent. Unauthenticated access is a supported mode here.
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         return headers
 
     def is_available(self) -> tuple[bool, str]:
         """Always available; a token only raises the rate limit."""
         return True, ""
+
+    def configuration(self) -> CollectorConfiguration:
+        """Report the authentication mode, never the token."""
+        authenticated = bool(self._token())
+        return CollectorConfiguration(
+            optional_settings=["GITHUB_TOKEN"],
+            # Nothing is *required*: anonymous access to these endpoints is a
+            # supported mode, not a degraded one.
+            configured=authenticated,
+            mode="authenticated" if authenticated else "unauthenticated",
+            detail=(
+                "GITHUB_TOKEN is set; the public REST API allows 5000 requests/hour."
+                if authenticated
+                else (
+                    "No GITHUB_TOKEN set. Public GitHub endpoints are queried "
+                    "anonymously at 60 requests/hour. Set a read-only token to "
+                    "raise that limit."
+                )
+            ),
+        )
 
     async def collect(self, target: NormalizedTarget, ctx: CollectorContext) -> CollectorResult:
         if target.type is TargetType.REPOSITORY:
@@ -98,7 +132,7 @@ class GitHubCollector(BaseCollector):
 
     async def _collect_account(self, target: NormalizedTarget) -> CollectorResult:
         login = self._login(target)
-        result = CollectorResult(stats={"login": login})
+        result = CollectorResult(stats={"login": login, "authenticated": bool(self._token())})
         if not login:
             result.notes.append(f"{target.value} is not a GitHub identity")
             return result
@@ -178,7 +212,9 @@ class GitHubCollector(BaseCollector):
     async def _collect_repository(self, target: NormalizedTarget) -> CollectorResult:
         owner = str(target.attributes.get("owner", ""))
         name = str(target.attributes.get("name", ""))
-        result = CollectorResult(stats={"repository": f"{owner}/{name}"})
+        result = CollectorResult(
+            stats={"repository": f"{owner}/{name}", "authenticated": bool(self._token())}
+        )
         if target.attributes.get("platform") != "github" or not owner or not name:
             result.notes.append(f"{target.value} is not a public GitHub repository reference")
             return result

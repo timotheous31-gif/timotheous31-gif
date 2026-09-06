@@ -253,6 +253,20 @@ class RunResponse(BaseModel):
     dispatch: dict
 
 
+class CollectorConfigurationInfo(BaseModel):
+    """Which settings a collector uses, and whether they are present.
+
+    Names and status only. No endpoint on this platform ever returns a
+    credential value, or anything derived from one.
+    """
+
+    required_settings: list[str] = Field(default_factory=list)
+    optional_settings: list[str] = Field(default_factory=list)
+    configured: bool = True
+    mode: str = ""
+    detail: str = ""
+
+
 class CollectorInfo(BaseModel):
     name: str
     version: str
@@ -266,3 +280,4 @@ class CollectorInfo(BaseModel):
     network: bool
     available: bool
     unavailable_reason: str
+    configuration: CollectorConfigurationInfo = Field(default_factory=CollectorConfigurationInfo)

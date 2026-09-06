@@ -16,7 +16,7 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 import idna
 
-from app.core.errors import ValidationError
+from app.core.errors import AmbiguousTargetError, ValidationError
 from app.models.enums import TargetType
 
 #: Conservative username charset shared by the platforms we check.
@@ -69,6 +69,9 @@ def normalize_target(raw: str, target_type: TargetType | None = None) -> Normali
     """Normalise ``raw``, detecting its type when not supplied.
 
     Raises:
+        AmbiguousTargetError: ``target_type`` was omitted and the input is
+            name-shaped free text, which could name a person or an
+            organisation. Pass the type explicitly to resolve it.
         ValidationError: the input is empty, over-long or not valid for its type.
     """
     if raw is None:
@@ -87,7 +90,13 @@ def normalize_target(raw: str, target_type: TargetType | None = None) -> Normali
 
 
 def detect_type(text: str) -> TargetType:
-    """Infer the target type from the shape of ``text``."""
+    """Infer the target type from the shape of ``text``.
+
+    Only shapes that identify their own type are inferred: URLs, domains, IP
+    addresses, email addresses, ``owner/repo`` references, profile URLs and
+    ``@handles``. Free text is *not* one of those, and this raises rather than
+    guessing — see :class:`AmbiguousTargetError`.
+    """
     candidate = text.strip()
 
     if _SCHEME_PREFIX.match(candidate) or _looks_like_web_reference(candidate):
@@ -133,7 +142,15 @@ def detect_type(text: str) -> TargetType:
     if USERNAME_RE.match(candidate):
         return TargetType.USERNAME
 
-    return TargetType.ORGANIZATION
+    # Everything structured has been ruled out, so what is left is free text —
+    # "Timotheous Samar", "Example Corporation", "the Ministry of Health". Its
+    # shape says nothing about whether it names a person or an organisation,
+    # and the two are investigated very differently, so the caller decides.
+    raise AmbiguousTargetError(
+        f"{text.strip()!r} could name either a person or an organisation. "
+        f"Choose a target type explicitly.",
+        detail={"candidates": [str(TargetType.PERSON), str(TargetType.ORGANIZATION)]},
+    )
 
 
 # --------------------------------------------------------------------- helpers
@@ -357,6 +374,38 @@ def _normalize_social_profile(text: str) -> NormalizedTarget:
     )
 
 
+def _normalize_person(text: str) -> NormalizedTarget:
+    """Normalise a personal name.
+
+    The canonical form only folds case, whitespace and punctuation so that
+    "Timotheous  Samar" and "Timotheous Samar" are one target. It deliberately
+    does no further cleverness — no initial expansion, no nickname table, no
+    transliteration — because every one of those would merge distinct people
+    who happen to write their name similarly.
+    """
+    collapsed = re.sub(r"\s+", " ", text.strip())
+    if len(collapsed) < 2:
+        raise ValidationError("A person's name must be at least 2 characters")
+    simplified = re.sub(r"[^\w\s'\-]+", "", collapsed.lower(), flags=re.UNICODE)
+    simplified = re.sub(r"\s+", " ", simplified).strip()
+    if not simplified:
+        raise ValidationError(f"{text!r} does not contain a usable name")
+    parts = simplified.split(" ")
+    return NormalizedTarget(
+        TargetType.PERSON,
+        text,
+        simplified,
+        {
+            "display_name": collapsed,
+            "name_parts": parts,
+            # A name is not an identifier. Anything consuming a PERSON target
+            # has to treat every match as a candidate until other evidence
+            # connects it, and this flag makes that explicit downstream.
+            "is_identifier": False,
+        },
+    )
+
+
 def _normalize_organization(text: str) -> NormalizedTarget:
     collapsed = re.sub(r"\s+", " ", text.strip())
     if len(collapsed) < 2:
@@ -383,6 +432,7 @@ def _is_ip(value: str) -> bool:
 
 _HANDLERS = {
     TargetType.USERNAME: _normalize_username,
+    TargetType.PERSON: _normalize_person,
     TargetType.DOMAIN: _normalize_domain,
     TargetType.EMAIL: _normalize_email,
     TargetType.URL: _normalize_url,

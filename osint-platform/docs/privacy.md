@@ -108,6 +108,36 @@ because their handles match.
   human to accept or reject.
 - Every report repeats this in its Limitations section.
 
+## Named people
+
+A personal name is not an identifier, and the platform is built so that no code
+path can quietly treat one as though it were.
+
+- **A name is never classified for you.** Free text has no inferable type —
+  "Timotheous Samar" and "Example Corporation" read identically — so the API
+  refuses it with `ambiguous_target_type` and the investigator states whether it
+  is a `PERSON` or an `ORGANIZATION`. Guessing would file a human being under
+  the wrong type and run the wrong collectors against them.
+- **Only name-appropriate collection runs.** A `PERSON` target schedules the
+  search collector alone. No DNS, RDAP, certificate-transparency or
+  HTTP-metadata lookup is pointed at a personal name, and no GitHub login is
+  guessed by deleting the spaces from one.
+- **One query, unqualified.** The search collector asks for the quoted name and
+  nothing else. Appending "address", "phone" or "employer" is how a name search
+  becomes a dossier, so those queries do not exist in the code.
+- **Same-name results stay separate.** Each result becomes its own candidate,
+  keyed on the page that mentions the name rather than on the name itself. Ten
+  pages about ten different people who share a name produce ten candidates, not
+  one merged persona.
+- **The link says what it rests on.** A candidate is joined to the subject by
+  `POSSIBLY_SAME_ENTITY` carrying the `same_person_name` signal, capped at 0.30
+  — far below the 0.95 auto-merge threshold — with
+  `basis: name_match_only` and `requires_corroboration: true` on the edge.
+  `tests/unit/test_person_targets.py` asserts that no accumulation of name
+  matches can reach the merge threshold.
+- **Reports say so on their face.** A report for a case with a `PERSON` target
+  carries these limitations at the top of its Limitations section.
+
 ## Logging and retention
 
 Structured logs carry investigation context and never credentials: a processor

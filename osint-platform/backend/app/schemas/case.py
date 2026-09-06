@@ -76,7 +76,10 @@ class CaseSummary(BaseModel):
 class TargetCreate(BaseModel):
     """Add a target to a case.
 
-    ``type`` may be omitted: the platform infers it from the input's shape.
+    ``type`` may be omitted for input whose shape identifies it — a domain,
+    URL, IP address, email address, ``owner/repo`` or ``@handle``. A bare name
+    is not such a shape: it is rejected as ambiguous, and must be resent with
+    ``type`` set to PERSON or ORGANIZATION.
     """
 
     value: str = Field(min_length=1, max_length=1024, examples=["example.com"])
@@ -112,9 +115,18 @@ class TargetUpdate(BaseModel):
 
 
 class NormalizationPreview(BaseModel):
-    """What the platform would store for a given raw input."""
+    """What the platform would store for a given raw input.
+
+    When the input is name-shaped free text its type cannot be inferred, so
+    ``ambiguous`` is true, ``type`` and ``normalized_value`` are empty, and
+    ``candidates`` lists the types the caller must choose between. The preview
+    reports that state rather than erroring, so a UI can offer the choice.
+    """
 
     raw_input: str
-    type: TargetType
-    normalized_value: str
-    attributes: dict
+    type: TargetType | None = None
+    normalized_value: str = ""
+    attributes: dict = Field(default_factory=dict)
+    ambiguous: bool = False
+    candidates: list[TargetType] = Field(default_factory=list)
+    message: str = ""

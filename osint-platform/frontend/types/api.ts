@@ -12,6 +12,8 @@ export type TargetType =
   | "USERNAME"
   | "DOMAIN"
   | "EMAIL"
+  /** A named natural person. Never inferred — the investigator selects it. */
+  | "PERSON"
   | "ORGANIZATION"
   | "URL"
   | "IP"
@@ -268,6 +270,21 @@ export interface RunResponse {
   dispatch: Record<string, unknown>;
 }
 
+/**
+ * Which settings a collector uses and whether they are present.
+ *
+ * Names and status only — the API never returns a credential value, so there is
+ * nothing here that could leak one into the DOM or a log.
+ */
+export interface CollectorConfiguration {
+  required_settings: string[];
+  optional_settings: string[];
+  configured: boolean;
+  /** Short label for the operating mode: "unauthenticated", "brave", … */
+  mode: string;
+  detail: string;
+}
+
 export interface CollectorInfo {
   name: string;
   version: string;
@@ -281,6 +298,23 @@ export interface CollectorInfo {
   network: boolean;
   available: boolean;
   unavailable_reason: string;
+  configuration: CollectorConfiguration;
+}
+
+/**
+ * What the backend would store for a raw input.
+ *
+ * `ambiguous` inputs have no inferable type: `type` is null and `candidates`
+ * holds the types the investigator must choose between.
+ */
+export interface NormalizationPreview {
+  raw_input: string;
+  type: TargetType | null;
+  normalized_value: string;
+  attributes: Record<string, unknown>;
+  ambiguous: boolean;
+  candidates: TargetType[];
+  message: string;
 }
 
 export interface Page<T> {
