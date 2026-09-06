@@ -151,6 +151,33 @@ DEFAULT_RULES: dict[str, ConfidenceRule] = {
             ceiling=0.30,
         ),
         ConfidenceRule(
+            "context_profile_url_match",
+            0.85,
+            "This is a profile URL the investigator supplied for the subject, so the "
+            "association is asserted by them rather than inferred",
+            ceiling=0.90,
+        ),
+        ConfidenceRule(
+            "context_username_match",
+            0.65,
+            "The account handle matches one the investigator supplied as known for " "the subject",
+            ceiling=0.80,
+        ),
+        ConfidenceRule(
+            "context_affiliation_match",
+            0.50,
+            "The affiliation this source publishes matches one the investigator "
+            "supplied, which is independent of the name itself",
+            ceiling=0.70,
+        ),
+        ConfidenceRule(
+            "context_location_match",
+            0.25,
+            "The place this source publishes matches the one supplied, which many "
+            "unrelated people of the same name may also share",
+            ceiling=0.45,
+        ),
+        ConfidenceRule(
             "weak_name_similarity",
             0.25,
             "The display names are similar, which is weak evidence on its own",

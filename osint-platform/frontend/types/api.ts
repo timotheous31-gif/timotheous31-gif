@@ -307,6 +307,21 @@ export interface CollectorInfo {
  * `ambiguous` inputs have no inferable type: `type` is null and `candidates`
  * holds the types the investigator must choose between.
  */
+/**
+ * Optional context an investigator can attach to a PERSON target.
+ *
+ * Used only to judge candidates a public source already returned — never sent
+ * to a source as an extra search term, and never stored as a finding.
+ */
+export interface PersonContext {
+  known_usernames?: string[];
+  profile_urls?: string[];
+  organizations?: string[];
+  schools?: string[];
+  country?: string | null;
+  city?: string | null;
+}
+
 export interface NormalizationPreview {
   raw_input: string;
   type: TargetType | null;

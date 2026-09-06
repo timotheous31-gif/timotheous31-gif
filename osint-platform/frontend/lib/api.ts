@@ -21,6 +21,7 @@ import type {
   Job,
   NormalizationPreview,
   Page,
+  PersonContext,
   Relationship,
   RunResponse,
   Target,
@@ -130,7 +131,10 @@ export const api = {
 
   listTargets: (caseId: string, query?: Query) =>
     request<Page<Target>>(`/cases/${caseId}/targets`, { query }),
-  addTarget: (caseId: string, payload: { value: string; type?: TargetType | null }) =>
+  addTarget: (
+    caseId: string,
+    payload: { value: string; type?: TargetType | null; context?: PersonContext | null },
+  ) =>
     request<Target>(`/cases/${caseId}/targets`, {
       method: "POST",
       body: JSON.stringify(payload),

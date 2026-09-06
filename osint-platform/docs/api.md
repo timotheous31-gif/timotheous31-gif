@@ -202,11 +202,59 @@ POST /api/v1/cases/{case_id}/targets/preview   {"value": "Timotheous Samar"}
        "candidates": ["PERSON", "ORGANIZATION"], "message": "…"}
 ```
 
-A `PERSON` target schedules only the search collector. No DNS, RDAP,
+A `PERSON` target schedules only name-appropriate collectors. No DNS, RDAP,
 certificate-transparency or HTTP-metadata lookup is pointed at a personal name,
-and each result is stored as its own candidate: pages naming two different
+and each result is stored as its own candidate: records naming two different
 people who share a name stay two entities, linked to the subject by
 `POSSIBLY_SAME_ENTITY` at a ceiling far below the auto-merge threshold.
+
+### Free person sources
+
+Seven collectors run for a `PERSON` and none of them needs an API key, so a
+person investigation costs nothing:
+
+| Collector | Source | What a candidate is |
+|---|---|---|
+| `orcid` | ORCID public API | A researcher record carrying the name |
+| `openalex` | OpenAlex (CC0) | An author record, often with an institution and ORCID iD |
+| `crossref` | Crossref REST API | A publication crediting the name |
+| `wikidata` | Wikidata / Wikipedia | An item about a *human* (P31=Q5) carrying the name |
+| `github_people` | GitHub user search | A public account whose profile name matches |
+| `reddit` | Reddit public search | A public account, where Reddit allows anonymous access |
+| `person_usernames` | Platform profile pages | A profile that exists for a handle *you supplied* |
+
+`search` is the only paid collector, and nothing depends on it. With
+`SEARCH_PROVIDER=none` it is recorded `SKIPPED` with its reason and the free
+sources still run.
+
+### Person context
+
+A `PERSON` target accepts optional `context` that narrows the judgement — never
+the search:
+
+```json
+POST /api/v1/cases/{case_id}/targets
+{
+  "value": "Timotheous Samar",
+  "type": "PERSON",
+  "context": {
+    "known_usernames": ["exampleuser"],
+    "profile_urls": ["https://github.com/exampleuser"],
+    "organizations": ["Example Ltd"],
+    "schools": ["Example University"],
+    "city": "Delft",
+    "country": "Netherlands"
+  }
+}
+```
+
+Context is only ever used to corroborate or rule out a candidate a public source
+already returned. It is never sent to a source as an extra search term, and
+`person_usernames` checks only the handles it was given — it never derives one
+from a name. Every candidate records `match_reasons`, `mismatch_reasons` and
+`corroborated_by`, so the reasoning is auditable in the API, the graph and the
+report. Corroboration raises a candidate's confidence but cannot reach the
+auto-merge threshold: a candidate stays a candidate.
 
 ## Example: a full investigation with curl
 

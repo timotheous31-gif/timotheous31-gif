@@ -43,15 +43,22 @@ log = get_logger(__name__)
 
 #: Module names under ``app.collectors`` that declare a built-in collector.
 BUILTIN_MODULES: tuple[str, ...] = (
+    "crossref",
     "ctlog",
     "dns",
     "email",
     "github",
+    "github_people",
     "http_meta",
+    "openalex",
+    "orcid",
+    "person_usernames",
     "rdap",
+    "reddit",
     "search",
     "username",
     "wayback",
+    "wikidata",
 )
 
 #: Every collector class declared in this process. Never cleared.

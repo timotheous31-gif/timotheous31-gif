@@ -73,6 +73,45 @@ class CaseSummary(BaseModel):
     last_run_at: datetime | None = None
 
 
+class PersonContext(BaseModel):
+    """Optional, user-supplied context that narrows a PERSON investigation.
+
+    Everything here is something the investigator already knows and is willing
+    to state. It is never inferred, never derived from a collector, and never
+    used to *find* new personal information — only to judge whether a candidate
+    that a public source returned is plausibly the same person. That is the
+    difference between narrowing a name search and enriching a dossier.
+
+    Deliberately absent: date of birth, address, phone number, employer history
+    and anything else whose only purpose would be to identify a private person
+    more precisely than public sources already do.
+    """
+
+    #: Handles the investigator already knows. Checked directly; never guessed.
+    known_usernames: list[str] = Field(default_factory=list, max_length=20)
+    #: Public profile URLs the investigator already has.
+    profile_urls: list[str] = Field(default_factory=list, max_length=20)
+    #: Employers, institutions or groups, used to corroborate affiliations.
+    organizations: list[str] = Field(default_factory=list, max_length=20)
+    schools: list[str] = Field(default_factory=list, max_length=20)
+    #: Coarse location only. City and country corroborate; nothing finer is
+    #: accepted, because a street address is not corroboration, it is tracking.
+    country: str | None = Field(default=None, max_length=100)
+    city: str | None = Field(default=None, max_length=100)
+
+    def is_empty(self) -> bool:
+        return not any(
+            (
+                self.known_usernames,
+                self.profile_urls,
+                self.organizations,
+                self.schools,
+                self.country,
+                self.city,
+            )
+        )
+
+
 class TargetCreate(BaseModel):
     """Add a target to a case.
 
@@ -86,6 +125,8 @@ class TargetCreate(BaseModel):
     type: TargetType | None = None
     notes: str | None = Field(default=None, max_length=5000)
     tags: list[str] = Field(default_factory=list, max_length=32)
+    #: Only meaningful for PERSON targets; ignored for every other type.
+    context: PersonContext | None = None
 
 
 class TargetBulkCreate(BaseModel):

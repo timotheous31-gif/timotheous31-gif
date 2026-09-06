@@ -215,6 +215,22 @@ class SearchCollector(BaseCollector):
                 # Consumed by extraction to key the candidate on the page rather
                 # than on the name.
                 "candidate_key": item.url,
+                # Same shape the free PERSON collectors emit, so the UI renders
+                # every candidate the same way whoever found it.
+                "source": self.name,
+                "source_label": "Web search",
+                "candidate_name": item.title or item.url,
+                "identifiers": {},
+                "affiliations": [],
+                "locations": [],
+                "match_reasons": [
+                    f"A search for {display!r} returned this page at rank {item.rank}",
+                ],
+                "mismatch_reasons": [
+                    "A search engine matched text on the page, which may name a "
+                    "different person of the same name",
+                ],
+                "corroborated_by": [],
             },
             source_url=item.url,
             # Deliberately below the POSSIBLE_MATCH band: a name match is not

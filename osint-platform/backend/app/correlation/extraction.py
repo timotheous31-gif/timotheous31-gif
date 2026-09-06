@@ -699,6 +699,16 @@ def _handle_search_result(finding: Any, result: ExtractionResult) -> None:
     site.attributes.setdefault("discovered_via", "search")
 
 
+#: Corroboration kinds a PERSON collector may report, and the confidence rule
+#: each one fires. Anything not in this table is ignored rather than trusted.
+_CORROBORATION = {
+    "profile_url": "context_profile_url_match",
+    "username": "context_username_match",
+    "affiliation": "context_affiliation_match",
+    "location": "context_location_match",
+}
+
+
 def _handle_person_candidate(finding: Any, result: ExtractionResult) -> None:
     """Turn one name-matching page into a candidate, kept apart from the subject.
 
@@ -728,6 +738,15 @@ def _handle_person_candidate(finding: Any, result: ExtractionResult) -> None:
         )
     )
 
+    # Corroboration recorded by the collector, translated back into the named
+    # confidence rules. Only keys the engine knows are honoured, so a collector
+    # cannot invent a signal by writing an arbitrary string into a finding.
+    corroborated = [
+        str(item) for item in (data.get("corroborated_by") or []) if str(item) in _CORROBORATION
+    ]
+    signals = [default_engine.signal("same_person_name")]
+    signals.extend(default_engine.signal(_CORROBORATION[key]) for key in corroborated)
+
     host = str(data.get("host", "")) or (urlsplit(url).hostname or "")
     candidate = result.add_entity(
         EntityDraft(
@@ -739,14 +758,29 @@ def _handle_person_candidate(finding: Any, result: ExtractionResult) -> None:
             attributes={
                 "role": "candidate",
                 "name_as_searched": subject_name,
+                "candidate_name": data.get("candidate_name") or data.get("title"),
                 "reference_url": url,
                 "reference_title": data.get("title"),
                 "host": host,
+                # Which free source produced this, so the graph and the report
+                # can say where a candidate came from without re-reading the
+                # finding.
+                "source": data.get("source") or finding.collector,
+                "source_label": data.get("source_label"),
+                "identifiers": data.get("identifiers") or {},
+                "affiliations": data.get("affiliations") or [],
+                "locations": data.get("locations") or [],
+                # Both sides of the judgement travel with the node: an
+                # investigator ruling a candidate out needs the reasons against
+                # it as much as the reasons for it.
+                "match_reasons": data.get("match_reasons") or [],
+                "mismatch_reasons": data.get("mismatch_reasons") or [],
+                "corroborated_by": corroborated,
                 # Nothing here establishes identity; say so on the node itself
                 # so it survives into the graph view and the report.
                 "identity_established": False,
             },
-            signals=[default_engine.signal("same_person_name")],
+            signals=signals,
             source_finding_ids=[finding.id],
         )
     )
@@ -764,7 +798,10 @@ def _handle_person_candidate(finding: Any, result: ExtractionResult) -> None:
             evidence_finding_ids=[finding.id],
             collector=finding.collector,
             source_url=finding.source_url,
-            attributes={"rank": data.get("rank"), "provider": data.get("provider")},
+            attributes={
+                "rank": data.get("rank"),
+                "provider": data.get("provider") or data.get("source"),
+            },
         )
     )
     result.add_relationship(
@@ -776,14 +813,21 @@ def _handle_person_candidate(finding: Any, result: ExtractionResult) -> None:
                 default_engine.signal(
                     "same_person_name",
                     detail=f"found by searching {subject_name!r}",
-                )
+                ),
+                *(default_engine.signal(_CORROBORATION[key]) for key in corroborated),
             ],
             evidence_finding_ids=[finding.id],
             collector=finding.collector,
             source_url=finding.source_url,
             attributes={
-                "basis": "name_match_only",
-                "requires_corroboration": True,
+                "basis": (
+                    "+".join(["name_match", *corroborated]) if corroborated else "name_match_only"
+                ),
+                # Corroborated or not, this stays a candidate: the resolver
+                # merges only at 0.95, which none of these rules can reach.
+                "requires_corroboration": not corroborated,
+                "corroborated_by": corroborated,
+                "source": data.get("source") or finding.collector,
             },
         )
     )
