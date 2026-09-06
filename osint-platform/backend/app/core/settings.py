@@ -89,6 +89,20 @@ class Settings(BaseSettings):
     github_token: SecretStr | None = None
     hibp_api_key: SecretStr | None = None
 
+    # --- free person sources -------------------------------------------------
+    # Every endpoint below is public and needs no key or account. They are
+    # settings only so a deployment can point at a mirror or a test double.
+    orcid_api_url: str = "https://pub.orcid.org"
+    openalex_api_url: str = "https://api.openalex.org"
+    crossref_api_url: str = "https://api.crossref.org"
+    wikidata_api_url: str = "https://www.wikidata.org/w/api.php"
+    reddit_base_url: str = "https://www.reddit.com"
+    #: Contact addresses for the OpenAlex and Crossref "polite pools". These are
+    #: courtesy identifiers, not credentials: they buy faster service, and both
+    #: APIs work without them.
+    openalex_mailto: str | None = None
+    crossref_mailto: str | None = None
+
     crtsh_base_url: str = "https://crt.sh"
     rdap_bootstrap_url: str = "https://rdap.org"
     wayback_base_url: str = "https://web.archive.org"

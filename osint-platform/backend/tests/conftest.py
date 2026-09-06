@@ -53,6 +53,13 @@ TEST_DNS = {
     "api.bing.microsoft.com": "93.184.215.14",
     "google.serper.dev": "93.184.215.14",
     "unrelated.test": "93.184.215.14",
+    # Free PERSON sources.
+    "pub.orcid.org": "93.184.215.14",
+    "api.openalex.org": "93.184.215.14",
+    "api.crossref.org": "93.184.215.14",
+    "www.wikidata.org": "93.184.215.14",
+    "www.reddit.com": "93.184.215.14",
+    "reddit.com": "93.184.215.14",
 }
 
 #: A documented public address, used for every allowed host.

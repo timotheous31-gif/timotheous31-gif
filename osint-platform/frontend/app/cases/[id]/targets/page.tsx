@@ -21,9 +21,11 @@ import { useAsync } from "@/hooks/useApi";
 import { api } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import {
+  EMPTY_PERSON_CONTEXT,
   SELECTABLE_TYPES,
   TYPE_HELP,
   ambiguityChoices,
+  buildPersonContext,
   canSubmitTarget,
   requiresExplicitType,
 } from "@/lib/targets";
@@ -35,8 +37,13 @@ export default function TargetsPage() {
   const [value, setValue] = useState("");
   const [chosenType, setChosenType] = useState<TargetType | "">("");
   const [preview, setPreview] = useState<NormalizationPreview | null>(null);
+  const [context, setContext] = useState(EMPTY_PERSON_CONTEXT);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<Error | null>(null);
+
+  // Context only means anything for a person, so the fields only appear once
+  // the target is known to be one.
+  const isPerson = chosenType === "PERSON" || preview?.type === "PERSON";
 
   // The backend refuses to guess between PERSON and ORGANIZATION for a bare
   // name, so the form has to collect that decision before it can submit.
@@ -74,9 +81,14 @@ export default function TargetsPage() {
     setBusy(true);
     setError(null);
     try {
-      await api.addTarget(caseId, { value: value.trim(), type: chosenType || null });
+      await api.addTarget(caseId, {
+        value: value.trim(),
+        type: chosenType || null,
+        context: isPerson ? buildPersonContext(context) : null,
+      });
       setValue("");
       setChosenType("");
+      setContext(EMPTY_PERSON_CONTEXT);
       setPreview(null);
       targets.reload();
     } catch (cause) {
@@ -153,6 +165,42 @@ export default function TargetsPage() {
                 </p>
               ) : null,
             )}
+          </div>
+        ) : null}
+
+        {isPerson ? (
+          <div className="mx-4 mb-4 rounded-md border border-line p-3">
+            <p className="text-sm font-medium">Optional context</p>
+            <p className="mt-0.5 text-xs text-muted">
+              Anything you already know. It is never used to search for new personal
+              information — only to judge which of the same-name records public sources
+              return could be this person, and which can be ruled out. Comma-separated.
+            </p>
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              {(
+                [
+                  ["knownUsernames", "Known usernames", "octocat, example_user"],
+                  ["profileUrls", "Known profile URLs", "https://github.com/octocat"],
+                  ["organizations", "Organisations", "Example Ltd"],
+                  ["schools", "Schools or universities", "Example University"],
+                  ["city", "City", "Delft"],
+                  ["country", "Country", "Netherlands"],
+                ] as const
+              ).map(([field, label, placeholder]) => (
+                <label key={field} className="block text-xs">
+                  <span className="text-muted">{label}</span>
+                  <Input
+                    aria-label={label}
+                    placeholder={placeholder}
+                    value={context[field]}
+                    onChange={(event) =>
+                      setContext({ ...context, [field]: event.target.value })
+                    }
+                    className="mt-0.5"
+                  />
+                </label>
+              ))}
+            </div>
           </div>
         ) : null}
 

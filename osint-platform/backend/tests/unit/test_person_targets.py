@@ -139,10 +139,24 @@ def test_person_rejects_an_empty_name():
 # ------------------------------------------------- 2. collector applicability
 
 
+#: Every PERSON collector that needs no API key. The platform must stay usable
+#: at zero cost, so this set is asserted exactly rather than loosely.
+FREE_PERSON_COLLECTORS = {
+    "crossref",
+    "github_people",
+    "openalex",
+    "orcid",
+    "person_usernames",
+    "reddit",
+    "wikidata",
+}
+
+
 def test_person_targets_schedule_only_name_appropriate_collectors():
     load_builtin_collectors()
     planned = {collector.name for collector in plan_collectors(TargetType.PERSON)}
-    assert planned == {"search"}
+    # The free sources, plus the optional paid search collector.
+    assert planned == FREE_PERSON_COLLECTORS | {"search"}
 
 
 @pytest.mark.parametrize("infrastructure", ["dns", "rdap", "ctlog", "http_meta", "wayback"])

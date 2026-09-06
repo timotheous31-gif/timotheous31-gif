@@ -202,12 +202,20 @@ def add_target(session: Session, case_id: uuid.UUID, payload: TargetCreate) -> T
             detail={"target_id": str(existing.id)},
         )
 
+    attributes = dict(normalized.attributes)
+    if payload.context is not None and normalized.type is TargetType.PERSON:
+        context = payload.context.model_dump(exclude_none=True)
+        if not payload.context.is_empty():
+            # Kept under its own key so nothing can confuse investigator-supplied
+            # context with something a collector observed.
+            attributes["context"] = context
+
     target = Target(
         case_id=case.id,
         type=normalized.type,
         raw_input=normalized.raw_input,
         normalized_value=normalized.value,
-        attributes=normalized.attributes,
+        attributes=attributes,
         notes=payload.notes,
         status=TargetStatus.PENDING,
         tags=get_or_create_tags(session, payload.tags),

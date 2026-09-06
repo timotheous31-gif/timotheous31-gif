@@ -138,6 +138,32 @@ path can quietly treat one as though it were.
 - **Reports say so on their face.** A report for a case with a `PERSON` target
   carries these limitations at the top of its Limitations section.
 
+### Free sources, and what they are allowed to do
+
+PERSON investigations run on public APIs that need no key: ORCID, OpenAlex,
+Crossref, Wikidata, GitHub's user search, Reddit's public search, and direct
+profile checks. Each is a documented public endpoint queried anonymously — the
+same request a logged-out visitor makes. Nothing authenticates, nothing scrapes
+behind a login, and no CAPTCHA is answered or avoided. Where a source refuses
+anonymous access (Reddit commonly does from server networks) the run is recorded
+`SKIPPED` with that reason rather than presented as an empty result.
+
+Two limits are structural rather than advisory:
+
+- **Wikidata candidates must be humans.** Items are filtered on P31=Q5, and only
+  employer, education, citizenship and occupation claims are read. Date of
+  birth, residence and family are not requested.
+- **Handles are checked, never invented.** `person_usernames` probes only
+  usernames the investigator supplied. Deriving a handle from a name and probing
+  platforms with it would generate leads about whoever actually owns that
+  handle.
+
+Investigator-supplied context (usernames, profile URLs, organisations, schools,
+city, country) exists to *narrow* a judgement, and the schema admits nothing
+finer than a city: a street address is not corroboration. Context is never sent
+to a source as an extra search term, and never becomes a finding — the
+investigator already knew it.
+
 ## Logging and retention
 
 Structured logs carry investigation context and never credentials: a processor

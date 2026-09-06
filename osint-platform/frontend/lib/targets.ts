@@ -6,7 +6,7 @@
  * own, without a DOM.
  */
 
-import type { NormalizationPreview, TargetType } from "@/types/api";
+import type { NormalizationPreview, PersonContext, TargetType } from "@/types/api";
 
 /** Types an investigator can state explicitly. `""` means "infer from the shape". */
 export const SELECTABLE_TYPES: readonly TargetType[] = [
@@ -60,4 +60,57 @@ export function canSubmitTarget(
 export function ambiguityChoices(preview: NormalizationPreview | null): TargetType[] {
   if (!preview?.ambiguous) return [];
   return preview.candidates.length > 0 ? preview.candidates : ["PERSON", "ORGANIZATION"];
+}
+
+/** The raw text fields the Add Target form collects for a PERSON. */
+export interface PersonContextInput {
+  knownUsernames: string;
+  profileUrls: string;
+  organizations: string;
+  schools: string;
+  country: string;
+  city: string;
+}
+
+export const EMPTY_PERSON_CONTEXT: PersonContextInput = {
+  knownUsernames: "",
+  profileUrls: "",
+  organizations: "",
+  schools: "",
+  country: "",
+  city: "",
+};
+
+function list(value: string): string[] {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Turn the form's comma-separated text into a PersonContext, or null when the
+ * investigator supplied nothing.
+ *
+ * Returning null rather than an object of empty arrays matters: an empty
+ * context must not be stored on the target, so the UI can tell "no context was
+ * given" apart from "context was given and nothing matched".
+ */
+export function buildPersonContext(input: PersonContextInput): PersonContext | null {
+  const context: PersonContext = {
+    known_usernames: list(input.knownUsernames),
+    profile_urls: list(input.profileUrls),
+    organizations: list(input.organizations),
+    schools: list(input.schools),
+    country: input.country.trim() || null,
+    city: input.city.trim() || null,
+  };
+  const empty =
+    context.known_usernames?.length === 0 &&
+    context.profile_urls?.length === 0 &&
+    context.organizations?.length === 0 &&
+    context.schools?.length === 0 &&
+    !context.country &&
+    !context.city;
+  return empty ? null : context;
 }

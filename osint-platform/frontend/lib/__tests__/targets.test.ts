@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  EMPTY_PERSON_CONTEXT,
   SELECTABLE_TYPES,
   TYPE_HELP,
   ambiguityChoices,
+  buildPersonContext,
   canSubmitTarget,
   requiresExplicitType,
 } from "@/lib/targets";
@@ -106,5 +108,50 @@ describe("selectable types", () => {
 
   it("tells the investigator that a person is searched by name only", () => {
     expect(TYPE_HELP.PERSON).toMatch(/no infrastructure lookups/i);
+  });
+});
+
+describe("buildPersonContext", () => {
+  it("returns null when nothing was supplied", () => {
+    expect(buildPersonContext(EMPTY_PERSON_CONTEXT)).toBeNull();
+  });
+
+  it("returns null for whitespace, so an empty context is never stored", () => {
+    expect(
+      buildPersonContext({ ...EMPTY_PERSON_CONTEXT, organizations: "  ,  , " }),
+    ).toBeNull();
+  });
+
+  it("splits comma-separated lists and trims each entry", () => {
+    const context = buildPersonContext({
+      ...EMPTY_PERSON_CONTEXT,
+      knownUsernames: " octocat , example_user ",
+    });
+    expect(context?.known_usernames).toEqual(["octocat", "example_user"]);
+  });
+
+  it("keeps a single city or country as a scalar", () => {
+    const context = buildPersonContext({ ...EMPTY_PERSON_CONTEXT, city: " Delft " });
+    expect(context?.city).toBe("Delft");
+    expect(context?.country).toBeNull();
+  });
+
+  it("carries every supported field through", () => {
+    const context = buildPersonContext({
+      knownUsernames: "octocat",
+      profileUrls: "https://github.com/octocat",
+      organizations: "Example Ltd",
+      schools: "Example University",
+      country: "Netherlands",
+      city: "Delft",
+    });
+    expect(context).toEqual({
+      known_usernames: ["octocat"],
+      profile_urls: ["https://github.com/octocat"],
+      organizations: ["Example Ltd"],
+      schools: ["Example University"],
+      country: "Netherlands",
+      city: "Delft",
+    });
   });
 });
