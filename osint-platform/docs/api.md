@@ -155,16 +155,58 @@ GET /api/v1/collectors
 ```json
 [{
   "name": "search",
-  "supported_targets": ["DOMAIN", "ORGANIZATION", "USERNAME", "EMAIL", "URL"],
+  "supported_targets": ["DOMAIN", "ORGANIZATION", "PERSON", "USERNAME", "EMAIL", "URL"],
   "requires_api_key": true,
   "rate_limit": "1/1s (concurrency 1)",
   "available": false,
-  "unavailable_reason": "No search provider is configured. Set SEARCH_PROVIDER to brave, bing or serper and supply the matching API key."
+  "unavailable_reason": "No search provider is configured. Set SEARCH_PROVIDER to brave, bing or serper and supply the matching API key.",
+  "configuration": {
+    "required_settings": ["SEARCH_PROVIDER"],
+    "optional_settings": [],
+    "configured": false,
+    "mode": "none",
+    "detail": "No search provider is configured. Set SEARCH_PROVIDER to brave, bing or serper and supply the matching API key."
+  }
 }]
 ```
 
 A collector that cannot run says so here, and records a `SKIPPED` run during an
 investigation, rather than silently producing nothing.
+
+`configuration` names the settings a collector reads and whether they are
+present. It carries setting *names* and status only — no endpoint on this
+platform returns a credential value, or anything derived from one. Once a
+provider is selected, `required_settings` names its specific key
+(`["SEARCH_PROVIDER", "BRAVE_API_KEY"]`), so "search was skipped" can be
+answered without guessing which of three keys was wanted.
+
+## Target types
+
+Types that identify themselves by shape are inferred: `DOMAIN`, `URL`, `IP`,
+`EMAIL`, `REPOSITORY`, `SOCIAL_PROFILE` and `USERNAME`. Free text is not one of
+those — "Timotheous Samar" and "Example Corporation" read identically — so it is
+never guessed:
+
+```
+POST /api/v1/cases/{case_id}/targets   {"value": "Timotheous Samar"}
+→ 422 {"code": "ambiguous_target_type",
+       "detail": {"candidates": ["PERSON", "ORGANIZATION"]}}
+```
+
+Resend with `"type": "PERSON"` or `"type": "ORGANIZATION"`. The preview endpoint
+reports the same state without erroring, so a UI can offer the choice:
+
+```
+POST /api/v1/cases/{case_id}/targets/preview   {"value": "Timotheous Samar"}
+→ 200 {"ambiguous": true, "type": null,
+       "candidates": ["PERSON", "ORGANIZATION"], "message": "…"}
+```
+
+A `PERSON` target schedules only the search collector. No DNS, RDAP,
+certificate-transparency or HTTP-metadata lookup is pointed at a personal name,
+and each result is stored as its own candidate: pages naming two different
+people who share a name stay two entities, linked to the subject by
+`POSSIBLY_SAME_ENTITY` at a ceiling far below the auto-merge threshold.
 
 ## Example: a full investigation with curl
 

@@ -110,4 +110,31 @@ describe("requests", () => {
     expect(api.reportUrl("case-1", "html")).toContain("format=html");
     expect(api.reportUrl("case-1", "json")).toContain("/cases/case-1/report");
   });
+
+  it("omits the type from a preview when none was chosen", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ ambiguous: false }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.previewTarget("case-1", "example.com");
+    const body = JSON.parse((lastInit(fetchMock) as unknown as { body: string }).body);
+    expect(body).toEqual({ value: "example.com" });
+  });
+
+  it("sends the chosen type so a name resolves to PERSON or ORGANIZATION", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ ambiguous: false, type: "PERSON" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.previewTarget("case-1", "Timotheous Samar", "PERSON");
+    const body = JSON.parse((lastInit(fetchMock) as unknown as { body: string }).body);
+    expect(body).toEqual({ value: "Timotheous Samar", type: "PERSON" });
+  });
+
+  it("sends the chosen type when adding a target", async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ id: "1" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.addTarget("case-1", { value: "Timotheous Samar", type: "PERSON" });
+    const body = JSON.parse((lastInit(fetchMock) as unknown as { body: string }).body);
+    expect(body).toEqual({ value: "Timotheous Samar", type: "PERSON" });
+  });
 });

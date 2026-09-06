@@ -108,6 +108,31 @@ class Settings(BaseSettings):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
 
+    @field_validator(
+        "brave_api_key",
+        "bing_api_key",
+        "serper_api_key",
+        "github_token",
+        "hibp_api_key",
+        mode="before",
+    )
+    @classmethod
+    def _blank_credential_is_absent(cls, value: object) -> object:
+        """Treat a blank credential as an absent one.
+
+        ``docker-compose.yml`` passes optional keys through as
+        ``GITHUB_TOKEN: ${GITHUB_TOKEN:-}``, so an unset key arrives as an empty
+        string rather than not arriving at all. Without this, the field parses
+        to ``SecretStr('')``, every ``is None`` guard downstream reads it as
+        *configured*, and the collector builds a credential-less header —
+        ``Authorization: Bearer `` — which httpx rejects outright as an illegal
+        header value. Normalising here fixes the whole class of bug at once
+        instead of guarding at each use site.
+        """
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @property
     def broker_url(self) -> str:
         return self.celery_broker_url or self.redis_url

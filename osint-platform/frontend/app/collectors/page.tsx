@@ -39,6 +39,7 @@ export default function CollectorsPage() {
               <tr>
                 <Th>Name</Th>
                 <Th>Accepts</Th>
+                <Th>Configuration</Th>
                 <Th>Rate limit</Th>
                 <Th>Source</Th>
                 <Th>Status</Th>
@@ -59,16 +60,45 @@ export default function CollectorsPage() {
                       ))}
                     </div>
                   </Td>
+                  <Td className="max-w-xs text-xs">
+                    {collector.configuration.required_settings.length === 0 &&
+                    collector.configuration.optional_settings.length === 0 ? (
+                      <span className="text-muted">No configuration needed</span>
+                    ) : (
+                      <>
+                        <div className="flex flex-wrap gap-1">
+                          {collector.configuration.required_settings.map((name) => (
+                            <Badge key={name} tone={collector.available ? "SUCCESS" : "FAILED"}>
+                              {name}
+                            </Badge>
+                          ))}
+                          {collector.configuration.optional_settings.map((name) => (
+                            <Badge key={name}>{name} (optional)</Badge>
+                          ))}
+                        </div>
+                        {collector.configuration.detail ? (
+                          <p className="mt-1 text-xs text-muted">{collector.configuration.detail}</p>
+                        ) : null}
+                      </>
+                    )}
+                  </Td>
                   <Td className="whitespace-nowrap text-xs text-muted">{collector.rate_limit}</Td>
                   <Td className="max-w-xs text-xs text-muted">
                     {collector.source_attribution || "—"}
                   </Td>
                   <Td>
                     {collector.available ? (
-                      <Badge tone="SUCCESS">Available</Badge>
+                      <>
+                        <Badge tone="SUCCESS">Operational</Badge>
+                        {collector.configuration.mode ? (
+                          <p className="mt-1 text-xs text-muted">
+                            Mode: <Mono>{collector.configuration.mode}</Mono>
+                          </p>
+                        ) : null}
+                      </>
                     ) : (
                       <>
-                        <Badge tone="SKIPPED">Not configured</Badge>
+                        <Badge tone="SKIPPED">Needs configuration</Badge>
                         <p className="mt-1 max-w-xs text-xs text-muted">
                           {collector.unavailable_reason}
                         </p>

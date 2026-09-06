@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Body, Query, status
 
 from app.api.deps import CaseId, DbSession, parse_uuid
+from app.core.errors import AmbiguousTargetError
 from app.models.enums import TargetType
 from app.schemas.case import (
     NormalizationPreview,
@@ -30,6 +31,9 @@ def add_target(case_id: CaseId, payload: TargetCreate, session: DbSession) -> Ta
     """Normalise and attach a target.
 
     The target type is inferred from the input's shape when it is not supplied.
+    Name-shaped free text has no inferable type and is rejected with
+    ``ambiguous_target_type`` rather than being filed as an organisation;
+    resend it with ``type`` set to PERSON or ORGANIZATION.
     """
     target = case_service.add_target(session, case_id, payload)
     session.commit()
@@ -109,8 +113,21 @@ def preview_normalization(
     value: str = Body(embed=True, max_length=1024),
     target_type: TargetType | None = Body(default=None, embed=True, alias="type"),
 ) -> NormalizationPreview:
-    """Show the stored form of a raw input without creating anything."""
-    normalized = normalize_target(value, target_type)
+    """Show the stored form of a raw input without creating anything.
+
+    Name-shaped input comes back as ``ambiguous`` with the candidate types
+    rather than as an error, so the caller can present the choice.
+    """
+    try:
+        normalized = normalize_target(value, target_type)
+    except AmbiguousTargetError as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        return NormalizationPreview(
+            raw_input=value,
+            ambiguous=True,
+            candidates=[TargetType(name) for name in detail.get("candidates", [])],
+            message=exc.message,
+        )
     return NormalizationPreview(
         raw_input=normalized.raw_input,
         type=normalized.type,

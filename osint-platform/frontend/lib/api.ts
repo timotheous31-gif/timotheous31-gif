@@ -19,10 +19,12 @@ import type {
   Finding,
   GraphResponse,
   Job,
+  NormalizationPreview,
   Page,
   Relationship,
   RunResponse,
   Target,
+  TargetType,
   TimelineResponse,
 } from "@/types/api";
 
@@ -128,18 +130,22 @@ export const api = {
 
   listTargets: (caseId: string, query?: Query) =>
     request<Page<Target>>(`/cases/${caseId}/targets`, { query }),
-  addTarget: (caseId: string, payload: { value: string; type?: string | null }) =>
+  addTarget: (caseId: string, payload: { value: string; type?: TargetType | null }) =>
     request<Target>(`/cases/${caseId}/targets`, {
       method: "POST",
       body: JSON.stringify(payload),
     }),
   deleteTarget: (caseId: string, targetId: string) =>
     request<void>(`/cases/${caseId}/targets/${targetId}`, { method: "DELETE" }),
-  previewTarget: (caseId: string, value: string) =>
-    request<{ raw_input: string; type: string; normalized_value: string; attributes: unknown }>(
-      `/cases/${caseId}/targets/preview`,
-      { method: "POST", body: JSON.stringify({ value }) },
-    ),
+  /**
+   * Ask what the backend would store. Name-shaped input comes back with
+   * `ambiguous: true` and the candidate types rather than as an error.
+   */
+  previewTarget: (caseId: string, value: string, type?: TargetType | null) =>
+    request<NormalizationPreview>(`/cases/${caseId}/targets/preview`, {
+      method: "POST",
+      body: JSON.stringify(type ? { value, type } : { value }),
+    }),
 
   runInvestigation: (caseId: string, payload: Record<string, unknown> = {}) =>
     request<RunResponse>(`/cases/${caseId}/run`, {

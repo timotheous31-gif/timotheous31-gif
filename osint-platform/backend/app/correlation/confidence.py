@@ -144,6 +144,13 @@ DEFAULT_RULES: dict[str, ConfidenceRule] = {
             ceiling=0.55,
         ),
         ConfidenceRule(
+            "same_person_name",
+            0.15,
+            "Only the displayed personal name matches, which does not identify anyone: "
+            "names are shared by many people and are not identifiers",
+            ceiling=0.30,
+        ),
+        ConfidenceRule(
             "weak_name_similarity",
             0.25,
             "The display names are similar, which is weak evidence on its own",

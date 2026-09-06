@@ -157,17 +157,18 @@ def test_collector_is_unavailable_without_a_provider():
 
 
 @pytest.mark.parametrize(
-    ("raw", "expected_first"),
+    ("raw", "explicit_type", "expected_first"),
     [
-        ("example.com", '"example.com"'),
-        ("Example Corporation", '"Example Corporation"'),
-        ("@exampleuser", '"exampleuser"'),
-        ("user@example.com", '"user@example.com"'),
+        ("example.com", None, '"example.com"'),
+        # An organisation name is no longer inferable, so the type is stated.
+        ("Example Corporation", TargetType.ORGANIZATION, '"Example Corporation"'),
+        ("@exampleuser", None, '"exampleuser"'),
+        ("user@example.com", None, '"user@example.com"'),
     ],
 )
-def test_queries_are_narrow_and_quoted(raw, expected_first):
+def test_queries_are_narrow_and_quoted(raw, explicit_type, expected_first):
     collector = SearchCollector(Settings(_env_file=None))
-    queries = collector.queries(normalize_target(raw))
+    queries = collector.queries(normalize_target(raw, explicit_type))
     assert queries[0] == expected_first
     assert len(queries) <= 2
 

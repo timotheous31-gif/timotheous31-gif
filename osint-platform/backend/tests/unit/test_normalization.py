@@ -28,7 +28,8 @@ from app.services.normalization import (
         ("https://github.com/octocat/Hello-World", TargetType.REPOSITORY),
         ("git@github.com:octocat/Hello-World.git", TargetType.REPOSITORY),
         ("https://reddit.com/u/exampleuser", TargetType.SOCIAL_PROFILE),
-        ("Example Corporation", TargetType.ORGANIZATION),
+        # Free text is deliberately absent from this table: a bare name has no
+        # inferable type. See test_person_targets.py for that contract.
     ],
 )
 def test_detects_target_type(raw, expected):

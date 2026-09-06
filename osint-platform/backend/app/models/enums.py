@@ -11,6 +11,9 @@ class TargetType(StrEnum):
     USERNAME = "USERNAME"
     DOMAIN = "DOMAIN"
     EMAIL = "EMAIL"
+    #: A named natural person. Never inferred from free text — a bare name is
+    #: ambiguous between a person and an organisation, so the caller chooses.
+    PERSON = "PERSON"
     ORGANIZATION = "ORGANIZATION"
     URL = "URL"
     IP = "IP"
@@ -118,6 +121,9 @@ class FindingKind(StrEnum):
     ORGANIZATION_MEMBERSHIP = "ORGANIZATION_MEMBERSHIP"
     USERNAME_PRESENCE = "USERNAME_PRESENCE"
     SEARCH_RESULT = "SEARCH_RESULT"
+    #: A public page that mentions a PERSON target's name. A candidate for
+    #: being about that person, never an assertion that it is.
+    PERSON_CANDIDATE = "PERSON_CANDIDATE"
     EMAIL_DOMAIN = "EMAIL_DOMAIN"
     EXPOSURE_SUMMARY = "EXPOSURE_SUMMARY"
     POTENTIAL_SECRET_EXPOSURE = "POTENTIAL_SECRET_EXPOSURE"  # noqa: S105 - a category name

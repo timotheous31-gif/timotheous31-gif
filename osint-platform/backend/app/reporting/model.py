@@ -36,7 +36,7 @@ from app.models import (
     Target,
     TimelineEvent,
 )
-from app.models.enums import Classification, RunStatus
+from app.models.enums import Classification, RunStatus, TargetType
 from app.privacy.filter import PrivacyFilter
 from app.services.timeline import timeline_summary
 
@@ -292,6 +292,18 @@ LIMITATIONS = [
     "public records change.",
 ]
 
+#: Added only to reports for cases that investigate a named person. A name is
+#: not an identifier, so every result for one is a candidate until something
+#: else connects it, and a report about a person has to say so on its face.
+PERSON_LIMITATIONS = [
+    "A personal name is not an identifier. Every result found by searching a "
+    "name is recorded as a separate candidate, and two candidates sharing a "
+    "name are never treated as the same person without independent evidence.",
+    "No infrastructure collector (DNS, RDAP, certificate transparency, HTTP "
+    "metadata) is run against a person's name, so this report contains no "
+    "inferences drawn from doing so.",
+]
+
 
 def build_report(
     session: Session,
@@ -399,6 +411,8 @@ def build_report(
     }
     model.confidence = _confidence_summary(finding_items, relationships)
     model.confidence["timeline"] = timeline_summary(events)
+    if any(target.type is TargetType.PERSON for target in targets):
+        model.limitations = list(PERSON_LIMITATIONS) + model.limitations
     model.executive_summary = _executive_summary(model, runs)
     return model
 
