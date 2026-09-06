@@ -18,10 +18,13 @@ import type {
   EvidenceVerification,
   Finding,
   GraphResponse,
+  ImportedResult,
   Job,
+  ManualResultInput,
   NormalizationPreview,
   Page,
   PersonContext,
+  ReconQueryPlan,
   Relationship,
   RunResponse,
   Target,
@@ -150,6 +153,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify(type ? { value, type } : { value }),
     }),
+
+  /**
+   * The searches to run by hand. The platform generates them and never submits
+   * them anywhere — see the plan's `execution` note.
+   */
+  reconQueries: (caseId: string, targetId: string) =>
+    request<ReconQueryPlan>(`/cases/${caseId}/targets/${targetId}/recon-queries`),
+  importReconResults: (caseId: string, targetId: string, results: ManualResultInput[]) =>
+    request<ImportedResult[]>(`/cases/${caseId}/targets/${targetId}/recon-results`, {
+      method: "POST",
+      body: JSON.stringify({ results }),
+    }),
+  listReconResults: (caseId: string, query?: Query) =>
+    request<ImportedResult[]>(`/cases/${caseId}/recon-results`, { query }),
 
   runInvestigation: (caseId: string, payload: Record<string, unknown> = {}) =>
     request<RunResponse>(`/cases/${caseId}/run`, {

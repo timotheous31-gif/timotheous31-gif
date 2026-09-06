@@ -447,10 +447,8 @@ def test_an_unmatched_affiliation_is_reported_as_a_reason_against():
     context = PersonContext(organizations=("Example University",))
     assessment = assess(_candidate(affiliations=["Unrelated Institute"]), NAME, context)
     assert assessment.corroborated_by == []
-    assert any(
-        "do not match" in r or "match the ones you supplied" in r
-        for r in assessment.mismatch_reasons
-    )
+    assert "affiliation" in assessment.conflicts
+    assert any("do not include any you supplied" in r for r in assessment.mismatch_reasons)
 
 
 def test_supplied_username_corroborates_a_candidate():
@@ -490,7 +488,7 @@ def test_corroboration_never_reaches_the_auto_merge_threshold():
 
 def test_no_context_is_stated_as_a_limit_on_every_candidate():
     assessment = assess(_candidate(), NAME, PersonContext())
-    assert any("No context was supplied" in reason for reason in assessment.mismatch_reasons)
+    assert any("No anchors were supplied" in reason for reason in assessment.mismatch_reasons)
 
 
 def test_a_differently_spelled_name_is_flagged_as_a_reason_against():

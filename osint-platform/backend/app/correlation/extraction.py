@@ -22,7 +22,9 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from app.core.logging import get_logger
+from app.correlation.anchors import ANCHOR_RULES
 from app.correlation.confidence import ConfidenceSignal, default_engine
+from app.correlation.sources import evidence_class, reference_signal
 from app.models.enums import EntityType, FindingKind, RelationshipType
 from app.services.normalization import registrable_domain
 
@@ -701,12 +703,11 @@ def _handle_search_result(finding: Any, result: ExtractionResult) -> None:
 
 #: Corroboration kinds a PERSON collector may report, and the confidence rule
 #: each one fires. Anything not in this table is ignored rather than trusted.
-_CORROBORATION = {
-    "profile_url": "context_profile_url_match",
-    "username": "context_username_match",
-    "affiliation": "context_affiliation_match",
-    "location": "context_location_match",
-}
+#:
+#: Imported from the anchor model rather than restated here: a second copy would
+#: drift, and a kind missing from it fails silently — the anchor matches, the
+#: score is right on the finding, and the entity quietly loses it.
+_CORROBORATION = ANCHOR_RULES
 
 
 def _handle_person_candidate(finding: Any, result: ExtractionResult) -> None:
@@ -767,6 +768,11 @@ def _handle_person_candidate(finding: Any, result: ExtractionResult) -> None:
                 # finding.
                 "source": data.get("source") or finding.collector,
                 "source_label": data.get("source_label"),
+                "evidence_class": data.get("evidence_class")
+                or evidence_class(str(data.get("source") or finding.collector)),
+                "platform": data.get("platform"),
+                "url_kind": data.get("url_kind"),
+                "handle": data.get("handle"),
                 "identifiers": data.get("identifiers") or {},
                 "affiliations": data.get("affiliations") or [],
                 "locations": data.get("locations") or [],
@@ -776,6 +782,9 @@ def _handle_person_candidate(finding: Any, result: ExtractionResult) -> None:
                 "match_reasons": data.get("match_reasons") or [],
                 "mismatch_reasons": data.get("mismatch_reasons") or [],
                 "corroborated_by": corroborated,
+                # The rules that produced this node's score, so a later
+                # corroboration pass can rescore without losing the anchors.
+                "signal_keys": [signal.key for signal in signals],
                 # Nothing here establishes identity; say so on the node itself
                 # so it survives into the graph view and the report.
                 "identity_established": False,
@@ -789,18 +798,30 @@ def _handle_person_candidate(finding: Any, result: ExtractionResult) -> None:
     page.attributes.setdefault("title", data.get("title"))
     page.attributes.setdefault("discovered_via", "search")
 
+    source = str(data.get("source") or finding.collector)
     result.add_relationship(
         RelationshipDraft(
             source=candidate.key,
             target=page.key,
             type=RelationshipType.REFERENCED_BY,
-            signals=[default_engine.signal("search_reference")],
+            # Worded for the source that actually produced this. Attributing an
+            # ORCID registry record to "a search provider" is not a wording nit:
+            # it misstates the evidence a reviewer is being asked to weigh.
+            signals=[
+                reference_signal(
+                    source,
+                    query=str(data.get("query") or "") or None,
+                    engine=str(data.get("engine") or "") or None,
+                )
+            ],
             evidence_finding_ids=[finding.id],
             collector=finding.collector,
             source_url=finding.source_url,
             attributes={
                 "rank": data.get("rank"),
-                "provider": data.get("provider") or data.get("source"),
+                "provider": data.get("provider") or source,
+                "source": source,
+                "evidence_class": data.get("evidence_class") or evidence_class(source),
             },
         )
     )
@@ -831,6 +852,43 @@ def _handle_person_candidate(finding: Any, result: ExtractionResult) -> None:
             },
         )
     )
+
+
+def _handle_image_evidence(finding: Any, result: ExtractionResult) -> None:
+    """Attach an imported public image to the page it appears on.
+
+    Image evidence is *page* evidence. What it establishes is that a picture
+    appears on a page associated with the searched name — nothing about who is
+    depicted. No comparison of any kind is performed between images, and the
+    node records that explicitly so the claim cannot drift as the data is passed
+    around.
+    """
+    data = finding.data
+    page_url = str(data.get("source_page_url") or data.get("url") or "")
+    if not page_url:
+        return
+
+    # The imported record is also a candidate: a page that names the subject.
+    _handle_person_candidate(finding, result)
+
+    page = result.add_entity(_website_entity(page_url, finding, "search_reference"))
+    page.attributes.setdefault("title", data.get("title"))
+    page.attributes.setdefault("discovered_via", data.get("source") or finding.collector)
+    images = list(page.attributes.get("images") or [])
+    images.append(
+        {
+            "image_url": data.get("image_url"),
+            "thumbnail_url": data.get("thumbnail_url"),
+            "caption": data.get("caption"),
+            "query": data.get("query"),
+            "engine": data.get("engine"),
+            # Restated on the node, not only on the finding: whatever reads this
+            # attribute must see the limit alongside the data.
+            "analysis": "none",
+            "biometric_matching": False,
+        }
+    )
+    page.attributes["images"] = images
 
 
 def _username_signal_key(username: str) -> str:
@@ -864,4 +922,6 @@ _HANDLERS = {
     FindingKind.EMAIL_DOMAIN: _handle_email,
     FindingKind.SEARCH_RESULT: _handle_search_result,
     FindingKind.PERSON_CANDIDATE: _handle_person_candidate,
+    FindingKind.MANUAL_SEARCH_RESULT: _handle_person_candidate,
+    FindingKind.IMAGE_EVIDENCE: _handle_image_evidence,
 }

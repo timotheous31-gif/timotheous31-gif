@@ -124,6 +124,13 @@ class FindingKind(StrEnum):
     #: A public page that mentions a PERSON target's name. A candidate for
     #: being about that person, never an assertion that it is.
     PERSON_CANDIDATE = "PERSON_CANDIDATE"
+    #: A public search result the investigator reviewed and imported by hand.
+    #: Distinct from SEARCH_RESULT, which a search API returned to the platform:
+    #: conflating them would misstate how the evidence was obtained.
+    MANUAL_SEARCH_RESULT = "MANUAL_SEARCH_RESULT"
+    #: A publicly indexed image and the page it appears on. Context evidence,
+    #: never biometric identification.
+    IMAGE_EVIDENCE = "IMAGE_EVIDENCE"
     EMAIL_DOMAIN = "EMAIL_DOMAIN"
     EXPOSURE_SUMMARY = "EXPOSURE_SUMMARY"
     POTENTIAL_SECRET_EXPOSURE = "POTENTIAL_SECRET_EXPOSURE"  # noqa: S105 - a category name

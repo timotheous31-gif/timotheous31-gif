@@ -24,6 +24,7 @@ const TABS = [
   { segment: "", label: "Overview" },
   { segment: "targets", label: "Targets" },
   { segment: "findings", label: "Findings" },
+  { segment: "recon", label: "Recon" },
   { segment: "candidates", label: "Candidates" },
   { segment: "entities", label: "Entities" },
   { segment: "graph", label: "Graph" },
