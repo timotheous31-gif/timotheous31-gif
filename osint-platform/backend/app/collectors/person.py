@@ -359,6 +359,17 @@ def _anchor_matches(candidate: PersonCandidate, context: PersonContext) -> list[
     return matches
 
 
+def anchor_matches(candidate: PersonCandidate, context: PersonContext) -> list[tuple[str, str]]:
+    """Anchor kinds matching this candidate, for callers outside collection.
+
+    An investigator-imported result is held to the same anchor model as a
+    collected one: whether an anchor matches is a property of the record and the
+    subject, not of how the record was found. Exposed rather than reimplemented
+    so the import path cannot drift from the collectors.
+    """
+    return _anchor_matches(candidate, context)
+
+
 def _assess_conflicts(
     candidate: PersonCandidate, context: PersonContext, result: Assessment
 ) -> None:

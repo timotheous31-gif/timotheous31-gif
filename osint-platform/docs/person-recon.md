@@ -45,6 +45,12 @@ An imported result is never presented as something the platform fetched. It is
 filed under its own collector, `manual_search_recon`, with the query and engine
 that produced it.
 
+It is, however, held to the same anchor model as a collected record. If you
+supply the GitHub username `example-user` and later paste
+`https://github.com/example-user`, that is the same fact the `github_people`
+collector would have recorded, and it corroborates identically. Whether an
+anchor matches is a property of the record, not of how the record was found.
+
 ## Why Google HTML is not scraped
 
 Scraping a search engine's result pages violates its terms, breaks whenever the

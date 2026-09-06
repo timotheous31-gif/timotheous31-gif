@@ -280,3 +280,83 @@ async def test_a_fragment_is_stripped_from_a_stored_url(api_client, case_id):
         json={"results": [_result(url="https://example.org/page#section-2")]},
     )
     assert response.json()[0]["url"] == "https://example.org/page"
+
+
+# -------------------------------------------------- anchors on imported results
+
+
+async def test_an_imported_url_matching_a_supplied_anchor_corroborates(api_client, case_id):
+    """An anchor holds regardless of how the record was found.
+
+    The investigator supplied a GitHub username; a profile URL they then paste
+    carries that exact handle. That is the same fact the ``github_people``
+    collector would have recorded, and it must score the same — otherwise the
+    platform silently discards evidence it already holds, and the candidate
+    reads as though nothing but the name connects it.
+    """
+    target_id = await _person_target(api_client, case_id, github_username="timotheous31-gif")
+    response = await api_client.post(
+        f"/api/v1/cases/{case_id}/targets/{target_id}/recon-results",
+        json={"results": [_result(url="https://github.com/timotheous31-gif", title="Profile")]},
+    )
+    assert response.status_code == 201, response.text
+
+    findings = await api_client.get(f"/api/v1/cases/{case_id}/findings")
+    imported = [
+        item for item in findings.json()["items"] if item["collector"] == "manual_search_recon"
+    ]
+    assert len(imported) == 1
+    data = imported[0]["data"]
+    assert data["corroborated_by"] == ["github_username"]
+    assert any("username you supplied" in reason for reason in data["match_reasons"])
+
+
+async def test_a_same_platform_import_that_is_not_the_anchor_does_not_corroborate(
+    api_client, case_id
+):
+    """Another person's GitHub profile is still another person.
+
+    The guard that matters: matching on the *platform* rather than the handle
+    would corroborate every GitHub URL an investigator pasted.
+    """
+    target_id = await _person_target(api_client, case_id, github_username="timotheous31-gif")
+    response = await api_client.post(
+        f"/api/v1/cases/{case_id}/targets/{target_id}/recon-results",
+        json={"results": [_result(url="https://github.com/someone-else-entirely")]},
+    )
+    assert response.status_code == 201, response.text
+
+    findings = await api_client.get(f"/api/v1/cases/{case_id}/findings")
+    imported = [
+        item for item in findings.json()["items"] if item["collector"] == "manual_search_recon"
+    ]
+    assert imported[0]["data"].get("corroborated_by", []) == []
+    assert imported[0]["data"].get("match_reasons", []) == []
+
+
+async def test_an_import_with_no_anchors_supplied_corroborates_nothing(api_client, case_id):
+    target_id = await _person_target(api_client, case_id)
+    await api_client.post(
+        f"/api/v1/cases/{case_id}/targets/{target_id}/recon-results",
+        json={"results": [_result(url="https://github.com/timotheous31-gif")]},
+    )
+    findings = await api_client.get(f"/api/v1/cases/{case_id}/findings")
+    imported = [
+        item for item in findings.json()["items"] if item["collector"] == "manual_search_recon"
+    ]
+    assert imported[0]["data"].get("corroborated_by", []) == []
+
+
+async def test_an_anchored_import_still_cannot_reach_the_auto_merge_threshold(api_client, case_id):
+    """Honouring the anchor must not make an import self-confirming.
+
+    The anchor raises the candidate; it must never raise it far enough for the
+    resolver to fuse the candidate into the subject without a human.
+    """
+    from app.correlation.anchors import ANCHOR_RULES
+    from app.correlation.confidence import AUTO_MERGE_THRESHOLD, default_engine
+
+    signals = [default_engine.signal("same_person_name")] + [
+        default_engine.signal(rule) for rule in dict.fromkeys(ANCHOR_RULES.values())
+    ]
+    assert default_engine.score(signals).score < AUTO_MERGE_THRESHOLD

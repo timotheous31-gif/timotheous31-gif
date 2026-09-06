@@ -21,14 +21,17 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.collectors.person import PersonCandidate, PersonContext, anchor_matches
 from app.collectors.social import classify_url
 from app.core.errors import NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.core.ssrf import validate_url
+from app.correlation.anchors import ANCHOR_REASONS
 from app.models import Case, Finding, Target
 from app.models.enums import Classification, FindingKind, TargetType
 from app.schemas.recon import ManualResultImport
 from app.services.evidence import EvidenceStore
+from app.services.normalization import NormalizedTarget
 
 log = get_logger(__name__)
 
@@ -72,6 +75,8 @@ def import_results(
     store = EvidenceStore()
     imported_at = datetime.now(UTC)
     findings: list[Finding] = []
+    subject_name = str(target.attributes.get("display_name", target.normalized_value))
+    context = _target_context(target)
 
     for item in payload.results:
         url = _validated_public_url(item.url)
@@ -96,10 +101,28 @@ def import_results(
             "source_label": MANUAL_SOURCE_LABEL,
             "evidence_class": EVIDENCE_INVESTIGATOR_IMPORTED,
             "import_method": "investigator_imported_search_result",
-            "subject_name": str(target.attributes.get("display_name", target.normalized_value)),
+            "subject_name": subject_name,
             "subject_value": target.normalized_value,
             "candidate_key": url,
         }
+
+        # An imported URL is checked against the anchors exactly as a collected
+        # one is. Skipping this would silently discard evidence the platform
+        # already holds: a pasted profile URL whose handle *is* the username the
+        # investigator supplied would score no higher than a stranger's page.
+        matched = anchor_matches(
+            PersonCandidate(
+                url=url,
+                name=subject_name,
+                handles=[profile.handle] if profile and profile.handle else [],
+            ),
+            context,
+        )
+        if matched:
+            data["corroborated_by"] = [kind for kind, _ in matched]
+            data["match_reasons"] = [
+                ANCHOR_REASONS[kind].format(detail=detail) for kind, detail in matched
+            ]
         if profile:
             data.update(
                 {
@@ -229,3 +252,15 @@ def _validated_public_url(raw: str) -> str:
     text = text.split("#", 1)[0]
     validate_url(text)
     return text
+
+
+def _target_context(target: Target) -> PersonContext:
+    """The anchors stored on the target, normalised the same way collectors read them."""
+    return PersonContext.from_target(
+        NormalizedTarget(
+            type=target.type,
+            raw_input=target.raw_input,
+            value=target.normalized_value,
+            attributes=dict(target.attributes or {}),
+        )
+    )
