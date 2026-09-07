@@ -14,6 +14,7 @@ from app.services.recon import (
     FAMILY_ACADEMIC,
     FAMILY_ANCHOR,
     FAMILY_DOCUMENT,
+    FAMILY_IMAGE,
     FAMILY_SOCIAL,
     FORBIDDEN_TERMS,
     MAX_QUERIES,
@@ -211,4 +212,8 @@ def test_no_query_family_targets_a_person_rather_than_a_reference():
         FAMILY_ACADEMIC,
         FAMILY_DOCUMENT,
         FAMILY_ANCHOR,
+        # Image queries look for *pages that publish a photograph*, which is a
+        # place to look. Nothing searches by an image or identifies a person
+        # from one; the test below pins that.
+        FAMILY_IMAGE,
     }
