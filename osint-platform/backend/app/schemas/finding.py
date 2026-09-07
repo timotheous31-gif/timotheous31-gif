@@ -234,6 +234,14 @@ class JobRead(BaseModel):
     result: dict
     cancel_requested: bool
     created_at: datetime
+    #: What to show. Equals ``state`` except when a job is QUEUED and nothing is
+    #: consuming the queue, in which case it reads PROCESSING_UNAVAILABLE. The
+    #: stored ``state`` is left alone so a returning worker can still run the
+    #: job — this field reports whether anything currently can.
+    effective_state: str = ""
+    #: False when no Celery worker answered. Absent workers are an operational
+    #: fact about the deployment, not a property of the job.
+    processing_available: bool = True
 
 
 class RunRequest(BaseModel):

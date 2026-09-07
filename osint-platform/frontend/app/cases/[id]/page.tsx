@@ -1,7 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
+import { DeleteCase } from "@/components/case/delete-case";
 import { useCaseId } from "@/components/case/shell";
 import {
   Badge,
@@ -20,6 +22,7 @@ import { api } from "@/lib/api";
 import { formatDateTime, humanise } from "@/lib/format";
 
 export default function CaseOverviewPage() {
+  const router = useRouter();
   const caseId = useCaseId();
   const summary = useAsync(() => api.caseSummary(caseId), [caseId]);
   const runs = useAsync(() => api.listRuns(caseId), [caseId]);
@@ -34,6 +37,22 @@ export default function CaseOverviewPage() {
 
   return (
     <div className="space-y-5">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold">{data.case.name}</h2>
+          <p className="mt-0.5 text-xs text-muted">
+            Created {formatDateTime(data.case.created_at)}
+          </p>
+        </div>
+        {/* Destructive actions live apart from everything else on the page. */}
+        <DeleteCase
+          caseId={caseId}
+          caseName={data.case.name}
+          variant="button"
+          onDeleted={() => router.push("/cases")}
+        />
+      </div>
+
       <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
         <Stat label="Targets" value={data.targets} />
         <Stat label="Findings" value={data.findings} />

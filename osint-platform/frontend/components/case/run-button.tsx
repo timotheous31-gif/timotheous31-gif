@@ -5,6 +5,7 @@ import { useState } from "react";
 import { Badge, Button, ErrorNotice } from "@/components/ui/primitives";
 import { usePolling } from "@/hooks/useApi";
 import { api } from "@/lib/api";
+import { displayState, stateHint, stateLabel, stateTone } from "@/lib/jobs";
 import type { Job } from "@/types/api";
 
 const TERMINAL = new Set(["COMPLETE", "FAILED", "CANCELLED"]);
@@ -62,14 +63,22 @@ export function RunButton({ caseId, onFinished }: { caseId: string; onFinished?:
   }
 
   const running = Boolean(jobId) && !TERMINAL.has(job.data?.state ?? "");
+  const state = displayState(job.data);
+  // A job that cannot start is not "0% Queued". Saying so is the difference
+  // between an operator waiting indefinitely and one restarting the worker.
+  const stalled = state === "PROCESSING_UNAVAILABLE";
 
   return (
     <div className="flex flex-col items-end gap-1">
       <div className="flex items-center gap-2">
         {running ? (
           <>
-            <Badge tone="RUNNING">
-              {Math.round((job.data?.progress ?? 0) * 100)}% {job.data?.message ?? "Running"}
+            <Badge tone={stateTone(state) ?? "RUNNING"} title={stateHint(state)}>
+              {stalled
+                ? stateLabel(state)
+                : `${Math.round((job.data?.progress ?? 0) * 100)}% ${
+                    job.data?.message ?? stateLabel(state)
+                  }`}
             </Badge>
             <Button variant="danger" onClick={cancel}>
               Cancel
@@ -81,6 +90,9 @@ export function RunButton({ caseId, onFinished }: { caseId: string; onFinished?:
           </Button>
         )}
       </div>
+      {stalled ? (
+        <p className="w-80 text-right text-xs text-danger">{stateHint(state)}</p>
+      ) : null}
       {error ? (
         <div className="w-80">
           <ErrorNotice error={error} />

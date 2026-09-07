@@ -36,6 +36,28 @@ log = get_logger(__name__)
 REDACTED_VALUE = "[REDACTED]"
 SUPPRESSED_VALUE = "[SUPPRESSED: SENSITIVE PERSONAL DATA]"
 
+#: Every marker this module can substitute for a real value, including the
+#: secret-scanner's. Grouped so callers can ask one question instead of
+#: remembering three constants.
+REDACTION_MARKERS: frozenset[str] = frozenset({REDACTED_VALUE, SUPPRESSED_VALUE, REDACTION})
+
+
+def is_redacted(value: object) -> bool:
+    """True when ``value`` is a redaction marker rather than real content.
+
+    Downstream code must ask this before handing a field to a typed parser.
+    The markers are bracketed, and a bracketed string is IPv6-literal syntax to
+    :func:`urllib.parse.urlsplit` — so ``urlsplit("https://[REDACTED]")`` parses
+    ``REDACTED`` as an IP address and raises. The value is not a malformed URL;
+    it is not a URL at all, and treating it as one turns a privacy decision into
+    a parse error that silently drops the whole finding.
+    """
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    return text in REDACTION_MARKERS or any(marker in text for marker in REDACTION_MARKERS)
+
+
 #: Keys whose values are structural and must survive filtering, because
 #: removing them would break provenance rather than protect anybody.
 PRESERVED_KEYS = frozenset(

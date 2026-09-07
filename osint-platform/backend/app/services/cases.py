@@ -6,14 +6,17 @@ happen once, in one place.
 
 from __future__ import annotations
 
+import shutil
 import uuid
 from collections.abc import Sequence
+from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
 
 from app.core.errors import ConflictError, NotFoundError
 from app.core.logging import get_logger
+from app.core.settings import get_settings
 from app.models import (
     Case,
     CaseStatus,
@@ -21,12 +24,13 @@ from app.models import (
     Entity,
     Evidence,
     Finding,
+    Job,
     Relationship,
     Tag,
     Target,
     TimelineEvent,
 )
-from app.models.enums import TargetStatus, TargetType
+from app.models.enums import JobState, TargetStatus, TargetType
 from app.schemas.case import CaseCreate, CaseUpdate, TargetCreate, TargetUpdate
 from app.services.normalization import normalize_target
 
@@ -126,12 +130,89 @@ def update_case(session: Session, case_id: uuid.UUID, payload: CaseUpdate) -> Ca
     return case
 
 
-def delete_case(session: Session, case_id: uuid.UUID) -> None:
-    """Delete a case and everything it contains."""
+#: Job states that mean work may still be executing against the case.
+ACTIVE_JOB_STATES: frozenset[JobState] = frozenset({JobState.QUEUED, JobState.RUNNING})
+
+
+def active_jobs(session: Session, case_id: uuid.UUID) -> list[Job]:
+    """Jobs on this case that are queued or running."""
+    return list(
+        session.scalars(select(Job).where(Job.case_id == case_id, Job.state.in_(ACTIVE_JOB_STATES)))
+    )
+
+
+def delete_case(session: Session, case_id: uuid.UUID, *, evidence_root: Path | None = None) -> None:
+    """Delete a case and everything it owns.
+
+    Refuses while a job is QUEUED or RUNNING, raising :class:`ConflictError`
+    (HTTP 409). That is the deliberate choice between the two safe designs:
+
+    Cancellation in this platform is *cooperative* — a worker checks
+    :func:`app.services.jobs.is_cancelled` between collectors and stops when it
+    notices. So a cancel-then-delete flow cannot guarantee the worker has
+    actually stopped by the time the rows go, and a mid-run task holding its own
+    session would happily insert findings into a case that no longer exists:
+    either a foreign-key error in the worker, or orphaned rows if the database
+    is not enforcing constraints. Requiring the caller to cancel first, observe
+    the job leave the active states, and then delete keeps that window closed
+    without the platform having to guess when a worker is safely stopped.
+
+    Deletion itself relies on the schema rather than hand-written cleanup: every
+    case-scoped table declares ``case_id ... ondelete="CASCADE"`` and every
+    ``Case`` collection declares ``cascade="all, delete-orphan"``. Tags are
+    shared across cases, so only the ``case_tags`` links are removed; the tags
+    themselves survive, which is why this is not a blanket "delete everything
+    that mentions the case".
+    """
     case = get_case(session, case_id)
+
+    running = active_jobs(session, case_id)
+    if running:
+        states = ", ".join(sorted({str(job.state) for job in running}))
+        raise ConflictError(
+            f"Case {case.name!r} has {len(running)} job(s) still active ({states}). "
+            f"Cancel the run and wait for it to stop before deleting the case.",
+            detail={
+                "active_jobs": [str(job.id) for job in running],
+                "states": sorted({str(job.state) for job in running}),
+            },
+        )
+
     session.delete(case)
     session.flush()
-    log.info("case.deleted", case_id=str(case_id))
+
+    # The database rows are gone; the raw artefacts they referenced are files.
+    # Removed after the flush so a refused deletion never touches the disk.
+    removed = _remove_evidence_files(case_id, evidence_root)
+    log.info("case.deleted", case_id=str(case_id), evidence_files_removed=removed)
+
+
+def _remove_evidence_files(case_id: uuid.UUID, evidence_root: Path | None = None) -> int:
+    """Delete the case's content-addressed evidence directory.
+
+    The store lays files out as ``<evidence_dir>/<case_id>/<aa>/<sha256>.json``,
+    so a case owns a whole subtree and nothing else does. Failure to remove the
+    files is logged rather than raised: the deletion has already committed to
+    the database, and leaving readable bytes behind is a cleanup problem, not a
+    reason to fail a request that has otherwise succeeded.
+    """
+    root = evidence_root or Path(get_settings().evidence_dir)
+    directory = root / str(case_id)
+    if not directory.exists():
+        return 0
+    count = sum(1 for path in directory.rglob("*") if path.is_file())
+    try:
+        shutil.rmtree(directory)
+    except OSError as exc:
+        log.error(
+            "case.evidence_cleanup_failed",
+            case_id=str(case_id),
+            path=str(directory),
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return 0
+    return count
 
 
 def case_summary(session: Session, case_id: uuid.UUID) -> dict[str, object]:
