@@ -19,6 +19,7 @@ x-backend-env: &backend-env
 
 services:
   postgres:
+    restart: unless-stopped
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-osint}
@@ -35,6 +36,7 @@ services:
       retries: 10
 
   redis:
+    restart: unless-stopped
     image: redis:7-alpine
     command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
     volumes:
@@ -48,6 +50,7 @@ services:
       retries: 10
 
   backend:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: docker/backend.Dockerfile
@@ -73,6 +76,7 @@ services:
       retries: 5
 
   celery-worker:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: docker/backend.Dockerfile
@@ -86,6 +90,11 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # `inspect ping` asks this worker to answer over the broker, so a green
+    # check means the worker is genuinely consuming — not merely that the
+    # process is alive. A worker that stops consuming goes unhealthy and the
+    # restart policy above brings it back: that is the failure that left jobs
+    # at 0% QUEUED while every other container reported healthy.
     healthcheck:
       test: ["CMD-SHELL", "celery -A app.workers.celery_app.celery_app inspect ping -d celery@$$HOSTNAME"]
       interval: 30s
@@ -94,6 +103,7 @@ services:
       retries: 3
 
   frontend:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: docker/frontend.Dockerfile

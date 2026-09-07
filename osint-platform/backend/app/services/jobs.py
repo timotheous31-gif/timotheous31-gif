@@ -13,6 +13,7 @@ which path it took.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -30,6 +31,62 @@ log = get_logger(__name__)
 
 #: Job states that mean the job has finished, one way or another.
 TERMINAL_STATES = {JobState.COMPLETE, JobState.FAILED, JobState.CANCELLED}
+
+#: Reported instead of QUEUED when nothing is able to pick the job up. It is a
+#: *derived* state, never written to the database — see :func:`effective_state`.
+PROCESSING_UNAVAILABLE = "PROCESSING_UNAVAILABLE"
+
+#: How long to wait for a worker to answer a ping. Short: this runs on the
+#: request path, and a worker that cannot answer in a second is not one that is
+#: about to start work promptly either.
+WORKER_PING_TIMEOUT_SECONDS = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerStatus:
+    """Whether any Celery worker is currently consuming the queue."""
+
+    available: bool
+    workers: tuple[str, ...] = ()
+    reason: str = ""
+
+
+def worker_status(timeout: float = WORKER_PING_TIMEOUT_SECONDS) -> WorkerStatus:
+    """Ask the broker which workers are alive.
+
+    This exists because a reachable broker is not the same thing as a working
+    system. When the worker container is down but Redis is up, ``apply_async``
+    succeeds, the task lands in a queue nobody is consuming, and the job sits at
+    QUEUED forever — which is exactly the failure this platform hit in Docker.
+    Only an active probe can tell the two apart.
+    """
+    if get_settings().celery_task_always_eager:
+        return WorkerStatus(True, ("eager",), "CELERY_TASK_ALWAYS_EAGER is set")
+    try:
+        from app.workers.celery_app import celery_app
+
+        replies = celery_app.control.inspect(timeout=timeout).ping()
+    except Exception as exc:  # broker unreachable, auth failure, anything
+        return WorkerStatus(False, (), f"broker unreachable ({type(exc).__name__}: {exc})")
+    if not replies:
+        return WorkerStatus(False, (), "no worker answered the ping")
+    return WorkerStatus(True, tuple(sorted(replies)), "")
+
+
+def effective_state(job: Job, workers: WorkerStatus | None = None) -> str:
+    """The state to *show*, which is not always the state that is stored.
+
+    A job stays QUEUED in the database even when no worker exists, deliberately:
+    the row is a standing instruction, and a worker that comes back must still
+    be able to run it. Rewriting it to a terminal state to make the UI honest
+    would destroy that recovery. So the honesty happens here instead — the
+    stored state is the truth about intent, and this is the truth about whether
+    anything can currently act on it.
+    """
+    if job.state is not JobState.QUEUED:
+        return str(job.state)
+    status = workers if workers is not None else worker_status()
+    return str(job.state) if status.available else PROCESSING_UNAVAILABLE
 
 
 def create_job(
@@ -203,6 +260,19 @@ def dispatch_job(session: Session, job: Job) -> dict[str, Any]:
         execute_job(session, job.id)
         return {"dispatched": "inline", "reason": "CELERY_TASK_ALWAYS_EAGER is set"}
 
+    # A reachable broker is not a working system. Queueing onto a queue nobody
+    # consumes is how a job comes to sit at 0% QUEUED forever, so the worker is
+    # checked before the task is handed over rather than after.
+    status = worker_status()
+    if not status.available:
+        log.warning("job.no_worker_running_inline", job_id=str(job.id), reason=status.reason)
+        execute_job(session, job.id)
+        return {
+            "dispatched": "inline",
+            "reason": f"No Celery worker is consuming the queue ({status.reason})",
+            "workers": [],
+        }
+
     try:
         from app.workers.tasks import run_investigation_task
 
@@ -221,4 +291,4 @@ def dispatch_job(session: Session, job: Job) -> dict[str, Any]:
 
     job.celery_id = str(async_result.id)
     session.flush()
-    return {"dispatched": "celery", "celery_id": job.celery_id}
+    return {"dispatched": "celery", "celery_id": job.celery_id, "workers": list(status.workers)}
