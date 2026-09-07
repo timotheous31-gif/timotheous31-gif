@@ -27,12 +27,15 @@ from app.core.logging import get_logger
 from app.correlation.confidence import classify
 from app.graph import build_graph, graph_summary
 from app.models import (
+    AnalystDecisionRecord,
     Case,
     CollectorRun,
     Entity,
     Evidence,
     Finding,
+    ImageEvidence,
     Relationship,
+    SocialProfile,
     Target,
     TimelineEvent,
 )
@@ -196,6 +199,137 @@ class SourceItem:
 
 
 @dataclass(slots=True)
+class SocialProfileItem:
+    """A public profile page as a report renders it."""
+
+    id: str
+    platform: str
+    platform_label: str
+    handle: str | None
+    profile_url: str
+    display_name: str | None
+    accessibility: str
+    server_fetchable: bool
+    fetch_note: str | None
+    collector: str
+    evidence_class: str
+    #: Computed by the platform. Never edited by an analyst decision.
+    confidence: float
+    match_reasons: list[str]
+    mismatch_reasons: list[str]
+    corroborated_by: list[str]
+    candidate_id: str | None
+    retrieved_at: datetime | None
+    #: The analyst's separate judgement, shown alongside rather than instead.
+    analyst_decision: str | None = None
+    analyst_note: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "platform": self.platform,
+            "platform_label": self.platform_label,
+            "handle": self.handle,
+            "profile_url": self.profile_url,
+            "display_name": self.display_name,
+            "accessibility": self.accessibility,
+            "server_fetchable": self.server_fetchable,
+            "fetch_note": self.fetch_note,
+            "collector": self.collector,
+            "evidence_class": self.evidence_class,
+            "confidence": round(self.confidence, 4),
+            "match_reasons": self.match_reasons,
+            "mismatch_reasons": self.mismatch_reasons,
+            "corroborated_by": self.corroborated_by,
+            "candidate_id": self.candidate_id,
+            "retrieved_at": self.retrieved_at.isoformat() if self.retrieved_at else None,
+            "analyst_decision": self.analyst_decision,
+            "analyst_note": self.analyst_note,
+        }
+
+
+@dataclass(slots=True)
+class ImageItem:
+    """A public image as page context, with its provenance.
+
+    Never a biometric claim: ``analysis`` and ``biometric_matching`` are carried
+    into the report so the limit travels with the data rather than living only
+    in the code that produced it.
+    """
+
+    id: str
+    image_url: str
+    source_page_url: str
+    platform: str | None
+    caption: str | None
+    fetch_state: str
+    #: Present only when the bytes were actually read.
+    sha256: str | None
+    content_type: str | None
+    byte_length: int | None
+    width: int | None
+    height: int | None
+    redirects: list[str]
+    final_url: str | None
+    fetch_note: str | None
+    origin: str
+    evidence_class: str
+    candidate_id: str | None
+    retrieved_at: datetime | None
+    analysis: str = "none"
+    biometric_matching: bool = False
+    analyst_decision: str | None = None
+    analyst_note: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "image_url": self.image_url,
+            "source_page_url": self.source_page_url,
+            "platform": self.platform,
+            "caption": self.caption,
+            "fetch_state": self.fetch_state,
+            "sha256": self.sha256,
+            "content_type": self.content_type,
+            "byte_length": self.byte_length,
+            "dimensions": {"width": self.width, "height": self.height},
+            "redirects": self.redirects,
+            "final_url": self.final_url,
+            "fetch_note": self.fetch_note,
+            "origin": self.origin,
+            "evidence_class": self.evidence_class,
+            "candidate_id": self.candidate_id,
+            "retrieved_at": self.retrieved_at.isoformat() if self.retrieved_at else None,
+            "analysis": self.analysis,
+            "biometric_matching": self.biometric_matching,
+            "analyst_decision": self.analyst_decision,
+            "analyst_note": self.analyst_note,
+        }
+
+
+@dataclass(slots=True)
+class AnalystDecisionItem:
+    """One recorded human judgement."""
+
+    subject_type: str
+    subject_id: str
+    decision: str
+    note: str | None
+    decided_by: str | None
+    decided_at: datetime
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "subject_type": self.subject_type,
+            "subject_id": self.subject_id,
+            "decision": self.decision,
+            "note": self.note,
+            "decided_by": self.decided_by,
+            "decided_at": self.decided_at.isoformat(),
+        }
+
+
+@dataclass(slots=True)
 class ReportModel:
     """Everything a report renders."""
 
@@ -217,6 +351,9 @@ class ReportModel:
     relationships: list[RelationshipItem] = field(default_factory=list)
     timeline: list[dict[str, Any]] = field(default_factory=list)
     evidence: list[EvidenceRef] = field(default_factory=list)
+    social_profiles: list[SocialProfileItem] = field(default_factory=list)
+    images: list[ImageItem] = field(default_factory=list)
+    analyst_decisions: list[AnalystDecisionItem] = field(default_factory=list)
     sources: list[SourceItem] = field(default_factory=list)
     graph: dict[str, Any] = field(default_factory=dict)
     confidence: dict[str, Any] = field(default_factory=dict)
@@ -249,11 +386,117 @@ class ReportModel:
             "confidence": self.confidence,
             "timeline": self.timeline,
             "evidence": [ref.to_dict() for ref in self.evidence],
+            "social_profiles": [item.to_dict() for item in self.social_profiles],
+            "images": [item.to_dict() for item in self.images],
+            "analyst_decisions": [item.to_dict() for item in self.analyst_decisions],
             "sources": [item.to_dict() for item in self.sources],
             "graph": self.graph,
             "methodology": self.methodology,
             "limitations": self.limitations,
         }
+
+
+def _decision_lookup(session: Session, case_id: uuid.UUID) -> dict[str, AnalystDecisionRecord]:
+    rows = session.scalars(
+        select(AnalystDecisionRecord).where(AnalystDecisionRecord.case_id == case_id)
+    )
+    return {str(row.subject_id): row for row in rows}
+
+
+def _social_profile_items(session: Session, case_id: uuid.UUID) -> list[SocialProfileItem]:
+    decisions = _decision_lookup(session, case_id)
+    rows = session.scalars(
+        select(SocialProfile)
+        .where(SocialProfile.case_id == case_id)
+        .order_by(SocialProfile.confidence.desc())
+    )
+    items = []
+    for row in rows:
+        decision = decisions.get(str(row.id))
+        items.append(
+            SocialProfileItem(
+                id=str(row.id),
+                platform=row.platform,
+                platform_label=row.platform_label,
+                handle=row.handle,
+                profile_url=row.profile_url,
+                display_name=row.display_name,
+                accessibility=str(row.accessibility),
+                server_fetchable=row.server_fetchable,
+                fetch_note=row.fetch_note,
+                collector=row.collector,
+                evidence_class=row.evidence_class,
+                confidence=row.confidence,
+                match_reasons=list(row.match_reasons or []),
+                mismatch_reasons=list(row.mismatch_reasons or []),
+                corroborated_by=list(row.corroborated_by or []),
+                candidate_id=str(row.candidate_entity_id) if row.candidate_entity_id else None,
+                retrieved_at=row.retrieved_at,
+                analyst_decision=str(decision.decision) if decision else None,
+                analyst_note=decision.note if decision else None,
+            )
+        )
+    return items
+
+
+def _image_items(session: Session, case_id: uuid.UUID) -> list[ImageItem]:
+    decisions = _decision_lookup(session, case_id)
+    rows = session.scalars(
+        select(ImageEvidence)
+        .where(ImageEvidence.case_id == case_id)
+        .order_by(ImageEvidence.created_at.desc())
+    )
+    items = []
+    for row in rows:
+        decision = decisions.get(str(row.id))
+        attributes = row.attributes or {}
+        items.append(
+            ImageItem(
+                id=str(row.id),
+                image_url=row.image_url,
+                source_page_url=row.source_page_url,
+                platform=row.platform,
+                caption=row.caption,
+                fetch_state=str(row.fetch_state),
+                sha256=row.sha256,
+                content_type=row.content_type,
+                byte_length=row.byte_length,
+                width=row.width,
+                height=row.height,
+                redirects=list(row.redirects or []),
+                final_url=row.final_url,
+                fetch_note=row.fetch_note,
+                origin=row.origin,
+                evidence_class=row.evidence_class,
+                candidate_id=str(row.candidate_entity_id) if row.candidate_entity_id else None,
+                retrieved_at=row.retrieved_at,
+                # Carried into the report so the limit travels with the data.
+                analysis=str(attributes.get("analysis", "none")),
+                biometric_matching=bool(attributes.get("biometric_matching", False)),
+                analyst_decision=str(decision.decision) if decision else None,
+                analyst_note=decision.note if decision else None,
+            )
+        )
+    return items
+
+
+def _decision_items(session: Session, case_id: uuid.UUID) -> list[AnalystDecisionItem]:
+    rows = session.scalars(
+        select(AnalystDecisionRecord)
+        .where(AnalystDecisionRecord.case_id == case_id)
+        .order_by(AnalystDecisionRecord.decided_at.desc())
+    )
+    return [
+        AnalystDecisionItem(
+            subject_type=str(row.subject_type),
+            subject_id=str(row.subject_id),
+            decision=str(row.decision),
+            note=row.note,
+            decided_by=row.decided_by,
+            decided_at=row.decided_at,
+        )
+        for row in rows
+    ]
 
 
 #: Fixed text. These statements describe how the platform works and must appear
@@ -389,6 +632,9 @@ def build_report(
         relationships=[_relationship_item(edge) for edge in relationships],
         timeline=[_timeline_item(event) for event in events],
         evidence=[_evidence_ref(row) for row in evidence_rows],
+        social_profiles=_social_profile_items(session, case_id),
+        images=_image_items(session, case_id),
+        analyst_decisions=_decision_items(session, case_id),
         sources=_sources(runs, findings),
         graph=graph_summary(graph),
         methodology=list(METHODOLOGY),
