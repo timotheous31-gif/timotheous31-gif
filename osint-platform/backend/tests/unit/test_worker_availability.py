@@ -36,12 +36,22 @@ def _patch_control(monkeypatch, replies=None, raises=None):
     from app.workers.celery_app import celery_app
 
     class _Control:
-        def inspect(self, timeout=None):
+        def inspect(self, timeout=None, connection=None):
             if raises is not None:
                 raise raises
             return _Inspect(replies)
 
+    class _Connection:
+        """A broker that connects instantly, so these tests exercise the reply."""
+
+        def ensure_connection(self, **kwargs):
+            return self
+
+        def release(self):
+            pass
+
     monkeypatch.setattr(celery_app, "control", _Control())
+    monkeypatch.setattr(celery_app, "connection", lambda **kwargs: _Connection())
 
 
 @pytest.fixture(autouse=True)
@@ -129,3 +139,55 @@ def test_eager_mode_reports_available_without_touching_the_broker(monkeypatch):
 
     _patch_control(monkeypatch, raises=AssertionError("must not be called"))
     assert job_service.worker_status().available
+
+
+def test_the_probe_fails_fast_against_a_refused_broker(monkeypatch):
+    """The probe sits on the API request path, so it must not retry.
+
+    Celery is configured with broker_connection_retry_on_startup, and
+    ``inspect(timeout=...)`` bounds only the wait for a *reply* — so against a
+    refused broker the call spends seconds in connection backoff first. Measured
+    at 6.1s before ``ensure_connection(max_retries=0)`` was added. A degraded
+    broker must not become a slow API.
+    """
+    import time
+
+    from app.workers.celery_app import celery_app
+
+    attempts = []
+
+    class _Connection:
+        def ensure_connection(self, **kwargs):
+            attempts.append(kwargs)
+            raise OSError("Connection refused")
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(celery_app, "connection", lambda **kwargs: _Connection())
+
+    started = time.monotonic()
+    status = job_service.worker_status(timeout=0.5)
+    elapsed = time.monotonic() - started
+
+    assert not status.available
+    assert elapsed < 1.0, f"probe took {elapsed:.2f}s; it must not retry"
+    # The guarantee is structural, not a timing coincidence: retries are off.
+    assert attempts and attempts[0]["max_retries"] == 0
+
+
+def test_the_connection_is_released_even_when_the_probe_fails(monkeypatch):
+    from app.workers.celery_app import celery_app
+
+    released = []
+
+    class _Connection:
+        def ensure_connection(self, **kwargs):
+            raise OSError("Connection refused")
+
+        def release(self):
+            released.append(True)
+
+    monkeypatch.setattr(celery_app, "connection", lambda **kwargs: _Connection())
+    assert not job_service.worker_status().available
+    assert released, "a probe must not leak a broker connection"

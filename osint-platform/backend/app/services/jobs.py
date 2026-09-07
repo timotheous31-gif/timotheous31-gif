@@ -65,7 +65,18 @@ def worker_status(timeout: float = WORKER_PING_TIMEOUT_SECONDS) -> WorkerStatus:
     try:
         from app.workers.celery_app import celery_app
 
-        replies = celery_app.control.inspect(timeout=timeout).ping()
+        # The connection is established explicitly, with retries off. Celery is
+        # configured with broker_connection_retry_on_startup, and inspect()'s
+        # own timeout governs only how long to wait for a *reply* — so against a
+        # refused broker the call spends seconds in connection backoff before it
+        # ever gets to the timeout. Measured at 6.1s, on the request path, for a
+        # question whose answer is "no". max_retries=0 makes a refusal a refusal.
+        connection = celery_app.connection(connect_timeout=timeout)
+        try:
+            connection.ensure_connection(max_retries=0, timeout=timeout)
+            replies = celery_app.control.inspect(timeout=timeout, connection=connection).ping()
+        finally:
+            connection.release()
     except Exception as exc:  # broker unreachable, auth failure, anything
         return WorkerStatus(False, (), f"broker unreachable ({type(exc).__name__}: {exc})")
     if not replies:
