@@ -111,7 +111,10 @@ services:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/healthz"]
+      # 127.0.0.1, not localhost: Docker's /etc/hosts also maps localhost to
+      # ::1, and the standalone server binds IPv4. The image pins
+      # HOSTNAME=0.0.0.0 so this address is actually listened on.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/healthz"]
       interval: 15s
       timeout: 5s
       start_period: 25s

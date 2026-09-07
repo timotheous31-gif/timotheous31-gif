@@ -18,7 +18,14 @@ RUN npm run build
 
 FROM node:22-alpine AS runner
 WORKDIR /app
-ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000
+# HOSTNAME is what the Next.js standalone server binds to:
+#   const hostname = process.env.HOSTNAME || '0.0.0.0'   (.next/standalone/server.js)
+# Docker sets HOSTNAME to the container id, which resolves to the container's
+# own address — so without this the server listens *only* there, never on the
+# loopback interface. The published port still works, so the app looks fine
+# from the host while every in-container probe is refused. Pin it, the way the
+# backend pins `uvicorn --host 0.0.0.0`.
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0
 RUN addgroup -g 10002 -S nodejs && adduser -u 10002 -S nextjs -G nodejs
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
@@ -26,5 +33,5 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 USER nextjs
 EXPOSE 3000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
-  CMD wget -qO- http://localhost:3000/api/healthz >/dev/null || exit 1
+  CMD wget -qO- http://127.0.0.1:3000/api/healthz >/dev/null || exit 1
 CMD ["node", "server.js"]
