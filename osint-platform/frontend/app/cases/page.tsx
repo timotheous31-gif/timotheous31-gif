@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 
+import { DeleteCase } from "@/components/case/delete-case";
 import {
   Badge,
   Button,
@@ -120,6 +121,7 @@ export default function CasesPage() {
                 <Th>Status</Th>
                 <Th>Tags</Th>
                 <Th>Created</Th>
+                <Th className="w-10 text-right">{""}</Th>
               </tr>
             </thead>
             <tbody>
@@ -144,6 +146,13 @@ export default function CasesPage() {
                   </Td>
                   <Td className="whitespace-nowrap text-xs text-muted">
                     {formatDateTime(item.created_at)}
+                  </Td>
+                  <Td className="text-right">
+                    <DeleteCase
+                      caseId={item.id}
+                      caseName={item.name}
+                      onDeleted={cases.reload}
+                    />
                   </Td>
                 </tr>
               ))}

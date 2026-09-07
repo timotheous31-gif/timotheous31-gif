@@ -33,6 +33,9 @@ export type RunStatus =
 
 export type JobState = "QUEUED" | "RUNNING" | "COMPLETE" | "FAILED" | "CANCELLED";
 
+/** What the UI shows. Adds the one state the database deliberately never stores. */
+export type EffectiveJobState = JobState | "PROCESSING_UNAVAILABLE" | "NOT_RUN";
+
 export type Classification = "PUBLIC" | "PERSONAL" | "SENSITIVE" | "RESTRICTED";
 
 export type MatchStrength =
@@ -263,6 +266,10 @@ export interface Job {
   result: Record<string, unknown>;
   cancel_requested: boolean;
   created_at: string;
+  /** Equals `state`, except a QUEUED job with no worker reads PROCESSING_UNAVAILABLE. */
+  effective_state: string;
+  /** False when no Celery worker answered a ping. */
+  processing_available: boolean;
 }
 
 export interface RunResponse {

@@ -186,6 +186,13 @@ def test_dispatch_falls_back_inline_when_the_broker_is_unreachable(
 
 
 def test_dispatch_uses_celery_when_available(db_session, case, monkeypatch):
+    """ "Available" now means a worker answered, not merely that apply_async worked.
+
+    A reachable broker with no worker consuming is the failure that left jobs at
+    0% QUEUED, so the probe is part of the dispatch path and the test has to
+    supply one.
+    """
+
     class _AsyncResult:
         id = "celery-task-123"
 
@@ -195,7 +202,55 @@ def test_dispatch_uses_celery_when_available(db_session, case, monkeypatch):
             return _AsyncResult()
 
     monkeypatch.setattr("app.workers.tasks.run_investigation_task", _Task)
+    monkeypatch.setattr(
+        job_service, "worker_status", lambda: job_service.WorkerStatus(True, ("celery@host",))
+    )
     job = job_service.create_job(db_session, case.id)
     outcome = job_service.dispatch_job(db_session, job)
-    assert outcome == {"dispatched": "celery", "celery_id": "celery-task-123"}
+    assert outcome == {
+        "dispatched": "celery",
+        "celery_id": "celery-task-123",
+        "workers": ["celery@host"],
+    }
     assert job_service.get_job(db_session, job.id).celery_id == "celery-task-123"
+
+
+def test_dispatch_runs_inline_when_the_broker_is_up_but_no_worker_consumes(
+    db_session, case, monkeypatch, tmp_path
+):
+    """The exact Docker failure: Redis healthy, celery-worker exited.
+
+    apply_async would succeed and the task would sit in a queue nobody reads, so
+    the job must never be handed over in the first place.
+    """
+    from app.core.settings import reset_settings_cache
+
+    monkeypatch.setenv("EVIDENCE_DIR", str(tmp_path / "evidence"))
+    monkeypatch.setattr("app.services.engine.load_builtin_collectors", lambda: None)
+    reset_settings_cache()
+
+    handed_over = False
+
+    class _Task:
+        @staticmethod
+        def apply_async(*args, **kwargs):
+            nonlocal handed_over
+            handed_over = True
+            raise AssertionError("must not queue onto a queue nobody is consuming")
+
+    monkeypatch.setattr("app.workers.tasks.run_investigation_task", _Task)
+    monkeypatch.setattr(
+        job_service,
+        "worker_status",
+        lambda: job_service.WorkerStatus(False, (), "no worker answered the ping"),
+    )
+    try:
+        job = job_service.create_job(db_session, case.id)
+        outcome = job_service.dispatch_job(db_session, job)
+        assert not handed_over
+        assert outcome["dispatched"] == "inline"
+        assert "no celery worker" in outcome["reason"].lower()
+        # And the job actually finishes rather than sitting queued forever.
+        assert job_service.get_job(db_session, job.id).state is JobState.COMPLETE
+    finally:
+        reset_settings_cache()
