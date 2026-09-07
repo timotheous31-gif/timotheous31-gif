@@ -8,6 +8,12 @@
  */
 
 import type {
+  AnalystDecisionRecord,
+  AnalystDecisionValue,
+  CandidateGroup,
+  DecisionSubject,
+  ImageEvidenceRecord,
+  SocialProfileRecord,
   ApiErrorBody,
   Case,
   CaseSummary,
@@ -165,6 +171,33 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ results }),
     }),
+  listSocialProfiles: (caseId: string, query?: Query) =>
+    request<SocialProfileRecord[]>(`/cases/${caseId}/social-profiles`, { query }),
+  listImages: (caseId: string, query?: Query) =>
+    request<ImageEvidenceRecord[]>(`/cases/${caseId}/images`, { query }),
+  fetchImage: (caseId: string, imageId: string) =>
+    request<ImageEvidenceRecord>(`/cases/${caseId}/images/${imageId}/fetch`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+  listCandidateGroups: (caseId: string) =>
+    request<CandidateGroup[]>(`/cases/${caseId}/candidates`),
+  recordDecision: (
+    caseId: string,
+    payload: {
+      subject_type: DecisionSubject;
+      subject_id: string;
+      decision: AnalystDecisionValue;
+      note?: string | null;
+    },
+  ) =>
+    request<AnalystDecisionRecord>(`/cases/${caseId}/decisions`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  clearDecision: (caseId: string, subjectType: DecisionSubject, subjectId: string) =>
+    request<void>(`/cases/${caseId}/decisions/${subjectType}/${subjectId}`, { method: "DELETE" }),
+
   listReconResults: (caseId: string, query?: Query) =>
     request<ImportedResult[]>(`/cases/${caseId}/recon-results`, { query }),
 

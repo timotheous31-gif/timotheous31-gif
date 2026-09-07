@@ -185,6 +185,7 @@ whatever the anchors say, and image evidence is page context only — there is n
 facial recognition anywhere in the platform.
 
 See [docs/person-recon.md](docs/person-recon.md).
+- [Social & visual recon](docs/social-recon.md) — public profiles, public images, and analyst decisions
 - [Operations](docs/operations.md) — deleting a case, and what happens when the queue stops moving
 
 ---
