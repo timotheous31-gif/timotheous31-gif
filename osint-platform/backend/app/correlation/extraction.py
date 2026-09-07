@@ -26,12 +26,31 @@ from app.correlation.anchors import ANCHOR_RULES
 from app.correlation.confidence import ConfidenceSignal, default_engine
 from app.correlation.sources import evidence_class, reference_signal
 from app.models.enums import EntityType, FindingKind, RelationshipType
+from app.privacy import is_redacted
 from app.services.normalization import registrable_domain
 
 log = get_logger(__name__)
 
 #: An entity's identity within a case.
 EntityKey = tuple[EntityType, str]
+
+
+class RedactedValueError(ValueError):
+    """An identity-bearing field held a redaction marker, not a value.
+
+    Distinct from a malformed value: nothing is wrong with the finding, the
+    privacy filter did its job, and the field simply cannot identify anything.
+    Raised so the caller can record a privacy skip instead of a parse failure —
+    and, critically, so no marker is ever handed to a typed parser. The markers
+    are bracketed, and ``urlsplit`` reads a bracketed netloc as an IPv6 literal,
+    so ``https://[REDACTED]`` parses ``REDACTED`` as an IP address and raises.
+    """
+
+    def __init__(self, field: str) -> None:
+        super().__init__(
+            f"{field!r} was redacted by the privacy filter and cannot identify an entity"
+        )
+        self.field = field
 
 
 @dataclass(slots=True)
@@ -143,6 +162,17 @@ def extract(findings: Iterable[Any]) -> ExtractionResult:
             continue
         try:
             handler(finding, result)
+        except RedactedValueError as exc:
+            # Not a fault. The privacy filter removed the value that would have
+            # identified this record, so there is nothing to extract from it.
+            # Logged at info, and separately from malformed data, so a redaction
+            # policy working as intended never reads as a bug in the pipeline.
+            log.info(
+                "extraction.finding_redacted",
+                finding_kind=str(finding.kind),
+                collector=getattr(finding, "collector", None),
+                field=exc.field,
+            )
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             # A malformed finding must not stop the rest of the extraction,
             # but it is reported rather than silently dropped.
@@ -180,7 +210,25 @@ def _ip_entity(address: str, finding: Any) -> EntityDraft:
     )
 
 
-def _website_entity(url: str, finding: Any, signal_key: str) -> EntityDraft:
+def _website_entity(
+    url: str,
+    finding: Any,
+    signal_key: str,
+    *,
+    source: str | None = None,
+    query: str | None = None,
+    engine: str | None = None,
+) -> EntityDraft:
+    """A WEBSITE entity for ``url``.
+
+    ``source`` names the collector that produced the page. When given, the
+    entity's confidence reason is worded for that source rather than carrying
+    the generic ``search_reference`` sentence — an ORCID record described as
+    "a search provider returned a page" misstates the evidence a reviewer is
+    weighing, and the entity is where a report reads that sentence from.
+    """
+    if is_redacted(url):
+        raise RedactedValueError("url")
     parts = urlsplit(url if "://" in url else f"https://{url}")
     host = (parts.hostname or url).lower()
     canonical = f"{parts.scheme or 'https'}://{host}{parts.path or '/'}".rstrip("/") or (
@@ -191,7 +239,13 @@ def _website_entity(url: str, finding: Any, signal_key: str) -> EntityDraft:
         canonical_value=canonical,
         display_name=host,
         attributes={"host": host, "url": url},
-        signals=[default_engine.signal(signal_key)],
+        signals=[
+            (
+                reference_signal(source, query=query, engine=engine)
+                if source and signal_key == "search_reference"
+                else default_engine.signal(signal_key)
+            )
+        ],
         source_finding_ids=[finding.id],
     )
 
@@ -696,7 +750,16 @@ def _handle_search_result(finding: Any, result: ExtractionResult) -> None:
     url = str(data.get("url", ""))
     if not url:
         return
-    site = result.add_entity(_website_entity(url, finding, "search_reference"))
+    site = result.add_entity(
+        _website_entity(
+            url,
+            finding,
+            "search_reference",
+            source=str(data.get("source") or finding.collector),
+            query=str(data.get("query") or "") or None,
+            engine=str(data.get("engine") or "") or None,
+        )
+    )
     site.attributes.setdefault("title", data.get("title"))
     site.attributes.setdefault("discovered_via", "search")
 
@@ -728,6 +791,14 @@ def _handle_person_candidate(finding: Any, result: ExtractionResult) -> None:
     subject_name = str(data.get("subject_name", "")).strip() or subject_value
     if not url or not subject_value:
         return
+    # Checked before anything is built, not at the point of parsing. A candidate
+    # is keyed on its page URL, so a marker reaching this far would become an
+    # entity identity — and every redacted candidate in the case would collide
+    # on the same meaningless key.
+    if is_redacted(url):
+        raise RedactedValueError("url")
+    if is_redacted(subject_value):
+        raise RedactedValueError("subject_value")
 
     subject = result.add_entity(
         EntityDraft(
@@ -794,11 +865,19 @@ def _handle_person_candidate(finding: Any, result: ExtractionResult) -> None:
         )
     )
 
-    page = result.add_entity(_website_entity(url, finding, "search_reference"))
-    page.attributes.setdefault("title", data.get("title"))
-    page.attributes.setdefault("discovered_via", "search")
-
+    # Named once and used for both the entity and the edge: the page node and
+    # the edge to it describe the same act of retrieval, so they must not be
+    # able to disagree about who performed it.
     source = str(data.get("source") or finding.collector)
+    query = str(data.get("query") or "") or None
+    engine = str(data.get("engine") or "") or None
+
+    page = result.add_entity(
+        _website_entity(url, finding, "search_reference", source=source, query=query, engine=engine)
+    )
+    page.attributes.setdefault("title", data.get("title"))
+    page.attributes.setdefault("discovered_via", source)
+
     result.add_relationship(
         RelationshipDraft(
             source=candidate.key,
@@ -807,13 +886,7 @@ def _handle_person_candidate(finding: Any, result: ExtractionResult) -> None:
             # Worded for the source that actually produced this. Attributing an
             # ORCID registry record to "a search provider" is not a wording nit:
             # it misstates the evidence a reviewer is being asked to weigh.
-            signals=[
-                reference_signal(
-                    source,
-                    query=str(data.get("query") or "") or None,
-                    engine=str(data.get("engine") or "") or None,
-                )
-            ],
+            signals=[reference_signal(source, query=query, engine=engine)],
             evidence_finding_ids=[finding.id],
             collector=finding.collector,
             source_url=finding.source_url,
@@ -871,7 +944,16 @@ def _handle_image_evidence(finding: Any, result: ExtractionResult) -> None:
     # The imported record is also a candidate: a page that names the subject.
     _handle_person_candidate(finding, result)
 
-    page = result.add_entity(_website_entity(page_url, finding, "search_reference"))
+    page = result.add_entity(
+        _website_entity(
+            page_url,
+            finding,
+            "search_reference",
+            source=str(data.get("source") or finding.collector),
+            query=str(data.get("query") or "") or None,
+            engine=str(data.get("engine") or "") or None,
+        )
+    )
     page.attributes.setdefault("title", data.get("title"))
     page.attributes.setdefault("discovered_via", data.get("source") or finding.collector)
     images = list(page.attributes.get("images") or [])
