@@ -171,6 +171,21 @@ than the case database and be circulated more widely.
 
 See [docs/privacy.md](docs/privacy.md).
 
+### Investigating a named person
+
+A PERSON target runs seven key-free collectors (ORCID, OpenAlex, Crossref,
+Wikidata, GitHub user search, Reddit, and profile checks for handles you
+supply), and generates the public-web searches an investigator would run by
+hand. The platform never scrapes a search engine: it hands you the queries, you
+run them in your own browser, and you import the public results worth keeping —
+which are recorded as *yours*, not as something the platform fetched.
+
+Candidates stay separate, confidence stays below the auto-merge threshold
+whatever the anchors say, and image evidence is page context only — there is no
+facial recognition anywhere in the platform.
+
+See [docs/person-recon.md](docs/person-recon.md).
+
 ---
 
 ## Confidence
@@ -288,6 +303,8 @@ documentation domains (`example.com`, RFC 5737 addresses) and invented handles.
 
 - [docs/architecture.md](docs/architecture.md) — components, data model, request flow
 - [docs/collectors.md](docs/collectors.md) — the collector contract and how to add one
+- [docs/person-recon.md](docs/person-recon.md) — PERSON reconnaissance: anchors, the
+  zero-cost manual-search workflow, correlation, and image-evidence limits
 - [docs/privacy.md](docs/privacy.md) — classification, redaction, retention
 - [docs/development.md](docs/development.md) — setup, workflow, conventions
 - [docs/api.md](docs/api.md) — endpoint reference and examples

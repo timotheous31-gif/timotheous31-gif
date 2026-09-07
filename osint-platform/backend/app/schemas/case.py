@@ -91,9 +91,17 @@ class PersonContext(BaseModel):
     known_usernames: list[str] = Field(default_factory=list, max_length=20)
     #: Public profile URLs the investigator already has.
     profile_urls: list[str] = Field(default_factory=list, max_length=20)
+    #: Public sites the subject is known to publish — a homepage, a blog.
+    websites: list[str] = Field(default_factory=list, max_length=20)
     #: Employers, institutions or groups, used to corroborate affiliations.
     organizations: list[str] = Field(default_factory=list, max_length=20)
     schools: list[str] = Field(default_factory=list, max_length=20)
+    #: A profession, not a job title at a named employer.
+    occupation: str | None = Field(default=None, max_length=200)
+    #: Exact public identifiers. Strongest of all, because they name one record
+    #: rather than describing a person.
+    orcid: str | None = Field(default=None, max_length=50)
+    github_username: str | None = Field(default=None, max_length=100)
     #: Coarse location only. City and country corroborate; nothing finer is
     #: accepted, because a street address is not corroboration, it is tracking.
     country: str | None = Field(default=None, max_length=100)
@@ -104,8 +112,12 @@ class PersonContext(BaseModel):
             (
                 self.known_usernames,
                 self.profile_urls,
+                self.websites,
                 self.organizations,
                 self.schools,
+                self.occupation,
+                self.orcid,
+                self.github_username,
                 self.country,
                 self.city,
             )

@@ -136,22 +136,36 @@ describe("buildPersonContext", () => {
     expect(context?.country).toBeNull();
   });
 
-  it("carries every supported field through", () => {
+  it("carries every supported anchor through", () => {
     const context = buildPersonContext({
       knownUsernames: "octocat",
       profileUrls: "https://github.com/octocat",
+      websites: "https://example.com",
       organizations: "Example Ltd",
       schools: "Example University",
+      occupation: "researcher",
+      orcid: "0000-0002-1825-0097",
+      githubUsername: "octocat",
       country: "Netherlands",
       city: "Delft",
     });
     expect(context).toEqual({
       known_usernames: ["octocat"],
       profile_urls: ["https://github.com/octocat"],
+      websites: ["https://example.com"],
       organizations: ["Example Ltd"],
       schools: ["Example University"],
+      occupation: "researcher",
+      orcid: "0000-0002-1825-0097",
+      github_username: "octocat",
       country: "Netherlands",
       city: "Delft",
     });
+  });
+
+  it("accepts an exact identifier on its own", () => {
+    const context = buildPersonContext({ ...EMPTY_PERSON_CONTEXT, orcid: "0000-0002-1825-0097" });
+    expect(context?.orcid).toBe("0000-0002-1825-0097");
+    expect(context?.known_usernames).toEqual([]);
   });
 });

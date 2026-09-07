@@ -30,6 +30,7 @@ from app.collectors.runner import RunOutcome, run_all
 from app.core.errors import NotFoundError
 from app.core.logging import case_id_var, get_logger, target_id_var
 from app.core.settings import Settings, get_settings
+from app.correlation.corroboration import CorroborationService
 from app.correlation.extraction import extract
 from app.correlation.resolver import EntityResolver, ResolutionSummary
 from app.models import (
@@ -83,6 +84,8 @@ class InvestigationResult:
     relationships_created: int = 0
     inferred_links: int = 0
     timeline_events: int = 0
+    #: Identifiers two independently operated sources both published.
+    corroborations: int = 0
     cancelled: bool = False
     errors: list[dict[str, str]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
@@ -102,6 +105,7 @@ class InvestigationResult:
             "relationships_created": self.relationships_created,
             "inferred_links": self.inferred_links,
             "timeline_events": self.timeline_events,
+            "corroborations": self.corroborations,
             "cancelled": self.cancelled,
             "errors": self.errors,
             "notes": self.notes,
@@ -118,11 +122,13 @@ class InvestigationEngine:
         privacy: PrivacyFilter | None = None,
         evidence: EvidenceStore | None = None,
         resolver: EntityResolver | None = None,
+        corroboration: CorroborationService | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.privacy = privacy or PrivacyFilter(self.settings)
         self.evidence = evidence or EvidenceStore(self.settings, self.privacy)
         self.resolver = resolver or EntityResolver()
+        self.corroboration = corroboration or CorroborationService()
         load_builtin_collectors()
 
     # ------------------------------------------------------------- entry
@@ -422,6 +428,24 @@ class InvestigationEngine:
         result.entities_updated = summary.entities_updated
         result.relationships_created = summary.relationships_created
         result.inferred_links = summary.inferred_links
+
+        # Cross-source corroboration runs after resolution, so it sees every
+        # candidate every collector produced and can spot the ones two
+        # independent sources agree about.
+        try:
+            corroboration = self.corroboration.run(session, case_id)
+        except Exception as exc:  # pragma: no cover - defensive, like the stages above
+            result.errors.append(
+                {
+                    "stage": "corroboration",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:500],
+                }
+            )
+            log.exception("investigation.corroboration_failed", case_id=str(case_id))
+        else:
+            result.corroborations = len(corroboration.corroborations)
+            result.notes.extend(item.reason for item in corroboration.corroborations)
         return summary
 
     def _build_timeline(

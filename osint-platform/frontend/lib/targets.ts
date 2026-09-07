@@ -66,8 +66,12 @@ export function ambiguityChoices(preview: NormalizationPreview | null): TargetTy
 export interface PersonContextInput {
   knownUsernames: string;
   profileUrls: string;
+  websites: string;
   organizations: string;
   schools: string;
+  occupation: string;
+  orcid: string;
+  githubUsername: string;
   country: string;
   city: string;
 }
@@ -75,8 +79,12 @@ export interface PersonContextInput {
 export const EMPTY_PERSON_CONTEXT: PersonContextInput = {
   knownUsernames: "",
   profileUrls: "",
+  websites: "",
   organizations: "",
   schools: "",
+  occupation: "",
+  orcid: "",
+  githubUsername: "",
   country: "",
   city: "",
 };
@@ -100,16 +108,24 @@ export function buildPersonContext(input: PersonContextInput): PersonContext | n
   const context: PersonContext = {
     known_usernames: list(input.knownUsernames),
     profile_urls: list(input.profileUrls),
+    websites: list(input.websites),
     organizations: list(input.organizations),
     schools: list(input.schools),
+    occupation: input.occupation.trim() || null,
+    orcid: input.orcid.trim() || null,
+    github_username: input.githubUsername.trim() || null,
     country: input.country.trim() || null,
     city: input.city.trim() || null,
   };
   const empty =
     context.known_usernames?.length === 0 &&
     context.profile_urls?.length === 0 &&
+    context.websites?.length === 0 &&
     context.organizations?.length === 0 &&
     context.schools?.length === 0 &&
+    !context.occupation &&
+    !context.orcid &&
+    !context.github_username &&
     !context.country &&
     !context.city;
   return empty ? null : context;

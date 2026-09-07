@@ -158,6 +158,39 @@ DEFAULT_RULES: dict[str, ConfidenceRule] = {
             ceiling=0.90,
         ),
         ConfidenceRule(
+            "anchor_orcid_match",
+            0.88,
+            "The record carries the exact ORCID iD the investigator supplied, which "
+            "identifies one researcher rather than describing a person",
+            ceiling=0.92,
+        ),
+        ConfidenceRule(
+            "anchor_github_match",
+            0.80,
+            "The account is the exact GitHub username the investigator supplied",
+            ceiling=0.88,
+        ),
+        ConfidenceRule(
+            "anchor_website_match",
+            0.60,
+            "The record publishes a link to a website the investigator supplied for " "the subject",
+            ceiling=0.75,
+        ),
+        ConfidenceRule(
+            "anchor_occupation_match",
+            0.20,
+            "The stated occupation matches, which very many unrelated people of the "
+            "same name will also share",
+            ceiling=0.35,
+        ),
+        ConfidenceRule(
+            "independent_corroboration",
+            0.55,
+            "A second, independently operated source published the same identifier "
+            "for this record",
+            ceiling=0.80,
+        ),
+        ConfidenceRule(
             "context_username_match",
             0.65,
             "The account handle matches one the investigator supplied as known for " "the subject",

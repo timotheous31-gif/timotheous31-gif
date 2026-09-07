@@ -316,10 +316,71 @@ export interface CollectorInfo {
 export interface PersonContext {
   known_usernames?: string[];
   profile_urls?: string[];
+  /** Public sites the subject is known to publish. */
+  websites?: string[];
   organizations?: string[];
   schools?: string[];
+  /** A profession, not a job title at a named employer. */
+  occupation?: string | null;
+  /** Exact public identifiers — the strongest anchors available. */
+  orcid?: string | null;
+  github_username?: string | null;
   country?: string | null;
   city?: string | null;
+}
+
+/** One generated search, and why it is worth running. */
+export interface ReconQuery {
+  query: string;
+  family: string;
+  rationale: string;
+  priority: number;
+  anchors_used: string[];
+}
+
+export interface ReconQueryPlan {
+  target_id: string;
+  subject_name: string;
+  queries: ReconQuery[];
+  anchors_used: string[];
+  /** States plainly that the platform will not run these itself. */
+  execution: string;
+}
+
+/** A public result the investigator selected from their own search. */
+export interface ImportedResult {
+  id: string;
+  url: string;
+  title: string;
+  snippet: string;
+  query: string;
+  engine: string;
+  platform: string | null;
+  platform_label: string | null;
+  url_kind: string | null;
+  handle: string | null;
+  is_image: boolean;
+  image_url: string | null;
+  thumbnail_url: string | null;
+  caption: string | null;
+  /** api_fetched | page_fetched | investigator_imported */
+  evidence_class: string;
+  imported_at: string | null;
+  confidence: number;
+  evidence_sha256: string[];
+}
+
+export interface ManualResultInput {
+  query: string;
+  url: string;
+  title?: string;
+  snippet?: string;
+  engine?: string;
+  result_type?: string | null;
+  notes?: string | null;
+  image_url?: string | null;
+  thumbnail_url?: string | null;
+  caption?: string | null;
 }
 
 export interface NormalizationPreview {

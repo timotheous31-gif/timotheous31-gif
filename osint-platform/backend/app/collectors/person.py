@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
+import httpx
+
 from app.collectors.base import (
     BaseCollector,
     CollectorConfiguration,
@@ -33,6 +35,9 @@ from app.collectors.base import (
     FindingDraft,
     RawPayload,
 )
+from app.collectors.social import classify_url
+from app.core.errors import CollectorUnavailable
+from app.correlation.anchors import ANCHOR_REASONS, ANCHOR_RULES
 from app.correlation.confidence import ConfidenceSignal, default_engine
 from app.models.enums import Classification, FindingKind, TargetType
 from app.services.normalization import NormalizedTarget
@@ -51,6 +56,48 @@ def _tokens(text: str) -> set[str]:
     return {token for token in _fold(text).split() if len(token) > 2}
 
 
+# ------------------------------------------------------------ normalisation
+#
+# Anchors arrive as an investigator typed them. Normalising is what makes an
+# anchor comparable to what a source published, and each function stays narrow:
+# it folds away notation, never meaning. "T. Samar" is not normalised into
+# "Timotheous Samar", because that would merge two different people.
+
+
+def normalize_handle(value: str) -> str:
+    """Fold a handle to its bare, lower-case form (``@Alice`` -> ``alice``)."""
+    text = (value or "").strip()
+    if not text:
+        return ""
+    if "://" in text or text.count("/") >= 2:
+        # A profile URL was pasted into a username field; take the handle.
+        profile = classify_url(text)
+        if profile and profile.handle:
+            return profile.handle.lower()
+    return text.lstrip("@").strip("/").lower()
+
+
+def normalize_url(value: str) -> str:
+    """Canonical form of a public URL, for comparison against a candidate's."""
+    text = (value or "").strip()
+    if not text:
+        return ""
+    profile = classify_url(text)
+    return profile.url if profile else text.rstrip("/").lower()
+
+
+def normalize_orcid(value: str) -> str:
+    """The bare ORCID iD, whether given as an iD or as an orcid.org URL."""
+    text = (value or "").strip()
+    if not text:
+        return ""
+    candidate = text.rsplit("/", 1)[-1].strip().upper()
+    return candidate if ORCID_RE.match(candidate) else ""
+
+
+ORCID_RE = re.compile(r"^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$")
+
+
 @dataclass(frozen=True, slots=True)
 class PersonContext:
     """Investigator-supplied context, read back off the target.
@@ -63,10 +110,21 @@ class PersonContext:
 
     known_usernames: tuple[str, ...] = ()
     profile_urls: tuple[str, ...] = ()
+    #: Public sites the subject is known to publish (a homepage, a blog).
+    websites: tuple[str, ...] = ()
     organizations: tuple[str, ...] = ()
     schools: tuple[str, ...] = ()
+    #: A profession, not a job title at a named employer.
+    occupation: str | None = None
+    #: Exact public identifiers — the strongest anchors available, because they
+    #: identify one record rather than describing a person.
+    orcid: str | None = None
+    github_username: str | None = None
     country: str | None = None
     city: str | None = None
+    #: What the investigator originally typed, preserved verbatim so a report
+    #: can explain a match in their own words rather than in normalised form.
+    raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_target(cls, target: NormalizedTarget) -> PersonContext:
@@ -86,12 +144,19 @@ class PersonContext:
             return text or None
 
         return cls(
-            known_usernames=_strings("known_usernames"),
-            profile_urls=_strings("profile_urls"),
+            known_usernames=tuple(
+                handle for item in _strings("known_usernames") if (handle := normalize_handle(item))
+            ),
+            profile_urls=tuple(normalize_url(item) for item in _strings("profile_urls")),
+            websites=tuple(normalize_url(item) for item in _strings("websites")),
             organizations=_strings("organizations"),
             schools=_strings("schools"),
+            occupation=_string("occupation"),
+            orcid=normalize_orcid(_string("orcid") or "") or None,
+            github_username=normalize_handle(_string("github_username") or "") or None,
             country=_string("country"),
             city=_string("city"),
+            raw={key: value for key, value in raw.items() if value not in (None, "", [])},
         )
 
     @property
@@ -102,8 +167,27 @@ class PersonContext:
     def places(self) -> tuple[str, ...]:
         return tuple(place for place in (self.city, self.country) if place)
 
+    @property
+    def all_handles(self) -> tuple[str, ...]:
+        """Every handle anchor, including the GitHub one stated separately."""
+        handles = list(self.known_usernames)
+        if self.github_username and self.github_username not in handles:
+            handles.append(self.github_username)
+        return tuple(handles)
+
+    @property
+    def known_links(self) -> tuple[str, ...]:
+        return self.profile_urls + self.websites
+
     def is_empty(self) -> bool:
-        return not (self.known_usernames or self.profile_urls or self.affiliations or self.places)
+        return not (
+            self.all_handles
+            or self.known_links
+            or self.affiliations
+            or self.places
+            or self.occupation
+            or self.orcid
+        )
 
     def describe(self) -> list[str]:
         """What was supplied, for the run stats. Values, not counts, are the
@@ -117,6 +201,14 @@ class PersonContext:
             parts.append(f"organisations: {', '.join(self.organizations)}")
         if self.schools:
             parts.append(f"schools: {', '.join(self.schools)}")
+        if self.occupation:
+            parts.append(f"occupation: {self.occupation}")
+        if self.orcid:
+            parts.append(f"ORCID: {self.orcid}")
+        if self.github_username:
+            parts.append(f"GitHub: {self.github_username}")
+        if self.websites:
+            parts.append(f"websites: {len(self.websites)}")
         if self.places:
             parts.append(f"place: {', '.join(self.places)}")
         return parts
@@ -163,18 +255,49 @@ class Assessment:
     signals: list[ConfidenceSignal] = field(default_factory=list)
     match_reasons: list[str] = field(default_factory=list)
     mismatch_reasons: list[str] = field(default_factory=list)
+    #: Anchor kinds that matched, e.g. ``["orcid", "affiliation"]``.
     corroborated_by: list[str] = field(default_factory=list)
+    #: Anchor kinds the source contradicts. A conflict never subtracts score —
+    #: it is surfaced so a human can rule the candidate out themselves.
+    conflicts: list[str] = field(default_factory=list)
 
 
 def assess(candidate: PersonCandidate, subject: str, context: PersonContext) -> Assessment:
-    """Score one candidate against the subject and the supplied context.
+    """Score one candidate against the subject and the supplied anchors.
 
-    The name always contributes ``same_person_name``, which is capped low
-    enough that it can never on its own suggest a match. Everything above that
-    comes from context the investigator supplied independently of the search.
+    The name always contributes ``same_person_name``, capped low enough that it
+    can never on its own suggest a match. Everything above that comes from
+    anchors the investigator supplied independently of the search, and each
+    anchor kind fires exactly one named rule with its own ceiling — so no
+    quantity of weak agreements can substitute for one strong one.
     """
     result = Assessment(signals=[default_engine.signal("same_person_name")])
+    _assess_name(candidate, subject, result)
 
+    for kind, detail in _anchor_matches(candidate, context):
+        result.signals.append(default_engine.signal(ANCHOR_RULES[kind], detail=detail))
+        result.corroborated_by.append(kind)
+        result.match_reasons.append(ANCHOR_REASONS[kind].format(detail=detail))
+
+    _assess_conflicts(candidate, context, result)
+
+    if not result.corroborated_by:
+        result.mismatch_reasons.append(
+            "Nothing beyond the name connects this record to the subject"
+            + ("" if context.is_empty() else " — none of the anchors you supplied appears in it")
+        )
+    if context.is_empty():
+        result.mismatch_reasons.append(
+            "No anchors were supplied, so no candidate here can be corroborated or ruled out"
+        )
+    if not candidate.affiliations and not candidate.locations and not candidate.handles:
+        result.mismatch_reasons.append(
+            "This source publishes nothing else about the record that could be checked"
+        )
+    return result
+
+
+def _assess_name(candidate: PersonCandidate, subject: str, result: Assessment) -> None:
     if _fold(candidate.name) == _fold(subject):
         result.match_reasons.append(
             f"The source spells the name exactly as searched: {candidate.name!r}"
@@ -188,82 +311,133 @@ def assess(candidate: PersonCandidate, subject: str, context: PersonContext) -> 
             f"which may mean a different person"
         )
 
-    matched_url = _match_profile_url(candidate, context)
+
+def _anchor_matches(candidate: PersonCandidate, context: PersonContext) -> list[tuple[str, str]]:
+    """Every anchor kind that matches, each at most once.
+
+    Ordered strongest first, and each kind contributes a single signal however
+    many values agree: five matching affiliations are one affiliation match, not
+    five, because they are one fact observed once.
+    """
+    matches: list[tuple[str, str]] = []
+
+    matched_url = _match_link(candidate, context.profile_urls)
     if matched_url:
-        result.signals.append(
-            default_engine.signal("context_profile_url_match", detail=matched_url)
-        )
-        result.match_reasons.append(
-            f"This is a profile URL you supplied for the subject ({matched_url})"
-        )
-        result.corroborated_by.append("profile_url")
+        matches.append(("profile_url", matched_url))
+
+    supplied_orcid = normalize_orcid(context.orcid or "")
+    if supplied_orcid and supplied_orcid == _candidate_orcid(candidate):
+        matches.append(("orcid", supplied_orcid))
+
+    github = _candidate_identifier(candidate, "github_login") or _handle_for_platform(
+        candidate, "github"
+    )
+    supplied_github = normalize_handle(context.github_username or "")
+    if supplied_github and github and supplied_github == normalize_handle(github):
+        matches.append(("github_username", github))
 
     matched_handle = _match_handle(candidate, context)
-    if matched_handle:
-        result.signals.append(
-            default_engine.signal("context_username_match", detail=matched_handle)
-        )
-        result.match_reasons.append(
-            f"The account handle {matched_handle!r} is one you supplied as known for the subject"
-        )
-        result.corroborated_by.append("username")
+    if matched_handle and not any(kind == "github_username" for kind, _ in matches):
+        matches.append(("username", matched_handle))
+
+    matched_site = _match_link(candidate, context.websites)
+    if matched_site and not any(kind == "profile_url" for kind, _ in matches):
+        matches.append(("website", matched_site))
 
     matched_affiliation = _match_affiliation(candidate, context)
     if matched_affiliation:
-        supplied, observed = matched_affiliation
-        result.signals.append(default_engine.signal("context_affiliation_match", detail=observed))
-        result.match_reasons.append(
-            f"The source lists {observed!r}, matching the affiliation you supplied ({supplied!r})"
-        )
-        result.corroborated_by.append("affiliation")
-    elif context.affiliations and candidate.affiliations:
-        result.mismatch_reasons.append(
-            "None of the affiliations this source lists "
-            f"({', '.join(candidate.affiliations[:3])}) match the ones you supplied"
-        )
+        matches.append(("affiliation", matched_affiliation[1]))
+
+    matched_occupation = _match_occupation(candidate, context)
+    if matched_occupation:
+        matches.append(("occupation", matched_occupation))
 
     matched_place = _match_place(candidate, context)
     if matched_place:
-        result.signals.append(default_engine.signal("context_location_match", detail=matched_place))
-        result.match_reasons.append(
-            f"The source places this record in {matched_place}, as you supplied"
-        )
-        result.corroborated_by.append("location")
+        matches.append(("location", matched_place))
 
-    if not result.corroborated_by:
+    return matches
+
+
+def anchor_matches(candidate: PersonCandidate, context: PersonContext) -> list[tuple[str, str]]:
+    """Anchor kinds matching this candidate, for callers outside collection.
+
+    An investigator-imported result is held to the same anchor model as a
+    collected one: whether an anchor matches is a property of the record and the
+    subject, not of how the record was found. Exposed rather than reimplemented
+    so the import path cannot drift from the collectors.
+    """
+    return _anchor_matches(candidate, context)
+
+
+def _assess_conflicts(
+    candidate: PersonCandidate, context: PersonContext, result: Assessment
+) -> None:
+    """Record where the source positively disagrees with an anchor.
+
+    Only a *stated* disagreement counts. A source that publishes no affiliation
+    is silent, not contradictory, and silence must never read as a conflict.
+    """
+    if (
+        context.affiliations
+        and candidate.affiliations
+        and "affiliation" not in result.corroborated_by
+    ):
+        result.conflicts.append("affiliation")
         result.mismatch_reasons.append(
-            "Nothing beyond the name connects this record to the subject"
-            + ("" if context.is_empty() else " — none of the context you supplied appears in it")
+            f"The affiliations this source lists ({', '.join(candidate.affiliations[:3])}) "
+            f"do not include any you supplied"
         )
-    if context.is_empty():
+    if context.places and candidate.locations and "location" not in result.corroborated_by:
+        result.conflicts.append("location")
         result.mismatch_reasons.append(
-            "No context was supplied, so no candidate here can be corroborated or ruled out"
+            f"This source places the record in {', '.join(candidate.locations[:3])}, "
+            f"not {', '.join(context.places)}"
         )
-    if not candidate.affiliations and not candidate.locations and not candidate.handles:
+    orcid = _candidate_orcid(candidate)
+    supplied_orcid = normalize_orcid(context.orcid or "")
+    if supplied_orcid and orcid and supplied_orcid != orcid:
+        result.conflicts.append("orcid")
         result.mismatch_reasons.append(
-            "This source publishes nothing else about the record that could be checked"
+            f"This record carries ORCID {orcid}, which is not the {supplied_orcid} you supplied — "
+            f"a different researcher"
         )
 
-    return result
+
+def _candidate_orcid(candidate: PersonCandidate) -> str:
+    return normalize_orcid(str(candidate.identifiers.get("orcid", "")))
 
 
-def _match_profile_url(candidate: PersonCandidate, context: PersonContext) -> str | None:
-    def canon(url: str) -> str:
-        parts = urlsplit(url if "://" in url else f"https://{url}")
-        host = (parts.hostname or "").lower().removeprefix("www.")
-        return f"{host}{parts.path.rstrip('/').lower()}"
+def _candidate_identifier(candidate: PersonCandidate, key: str) -> str:
+    return str(candidate.identifiers.get(key, "")).strip().lower()
 
-    target = canon(candidate.url)
-    for supplied in context.profile_urls:
-        if target and canon(supplied) == target:
-            return supplied
+
+def _handle_for_platform(candidate: PersonCandidate, platform: str) -> str:
+    profile = classify_url(candidate.url)
+    if profile and profile.platform == platform and profile.handle:
+        return profile.handle
+    return ""
+
+
+def _match_link(candidate: PersonCandidate, supplied: tuple[str, ...]) -> str | None:
+    """Match the candidate's own URL, or a link it publishes, against anchors."""
+    candidate_links = {normalize_url(candidate.url)}
+    for value in candidate.extra.values():
+        if isinstance(value, str) and value.startswith(("http://", "https://")):
+            candidate_links.add(normalize_url(value))
+    for value in supplied:
+        # Normalise the supplied side here too: a context built directly in
+        # code has not been through ``from_target``, and a trailing slash must
+        # not be the difference between a match and a miss.
+        if value and normalize_url(value) in candidate_links:
+            return value
     return None
 
 
 def _match_handle(candidate: PersonCandidate, context: PersonContext) -> str | None:
-    known = {name.strip().lstrip("@").lower() for name in context.known_usernames}
+    known = {normalize_handle(item) for item in context.all_handles}
     for handle in candidate.handles:
-        if handle.strip().lstrip("@").lower() in known:
+        if normalize_handle(handle) in known:
             return handle
     return None
 
@@ -282,9 +456,21 @@ def _match_affiliation(
         if not supplied_tokens:
             continue
         for observed in candidate.affiliations:
-            observed_tokens = _tokens(observed)
-            if supplied_tokens & observed_tokens:
+            if supplied_tokens & _tokens(observed):
                 return supplied, observed
+    return None
+
+
+def _match_occupation(candidate: PersonCandidate, context: PersonContext) -> str | None:
+    if not context.occupation:
+        return None
+    wanted = _tokens(context.occupation)
+    if not wanted:
+        return None
+    haystack = [*candidate.extra.get("occupations", []), candidate.summary]
+    for observed in haystack:
+        if isinstance(observed, str) and wanted & _tokens(observed):
+            return context.occupation
     return None
 
 
@@ -338,7 +524,22 @@ class PersonSourceCollector(BaseCollector):
     async def collect(self, target: NormalizedTarget, ctx: CollectorContext) -> CollectorResult:
         name = str(target.attributes.get("display_name", target.value))
         context = PersonContext.from_target(target)
-        candidates, notes = await self.find_candidates(name, target, ctx)
+        try:
+            candidates, notes = await self.find_candidates(name, target, ctx)
+        except (httpx.ProxyError, httpx.ConnectError) as exc:
+            # The endpoint could not be reached at all: an egress policy, a
+            # corporate proxy, or the platform's own edge refused the
+            # connection. That is a fact about where this deployment runs, not
+            # a defect in the collector, so it is reported as unavailable with
+            # the reason rather than as a failure. Timeouts and every other
+            # error deliberately fall through and are recorded as failures,
+            # because those are the ones worth investigating.
+            raise CollectorUnavailable(
+                f"{self.source_label} could not be reached from this deployment "
+                f"({type(exc).__name__}: {exc}). The endpoint is public; the "
+                f"connection was refused before any request was answered. No "
+                f"attempt is made to route around it."
+            ) from exc
 
         result = CollectorResult(
             stats={

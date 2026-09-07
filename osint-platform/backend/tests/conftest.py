@@ -60,6 +60,23 @@ TEST_DNS = {
     "www.wikidata.org": "93.184.215.14",
     "www.reddit.com": "93.184.215.14",
     "reddit.com": "93.184.215.14",
+    # Public social hosts used by the recon-import tests. These are only ever
+    # resolved by the SSRF guard while validating a pasted URL; no test fetches
+    # them.
+    "www.linkedin.com": "93.184.215.14",
+    "linkedin.com": "93.184.215.14",
+    "www.instagram.com": "93.184.215.14",
+    "www.facebook.com": "93.184.215.14",
+    "www.youtube.com": "93.184.215.14",
+    "www.snapchat.com": "93.184.215.14",
+    "orcid.org": "93.184.215.14",
+    "doi.org": "93.184.215.14",
+}
+
+#: Hosts that must resolve to an address the SSRF guard blocks, so the guard is
+#: exercised on the name rather than short-circuited by a literal.
+TEST_DNS_BLOCKED = {
+    "metadata.google.internal": "169.254.169.254",
 }
 
 #: A documented public address, used for every allowed host.
@@ -95,7 +112,8 @@ def _offline(monkeypatch) -> Iterator[None]:
     allowed = _allowed_hosts()
 
     def fake_getaddrinfo(host, port, *args, **kwargs):
-        address = allowed.get(str(host).lower().rstrip("."))
+        name = str(host).lower().rstrip(".")
+        address = allowed.get(name) or TEST_DNS_BLOCKED.get(name)
         if address is None:
             raise AssertionError(
                 f"Test attempted to resolve {host!r}. Mock the request, or add the "

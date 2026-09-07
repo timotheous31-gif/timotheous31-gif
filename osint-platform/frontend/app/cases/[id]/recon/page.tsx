@@ -1,0 +1,353 @@
+"use client";
+
+import { useState } from "react";
+
+import { useCaseId } from "@/components/case/shell";
+import {
+  Badge,
+  Button,
+  Card,
+  CardHeader,
+  Empty,
+  ErrorNotice,
+  Input,
+  Mono,
+  Spinner,
+} from "@/components/ui/primitives";
+import { useAsync } from "@/hooks/useApi";
+import { api } from "@/lib/api";
+import {
+  SEARCH_ENGINES,
+  type EngineKey,
+  evidenceClassLabel,
+  familyLabel,
+  groupQueries,
+  imageEvidence,
+  searchUrl,
+  socialResults,
+  toImportPayload,
+} from "@/lib/recon";
+import type { ImportedResult, Target } from "@/types/api";
+
+const EMPTY_ROW = { url: "", title: "", snippet: "", imageUrl: "", caption: "" };
+
+/**
+ * Manual search recon.
+ *
+ * The platform generates queries and accepts back whatever public results the
+ * investigator chose to keep. It never submits a query and never scrapes a
+ * result page — the "Open" links below go to the investigator's own browser
+ * session, and everything that comes back is marked as theirs, not ours.
+ */
+export default function ReconPage() {
+  const caseId = useCaseId();
+  const targets = useAsync(() => api.listTargets(caseId, { type: "PERSON" }), [caseId]);
+  const people = targets.data?.items ?? [];
+  const [selected, setSelected] = useState<string>("");
+  const targetId = selected || people[0]?.id || "";
+
+  const plan = useAsync(
+    () => (targetId ? api.reconQueries(caseId, targetId) : Promise.resolve(null)),
+    [caseId, targetId],
+  );
+  const results = useAsync(() => api.listReconResults(caseId), [caseId]);
+
+  const [engine, setEngine] = useState<EngineKey>("Google");
+  const [activeQuery, setActiveQuery] = useState("");
+  const [row, setRow] = useState(EMPTY_ROW);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<Error | null>(null);
+
+  const imported = results.data ?? [];
+  const images = imageEvidence(imported);
+  const social = socialResults(imported);
+
+  async function importResult(event: React.FormEvent) {
+    event.preventDefault();
+    const payload = toImportPayload(activeQuery, engine, row);
+    if (!payload || !targetId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.importReconResults(caseId, targetId, [payload]);
+      setRow(EMPTY_ROW);
+      results.reload();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause : new Error(String(cause)));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (targets.loading) return <Spinner />;
+  if (people.length === 0) {
+    return (
+      <Card>
+        <CardHeader title="Reconnaissance" />
+        <div className="p-4">
+          <Empty
+            title="No PERSON target in this case"
+            hint="Add one on the Targets tab to generate reconnaissance queries."
+          />
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      <Card>
+        <CardHeader
+          title="Reconnaissance queries"
+          description="Run these in your own browser, then import what is relevant"
+        />
+        <div className="flex flex-wrap items-center gap-2 border-b border-line p-4">
+          <select
+            aria-label="Person"
+            value={targetId}
+            onChange={(event) => setSelected(event.target.value)}
+            className="rounded-md border border-line bg-bg px-2 py-1.5 text-sm"
+          >
+            {people.map((person: Target) => (
+              <option key={person.id} value={person.id}>
+                {String(person.attributes?.["display_name"] ?? person.normalized_value)}
+              </option>
+            ))}
+          </select>
+          <select
+            aria-label="Search engine"
+            value={engine}
+            onChange={(event) => setEngine(event.target.value as EngineKey)}
+            className="rounded-md border border-line bg-bg px-2 py-1.5 text-sm"
+          >
+            {SEARCH_ENGINES.map((item) => (
+              <option key={item.key} value={item.key}>
+                {item.key}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {plan.data ? (
+          <>
+            <p className="px-4 pt-3 text-xs text-muted">{plan.data.execution}</p>
+            {plan.data.anchors_used.length > 0 ? (
+              <p className="px-4 pt-1 text-xs text-muted">
+                Built from your anchors: {plan.data.anchors_used.join(" · ")}
+              </p>
+            ) : (
+              <p className="px-4 pt-1 text-xs text-muted">
+                No anchors supplied. Adding known usernames, an organisation or an ORCID on
+                the target produces far narrower queries.
+              </p>
+            )}
+            <div className="space-y-4 p-4">
+              {Array.from(groupQueries(plan.data.queries)).map(([family, queries]) => (
+                <section key={family}>
+                  <h3 className="text-xs font-medium uppercase tracking-wide text-muted">
+                    {familyLabel(family)}
+                  </h3>
+                  <ul className="mt-1 space-y-1">
+                    {queries.map((query) => (
+                      <li
+                        key={query.query}
+                        className="flex flex-wrap items-center gap-2 rounded-md border border-line px-3 py-2"
+                      >
+                        <Mono>{query.query}</Mono>
+                        {query.anchors_used.map((anchor) => (
+                          <Badge key={anchor} tone="SUCCESS">
+                            {anchor}
+                          </Badge>
+                        ))}
+                        <span className="basis-full text-xs text-muted">{query.rationale}</span>
+                        <div className="flex gap-2">
+                          <a
+                            href={searchUrl(query.query, engine)}
+                            target="_blank"
+                            rel="noreferrer noopener"
+                            className="rounded-md border border-line px-2 py-1 text-xs hover:bg-line"
+                          >
+                            Open in {engine}
+                          </a>
+                          <Button onClick={() => setActiveQuery(query.query)}>
+                            Import a result
+                          </Button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ))}
+            </div>
+          </>
+        ) : (
+          <Spinner />
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Import a public result"
+          description="Paste what you found. It is recorded as yours, not as something the platform fetched"
+        />
+        <form onSubmit={importResult} className="space-y-2 p-4">
+          <label className="block text-xs">
+            <span className="text-muted">Query that produced it</span>
+            <Input
+              aria-label="Query"
+              value={activeQuery}
+              onChange={(event) => setActiveQuery(event.target.value)}
+              placeholder="Pick a query above, or type the one you ran"
+              className="mt-0.5"
+            />
+          </label>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {(
+              [
+                ["url", "Result URL", "https://www.linkedin.com/in/example"],
+                ["title", "Title", "Example Person — LinkedIn"],
+                ["snippet", "Snippet", "Researcher at Example University"],
+                ["imageUrl", "Image URL (optional)", "https://example.org/photo.jpg"],
+                ["caption", "Caption (optional)", "Speakers at the 2024 conference"],
+              ] as const
+            ).map(([field, label, placeholder]) => (
+              <label key={field} className="block text-xs">
+                <span className="text-muted">{label}</span>
+                <Input
+                  aria-label={label}
+                  value={row[field]}
+                  placeholder={placeholder}
+                  onChange={(event) => setRow({ ...row, [field]: event.target.value })}
+                  className="mt-0.5"
+                />
+              </label>
+            ))}
+          </div>
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={busy || !row.url.trim() || !activeQuery.trim()}
+          >
+            {busy ? "Importing…" : "Import result"}
+          </Button>
+          {error ? <ErrorNotice error={error} /> : null}
+        </form>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Social profiles"
+          description="Public profile pages found so far. A URL is not an identification"
+        />
+        {social.length === 0 ? (
+          <div className="p-4">
+            <Empty title="No social profiles yet" hint="Import a profile URL above." />
+          </div>
+        ) : (
+          <ul className="divide-y divide-line">
+            {social.map((result) => (
+              <ResultRow key={result.id} result={result} />
+            ))}
+          </ul>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Images / visual evidence"
+          description="Context evidence only — no facial recognition is performed, ever"
+        />
+        {images.length === 0 ? (
+          <div className="p-4">
+            <Empty
+              title="No image evidence yet"
+              hint="Import a result with an image URL to record it here."
+            />
+          </div>
+        ) : (
+          <ul className="divide-y divide-line">
+            {images.map((result) => (
+              <li key={result.id} className="space-y-1 p-4">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-medium">{result.title}</span>
+                  <Badge tone="SKIPPED">context evidence</Badge>
+                </div>
+                {result.caption ? <p className="text-xs">{result.caption}</p> : null}
+                <p className="text-xs text-muted">
+                  Appears on{" "}
+                  <a
+                    href={result.url}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="underline"
+                  >
+                    {result.url}
+                  </a>
+                  , found by searching <Mono>{result.query}</Mono>.
+                </p>
+                <p className="text-xs text-muted">
+                  The platform performs no facial or biometric analysis and makes no claim
+                  that anyone depicted is the subject. This records where a picture appears,
+                  not who is in it.
+                </p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
+      <Card>
+        <CardHeader title="All imported results" />
+        {results.loading ? (
+          <Spinner />
+        ) : imported.length === 0 ? (
+          <div className="p-4">
+            <Empty title="Nothing imported yet" hint="Run a query above and import a result." />
+          </div>
+        ) : (
+          <ul className="divide-y divide-line">
+            {imported.map((result) => (
+              <ResultRow key={result.id} result={result} />
+            ))}
+          </ul>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function ResultRow({ result }: { result: ImportedResult }) {
+  return (
+    <li className="space-y-1 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium">{result.title || result.url}</span>
+        {result.platform_label ? <Badge>{result.platform_label}</Badge> : null}
+        {result.url_kind ? <Badge>{result.url_kind}</Badge> : null}
+        <Badge tone="SKIPPED">{evidenceClassLabel(result.evidence_class)}</Badge>
+      </div>
+      <a
+        href={result.url}
+        target="_blank"
+        rel="noreferrer noopener"
+        className="block text-xs text-muted underline"
+      >
+        {result.url}
+      </a>
+      {result.snippet ? <p className="text-xs">{result.snippet}</p> : null}
+      <p className="text-xs text-muted">
+        Found by searching <Mono>{result.query}</Mono> in {result.engine}
+        {result.handle ? (
+          <>
+            {" "}
+            · handle <Mono>{result.handle}</Mono>
+          </>
+        ) : null}
+      </p>
+      {result.evidence_sha256.length > 0 ? (
+        <p className="text-xs text-muted">
+          Stored artefact <Mono>{result.evidence_sha256[0]?.slice(0, 12)}</Mono>
+        </p>
+      ) : null}
+    </li>
+  );
+}

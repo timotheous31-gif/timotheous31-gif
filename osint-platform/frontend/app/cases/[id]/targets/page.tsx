@@ -172,17 +172,23 @@ export default function TargetsPage() {
           <div className="mx-4 mb-4 rounded-md border border-line p-3">
             <p className="text-sm font-medium">Optional context</p>
             <p className="mt-0.5 text-xs text-muted">
-              Anything you already know. It is never used to search for new personal
+              Anchors you already know. They are never used to search for new personal
               information — only to judge which of the same-name records public sources
-              return could be this person, and which can be ruled out. Comma-separated.
+              return could be this person, and which can be ruled out. Exact identifiers
+              (ORCID, GitHub username, a profile URL) are worth far more than a city or a
+              job title. Lists are comma-separated.
             </p>
             <div className="mt-2 grid gap-2 sm:grid-cols-2">
               {(
                 [
                   ["knownUsernames", "Known usernames", "octocat, example_user"],
                   ["profileUrls", "Known profile URLs", "https://github.com/octocat"],
+                  ["websites", "Known websites", "https://example.com"],
+                  ["githubUsername", "GitHub username", "octocat"],
+                  ["orcid", "ORCID iD", "0000-0002-1825-0097"],
                   ["organizations", "Organisations", "Example Ltd"],
                   ["schools", "Schools or universities", "Example University"],
+                  ["occupation", "Occupation", "researcher"],
                   ["city", "City", "Delft"],
                   ["country", "Country", "Netherlands"],
                 ] as const
