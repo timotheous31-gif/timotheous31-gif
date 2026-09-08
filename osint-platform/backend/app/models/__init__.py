@@ -11,12 +11,16 @@ from app.models.case import Case
 from app.models.collection import CollectorRun, Evidence, Finding, finding_evidence
 from app.models.entity import Entity, Relationship, entity_sources, relationship_evidence
 from app.models.enums import (
+    AnalystDecision,
     CaseStatus,
     Classification,
+    DecisionSubject,
     EntityType,
     FindingKind,
+    ImageFetchState,
     JobState,
     MatchStrength,
+    ProfileAccess,
     RelationshipType,
     ReportFormat,
     RunStatus,
@@ -24,28 +28,36 @@ from app.models.enums import (
     TargetType,
 )
 from app.models.job import Job
+from app.models.social import AnalystDecisionRecord, ImageEvidence, SocialProfile
 from app.models.tag import Tag, case_tags, target_tags
 from app.models.target import Target
 from app.models.timeline import TimelineEvent
 
 __all__ = [
+    "AnalystDecision",
+    "AnalystDecisionRecord",
     "Base",
     "Case",
     "CaseStatus",
     "Classification",
     "CollectorRun",
+    "DecisionSubject",
     "Entity",
     "EntityType",
     "Evidence",
     "Finding",
     "FindingKind",
+    "ImageEvidence",
+    "ImageFetchState",
     "Job",
     "JobState",
     "MatchStrength",
+    "ProfileAccess",
     "Relationship",
     "RelationshipType",
     "ReportFormat",
     "RunStatus",
+    "SocialProfile",
     "Tag",
     "Target",
     "TargetStatus",

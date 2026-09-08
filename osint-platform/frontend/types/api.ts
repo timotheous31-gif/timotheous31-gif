@@ -336,6 +336,88 @@ export interface PersonContext {
   city?: string | null;
 }
 
+export type AnalystDecisionValue = "CONFIRMED" | "REJECTED" | "UNRESOLVED" | "NEEDS_REVIEW";
+export type DecisionSubject = "CANDIDATE" | "SOCIAL_PROFILE" | "IMAGE";
+/** Whether the platform actually read these bytes. */
+export type ImageFetchState = "FETCHED" | "REFERENCE_ONLY" | "BLOCKED";
+
+export interface AnalystDecisionRecord {
+  id: string;
+  subject_type: DecisionSubject;
+  subject_id: string;
+  decision: AnalystDecisionValue;
+  note: string | null;
+  decided_by: string | null;
+  decided_at: string;
+}
+
+export interface SocialProfileRecord {
+  id: string;
+  candidate_entity_id: string | null;
+  platform: string;
+  platform_label: string;
+  handle: string | null;
+  profile_url: string;
+  display_name: string | null;
+  bio: string | null;
+  source_url: string | null;
+  accessibility: string;
+  server_fetchable: boolean;
+  fetch_note: string | null;
+  collector: string;
+  evidence_class: string;
+  /** Computed by the platform. An analyst decision never changes it. */
+  confidence: number;
+  match_reasons: string[];
+  mismatch_reasons: string[];
+  corroborated_by: string[];
+  retrieved_at: string | null;
+  /** The analyst's separate judgement, shown alongside rather than instead. */
+  decision: AnalystDecisionRecord | null;
+}
+
+export interface ImageEvidenceRecord {
+  id: string;
+  candidate_entity_id: string | null;
+  social_profile_id: string | null;
+  image_url: string;
+  source_page_url: string;
+  platform: string | null;
+  caption: string | null;
+  context_text: string | null;
+  fetch_state: ImageFetchState;
+  /** Present only for FETCHED: a hash of bytes the platform read. */
+  sha256: string | null;
+  content_type: string | null;
+  byte_length: number | null;
+  width: number | null;
+  height: number | null;
+  redirects: string[];
+  final_url: string | null;
+  fetch_note: string | null;
+  origin: string;
+  evidence_class: string;
+  retrieved_at: string | null;
+  evidence_id: string | null;
+  attributes: Record<string, unknown>;
+  decision: AnalystDecisionRecord | null;
+}
+
+export interface CandidateGroup {
+  entity_id: string | null;
+  display_name: string;
+  canonical_value: string;
+  confidence: number;
+  confidence_reasons: string[];
+  match_reasons: string[];
+  mismatch_reasons: string[];
+  corroborated_by: string[];
+  identity_established: boolean;
+  social_profiles: SocialProfileRecord[];
+  images: ImageEvidenceRecord[];
+  decision: AnalystDecisionRecord | null;
+}
+
 /** One generated search, and why it is worth running. */
 export interface ReconQuery {
   query: string;

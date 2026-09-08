@@ -21,6 +21,7 @@ Two rules shape what may be generated:
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -32,6 +33,7 @@ FAMILY_SOCIAL = "social"
 FAMILY_ACADEMIC = "academic"
 FAMILY_DOCUMENT = "document"
 FAMILY_ANCHOR = "anchor"
+FAMILY_IMAGE = "image"
 
 #: Public platforms worth a targeted query, as (label, site: filter).
 SOCIAL_SITES: tuple[tuple[str, str], ...] = (
@@ -39,16 +41,27 @@ SOCIAL_SITES: tuple[tuple[str, str], ...] = (
     ("Instagram", "instagram.com"),
     ("Facebook", "facebook.com"),
     ("YouTube", "youtube.com"),
+    ("X (Twitter)", "x.com"),
+    ("TikTok", "tiktok.com"),
     ("Snapchat", "snapchat.com"),
     ("GitHub", "github.com"),
     ("ORCID", "orcid.org"),
 )
 
+#: Words that bring public photographs of a named person to the surface. These
+#: search *pages that publish a picture*, which is what image evidence means
+#: here — never a reverse image lookup, and never anything that identifies a
+#: person from a photograph.
+IMAGE_TERMS: tuple[str, ...] = ("photo", "image", "profile picture", "headshot")
+
 #: Terms that must never appear in a generated query. This is a belt-and-braces
 #: check over the output of families that are already narrow by construction:
 #: the point is that adding a careless family later fails a test rather than
 #: quietly shipping an invasive query.
-FORBIDDEN_TERMS: frozenset[str] = frozenset(
+#: Terms whose only purpose in a query about a person is to extract a private
+#: fact. Refused wherever they appear — including inside an anchor, so that the
+#: anchor fields cannot be used to smuggle a query past this screen.
+NEVER_SEARCHABLE: frozenset[str] = frozenset(
     {
         "address",
         "home address",
@@ -77,7 +90,6 @@ FORBIDDEN_TERMS: frozenset[str] = frozenset(
         "boyfriend",
         "children",
         "kids",
-        "family",
         "relatives",
         "neighbour",
         "neighbor",
@@ -85,9 +97,6 @@ FORBIDDEN_TERMS: frozenset[str] = frozenset(
         "arrest",
         "criminal record",
         "mugshot",
-        "medical",
-        "diagnosis",
-        "religion",
         "sexuality",
         "location now",
         "live location",
@@ -95,6 +104,29 @@ FORBIDDEN_TERMS: frozenset[str] = frozenset(
         "coordinates",
     }
 )
+
+#: Words that name a category of sensitive information *and* routinely appear in
+#: the names of real institutions. "Liaquat University of Medical & Health
+#: Sciences" is an employer; ``"A Name" medical`` is fishing for health data.
+#: The difference is not in the word, it is in who put it there — so these are
+#: refused when the *platform* adds them and permitted inside a value the
+#: investigator supplied as an anchor.
+#:
+#: The split is narrow on purpose. Everything in NEVER_SEARCHABLE stays refused
+#: in an anchor too, which is what stops the anchor fields becoming a way around
+#: this screen.
+CONTEXTUAL_TERMS: frozenset[str] = frozenset(
+    {
+        "medical",
+        "health",
+        "diagnosis",
+        "religion",
+        "family",
+    }
+)
+
+#: Everything screened when the platform composes a query on its own.
+FORBIDDEN_TERMS: frozenset[str] = NEVER_SEARCHABLE | CONTEXTUAL_TERMS
 
 #: Ceiling on generated queries. A recon list is something a human works
 #: through, so it stays human-sized.
@@ -158,10 +190,49 @@ def generate_queries(name: str, context: PersonContext | None = None) -> list[Re
         )
     ]
     queries.extend(_social_queries(quoted, display))
+    queries.extend(_image_queries(quoted, context))
     queries.extend(_academic_queries(quoted))
     queries.extend(_anchor_queries(quoted, context))
 
-    return _finalise(queries)
+    return _finalise(queries, context)
+
+
+def _image_queries(quoted: str, context: PersonContext) -> list[ReconQuery]:
+    """Queries that surface pages publishing a public photograph.
+
+    These find *pages*, which is the only thing image evidence claims: a picture
+    appearing somewhere that names the subject. Nothing here searches by an
+    image, and nothing identifies a person from one.
+    """
+    out: list[ReconQuery] = []
+    for term in IMAGE_TERMS:
+        out.append(
+            ReconQuery(
+                query=f"{quoted} {term}",
+                family=FAMILY_IMAGE,
+                rationale=(
+                    f"Public pages that publish a {term} alongside the name. The image "
+                    f"is context for the page, not an identification."
+                ),
+                priority=45,
+            )
+        )
+    # An affiliation narrows an image search far more than any other anchor: a
+    # conference or faculty page names people beside their photographs.
+    for affiliation in context.affiliations[:2]:
+        out.append(
+            ReconQuery(
+                query=f'{quoted} "{affiliation}" photo',
+                family=FAMILY_IMAGE,
+                rationale=(
+                    f"Pages publishing a photograph in the context of {affiliation}, "
+                    f"such as staff, faculty or conference listings."
+                ),
+                priority=15,
+                anchors_used=["affiliation"],
+            )
+        )
+    return out
 
 
 def _social_queries(quoted: str, display: str) -> list[ReconQuery]:
@@ -344,7 +415,7 @@ def _anchor_queries(quoted: str, context: PersonContext) -> list[ReconQuery]:
     return out
 
 
-def _finalise(queries: list[ReconQuery]) -> list[ReconQuery]:
+def _finalise(queries: list[ReconQuery], context: PersonContext | None = None) -> list[ReconQuery]:
     """Sort, deduplicate and screen the generated list."""
     ordered = sorted(queries, key=lambda item: (item.priority, item.family, item.query))
     seen: set[str] = set()
@@ -354,16 +425,50 @@ def _finalise(queries: list[ReconQuery]) -> list[ReconQuery]:
             continue
         seen.add(query.key)
         unique.append(query)
-    return [query for query in unique if is_permitted(query.query)][:MAX_QUERIES]
+    supplied = supplied_values(context) if context is not None else ()
+    return [query for query in unique if is_permitted(query.query, supplied=supplied)][:MAX_QUERIES]
 
 
-def is_permitted(query: str) -> bool:
+def supplied_values(context: PersonContext) -> tuple[str, ...]:
+    """Anchor values the investigator stated, longest first.
+
+    Longest first so masking removes the fullest match rather than a fragment of
+    it, which matters when one anchor contains another.
+    """
+    values = [
+        *context.affiliations,
+        *context.places,
+        *(value for value in (context.occupation,) if value),
+    ]
+    return tuple(sorted((value for value in values if value.strip()), key=len, reverse=True))
+
+
+def is_permitted(query: str, *, supplied: Sequence[str] = ()) -> bool:
     """False when a query contains a term this platform will not search for.
 
     Matched on word boundaries so an anchor legitimately containing a substring
     — "Addressograph Ltd", say — is not rejected by accident.
+
+    ``supplied`` names anchor values the investigator stated. Masking them
+    relaxes :data:`CONTEXTUAL_TERMS` only: refusing to search for a stated
+    employer because its name contains "medical" protects nobody and makes the
+    platform useless to anyone working at a hospital or a medical school.
+
+    :data:`NEVER_SEARCHABLE` is checked against the *unmasked* query, so an
+    anchor cannot be used to smuggle "home address" or "date of birth" past this
+    screen. That is the whole reason the two sets are separate.
     """
     lowered = query.lower()
-    return not any(
-        re.search(rf"(?<!\w){re.escape(term)}(?!\w)", lowered) for term in FORBIDDEN_TERMS
-    )
+    if _contains(lowered, NEVER_SEARCHABLE):
+        return False
+
+    masked = lowered
+    for value in supplied:
+        cleaned = value.strip().lower()
+        if cleaned:
+            masked = masked.replace(cleaned, " ")
+    return not _contains(masked, CONTEXTUAL_TERMS)
+
+
+def _contains(text: str, terms: frozenset[str]) -> bool:
+    return any(re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text) for term in terms)

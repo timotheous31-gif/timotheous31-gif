@@ -129,6 +129,52 @@ PLATFORMS: tuple[SocialPlatform, ...] = (
         handle_prefixes=frozenset({"u", "user"}),
         reserved=frozenset({"r", "comments", "search", "submit"}),
     ),
+    SocialPlatform(
+        key="twitter",
+        display_name="X (Twitter)",
+        # Both hosts, because the rename left years of x.com and twitter.com
+        # links in circulation and an investigator will paste either.
+        hosts=frozenset(
+            {"x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"}
+        ),
+        reserved=frozenset(
+            {
+                "home",
+                "explore",
+                "search",
+                "notifications",
+                "messages",
+                "i",
+                "intent",
+                "settings",
+                "compose",
+                "hashtag",
+                "login",
+                "share",
+            }
+        ),
+        server_fetchable=False,
+        fetch_note=(
+            "X requires an authenticated session for profile content served to "
+            "anonymous clients. Only the public URL shape is recorded."
+        ),
+    ),
+    SocialPlatform(
+        key="tiktok",
+        display_name="TikTok",
+        hosts=frozenset({"tiktok.com", "www.tiktok.com", "m.tiktok.com"}),
+        # TikTok handles are written @name in the first path segment.
+        handle_prefixes=frozenset(),
+        reserved=frozenset(
+            {"video", "tag", "music", "discover", "foryou", "following", "live", "search"}
+        ),
+        server_fetchable=False,
+        fetch_note=(
+            "TikTok serves profile content to anonymous server-side clients "
+            "inconsistently and blocks most of them. Only the public URL shape "
+            "is recorded."
+        ),
+    ),
 )
 
 _BY_HOST: dict[str, SocialPlatform] = {
@@ -249,6 +295,14 @@ def _handle_for(platform: SocialPlatform, segments: list[str], query: str) -> st
 
     first = segments[0].lower()
     if first in platform.reserved:
+        return None
+
+    # A reserved segment *anywhere* in the path means the URL addresses content
+    # rather than the person: tiktok.com/@name/video/123 is a video, and
+    # reddit.com/u/name/comments/xyz is a comment. Both name a profile on the
+    # way to something else, and recording either as a profile would attribute
+    # a page to someone on the strength of a path prefix.
+    if any(segment.lower() in platform.reserved for segment in segments[1:]):
         return None
 
     # Facebook's numeric profiles live in a query string.

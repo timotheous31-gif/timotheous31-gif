@@ -71,6 +71,17 @@ TEST_DNS = {
     "www.snapchat.com": "93.184.215.14",
     "orcid.org": "93.184.215.14",
     "doi.org": "93.184.215.14",
+    # Added with the X/Twitter and TikTok classifiers. Like the hosts above,
+    # these are only ever resolved by the SSRF guard while validating a pasted
+    # URL — no test fetches them, and both platforms are marked unfetchable.
+    "x.com": "93.184.215.14",
+    "www.x.com": "93.184.215.14",
+    "twitter.com": "93.184.215.14",
+    "www.twitter.com": "93.184.215.14",
+    "mobile.twitter.com": "93.184.215.14",
+    "tiktok.com": "93.184.215.14",
+    "www.tiktok.com": "93.184.215.14",
+    "media.licdn.example": "93.184.215.14",
 }
 
 #: Hosts that must resolve to an address the SSRF guard blocks, so the guard is

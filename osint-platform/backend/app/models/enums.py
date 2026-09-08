@@ -55,6 +55,51 @@ class JobState(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class AnalystDecision(StrEnum):
+    """An analyst's judgement about an association.
+
+    Deliberately separate from automated confidence: a decision records what a
+    human concluded, and never edits what the platform computed. The two are
+    stored apart so a report can show both.
+    """
+
+    CONFIRMED = "CONFIRMED"
+    REJECTED = "REJECTED"
+    UNRESOLVED = "UNRESOLVED"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
+
+
+class DecisionSubject(StrEnum):
+    """What an analyst decision is about."""
+
+    CANDIDATE = "CANDIDATE"
+    SOCIAL_PROFILE = "SOCIAL_PROFILE"
+    IMAGE = "IMAGE"
+
+
+class ProfileAccess(StrEnum):
+    """How reachable a public profile page is, as observed — never as assumed."""
+
+    PUBLIC = "PUBLIC"
+    #: The platform refuses anonymous server-side access. Recorded, not evaded.
+    RESTRICTED = "RESTRICTED"
+    UNKNOWN = "UNKNOWN"
+
+
+class ImageFetchState(StrEnum):
+    """Whether image bytes were actually retrieved.
+
+    The distinction matters for evidence: only FETCHED carries a SHA-256 of
+    bytes this platform read. REFERENCE_ONLY means the URL is recorded and
+    nothing was downloaded, which is the honest outcome when a platform blocks
+    anonymous fetches.
+    """
+
+    FETCHED = "FETCHED"
+    REFERENCE_ONLY = "REFERENCE_ONLY"
+    BLOCKED = "BLOCKED"
+
+
 class EntityType(StrEnum):
     PERSONA = "PERSONA"
     USERNAME = "USERNAME"

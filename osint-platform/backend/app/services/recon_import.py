@@ -31,7 +31,9 @@ from app.models import Case, Finding, Target
 from app.models.enums import Classification, FindingKind, TargetType
 from app.schemas.recon import ManualResultImport
 from app.services.evidence import EvidenceStore
+from app.services.images import record_image
 from app.services.normalization import NormalizedTarget
+from app.services.social_profiles import record_profile
 
 log = get_logger(__name__)
 
@@ -189,6 +191,40 @@ def import_results(
 
         session.add(finding)
         session.flush()
+
+        # A profile-shaped URL becomes a first-class social profile, scored
+        # against the same anchors the collectors use. record_profile returns
+        # None for anything not profile-shaped, so a video page or a job listing
+        # stays a plain imported result rather than becoming somebody's account.
+        social_profile = record_profile(
+            session,
+            case_id=case_id,
+            target=target,
+            url=url,
+            collector=MANUAL_COLLECTOR,
+            evidence_class=EVIDENCE_INVESTIGATOR_IMPORTED,
+            display_name=item.title or None,
+            bio=item.snippet or None,
+            source_url=url,
+            retrieved_at=imported_at,
+        )
+        if is_image:
+            # Imported images are reference-only by default: the investigator
+            # supplied a URL from their own search, and the platform has not
+            # read those bytes. A separate fetch step can upgrade it.
+            record_image(
+                session,
+                case_id=case_id,
+                image_url=str(image_url or thumbnail_url),
+                source_page_url=url,
+                origin=MANUAL_COLLECTOR,
+                evidence_class=EVIDENCE_INVESTIGATOR_IMPORTED,
+                # `profile` is already this URL's classification.
+                platform=profile.platform if profile else None,
+                caption=item.caption or item.snippet or None,
+                social_profile_id=social_profile.id if social_profile else None,
+                retrieved_at=imported_at,
+            )
 
         # The imported record itself is the artefact: hashing it gives the
         # import the same integrity guarantee a fetched payload has.
