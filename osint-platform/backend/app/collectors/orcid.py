@@ -97,6 +97,27 @@ class OrcidCollector(PersonSourceCollector):
             summary=summary,
             identifiers={"orcid": orcid_id} if orcid_id else {},
             affiliations=institutions,
-            extra={"works_count": works if isinstance(works, int) else None},
+            extra={
+                "works_count": works if isinstance(works, int) else None,
+                # ORCID's expanded search returns `email` only for researchers
+                # who chose to publish one. Absent means they did not, and no
+                # address is ever constructed from a name and an institution.
+                "public_email": _public_email(item),
+            },
             payload=raw,
         )
+
+
+def _public_email(item: dict[str, Any]) -> str | None:
+    """A published address from an ORCID record, when the researcher made one public.
+
+    The field is a list in ORCID's schema and often absent entirely. Anything
+    that is not a plausible address is ignored rather than repaired.
+    """
+    raw = item.get("email")
+    values = raw if isinstance(raw, list) else [raw]
+    for value in values:
+        text = str(value or "").strip()
+        if "@" in text and " " not in text:
+            return text
+    return None

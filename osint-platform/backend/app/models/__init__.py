@@ -14,6 +14,8 @@ from app.models.enums import (
     AnalystDecision,
     CaseStatus,
     Classification,
+    ContactClassification,
+    ContactType,
     DecisionSubject,
     EntityType,
     FindingKind,
@@ -28,7 +30,12 @@ from app.models.enums import (
     TargetType,
 )
 from app.models.job import Job
-from app.models.social import AnalystDecisionRecord, ImageEvidence, SocialProfile
+from app.models.social import (
+    AnalystDecisionRecord,
+    ImageEvidence,
+    PublicContact,
+    SocialProfile,
+)
 from app.models.tag import Tag, case_tags, target_tags
 from app.models.target import Target
 from app.models.timeline import TimelineEvent
@@ -41,6 +48,8 @@ __all__ = [
     "CaseStatus",
     "Classification",
     "CollectorRun",
+    "ContactClassification",
+    "ContactType",
     "DecisionSubject",
     "Entity",
     "EntityType",
@@ -53,6 +62,7 @@ __all__ = [
     "JobState",
     "MatchStrength",
     "ProfileAccess",
+    "PublicContact",
     "Relationship",
     "RelationshipType",
     "ReportFormat",

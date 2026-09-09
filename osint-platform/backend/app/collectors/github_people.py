@@ -161,6 +161,11 @@ class GitHubPeopleCollector(PersonSourceCollector):
         company = str(profile.get("company") or "").strip()
         location = str(profile.get("location") or "").strip()
         blog = str(profile.get("blog") or "").strip()
+        avatar_url = str(profile.get("avatar_url") or item.get("avatar_url") or "").strip()
+        # GitHub returns `email` only when the account holder chose to publish
+        # it. A null here means they did not, and that is the end of it: no
+        # address is ever derived from a name and a domain.
+        public_email = str(profile.get("email") or "").strip()
 
         summary = f"Public GitHub account @{login}"
         if declared_name:
@@ -186,6 +191,16 @@ class GitHubPeopleCollector(PersonSourceCollector):
                 "profile_detail_fetched": bool(profile),
                 "public_repos": profile.get("public_repos"),
                 "blog": blog or None,
+                # Promoted downstream into a SocialProfile, an ImageEvidence
+                # record and a public contact. Every GitHub account has an
+                # avatar; leaving it in the raw payload was the single largest
+                # piece of public data this collector was discarding.
+                "avatar_url": avatar_url or None,
+                "public_email": public_email or None,
+                "company": company or None,
+                "location": location or None,
+                "profile_url": str(item.get("html_url") or f"https://github.com/{login}"),
+                "bio": str(profile.get("bio") or "").strip() or None,
             },
             payload=raw,
         )

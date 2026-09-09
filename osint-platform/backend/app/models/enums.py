@@ -75,6 +75,35 @@ class DecisionSubject(StrEnum):
     CANDIDATE = "CANDIDATE"
     SOCIAL_PROFILE = "SOCIAL_PROFILE"
     IMAGE = "IMAGE"
+    CONTACT = "CONTACT"
+
+
+class ContactType(StrEnum):
+    """The kind of public contact point. Professional and business only."""
+
+    EMAIL = "EMAIL"
+    PHONE = "PHONE"
+    WEBSITE = "WEBSITE"
+    CONTACT_PAGE = "CONTACT_PAGE"
+
+
+class ContactClassification(StrEnum):
+    """How well established a public contact point is.
+
+    A classification is about *provenance*, not about how useful the value
+    looks. A professional address a person published on their own profile is
+    self-published however plausible it seems; an address found in a passing
+    mention stays unverified however official the domain looks.
+    """
+
+    #: Published by the organisation itself on an official page.
+    VERIFIED_PUBLIC_BUSINESS = "VERIFIED_PUBLIC_BUSINESS"
+    #: Published in a professional registry or directory (ORCID, a staff page).
+    PUBLIC_PROFESSIONAL = "PUBLIC_PROFESSIONAL"
+    #: The person published it themselves on their own public profile.
+    PUBLIC_SELF_PUBLISHED = "PUBLIC_SELF_PUBLISHED"
+    #: Seen on a public page, with nothing establishing who it belongs to.
+    UNVERIFIED_PUBLIC_REFERENCE = "UNVERIFIED_PUBLIC_REFERENCE"
 
 
 class ProfileAccess(StrEnum):
