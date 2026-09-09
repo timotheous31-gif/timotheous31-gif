@@ -13,6 +13,7 @@ import type {
   CandidateGroup,
   DecisionSubject,
   ImageEvidenceRecord,
+  PublicContactRecord,
   SocialProfileRecord,
   ApiErrorBody,
   Case,
@@ -173,6 +174,8 @@ export const api = {
     }),
   listSocialProfiles: (caseId: string, query?: Query) =>
     request<SocialProfileRecord[]>(`/cases/${caseId}/social-profiles`, { query }),
+  listPublicContacts: (caseId: string, query?: Query) =>
+    request<PublicContactRecord[]>(`/cases/${caseId}/public-contacts`, { query }),
   listImages: (caseId: string, query?: Query) =>
     request<ImageEvidenceRecord[]>(`/cases/${caseId}/images`, { query }),
   fetchImage: (caseId: string, imageId: string) =>

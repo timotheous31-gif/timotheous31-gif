@@ -43,12 +43,51 @@ export function groupQueries(queries: ReconQuery[]): Map<string, ReconQuery[]> {
 export function familyLabel(family: string): string {
   const labels: Record<string, string> = {
     anchor: "Anchored — narrowest, run these first",
-    general: "General",
+    general: "Web",
     social: "Social platforms",
-    academic: "Research and academic",
+    image: "Images",
+    academic: "Professional & academic",
     document: "Documents",
   };
   return labels[family] ?? family;
+}
+
+/** One line on what a family is for, shown under its heading. */
+export function familyPurpose(family: string): string {
+  const purposes: Record<string, string> = {
+    anchor:
+      "Built from the anchors you supplied. These return the fewest strangers, so run them first.",
+    general: "The plain name search — broad, and mostly other people.",
+    social: "Public profile pages on each platform.",
+    image: "Pages that publish a photograph alongside the name. Not a reverse image search.",
+    academic: "Publications, registries and institutional pages.",
+    document: "Public documents that mention the name.",
+  };
+  return purposes[family] ?? "";
+}
+
+/**
+ * The order families are shown in: narrowest first.
+ *
+ * A recon list is worked top to bottom, so the queries most likely to return
+ * the subject rather than a stranger belong at the top.
+ */
+export const FAMILY_ORDER = ["anchor", "social", "image", "academic", "general", "document"];
+
+/** Families that start expanded. The rest collapse, to end the wall of cards. */
+export const EXPANDED_BY_DEFAULT = new Set(["anchor", "social"]);
+
+/** Group queries into display order, dropping empty families. */
+export function orderedGroups(queries: ReconQuery[]): [string, ReconQuery[]][] {
+  const grouped = groupQueries(queries);
+  const known = FAMILY_ORDER.filter((family) => grouped.has(family));
+  const rest = [...grouped.keys()].filter((family) => !FAMILY_ORDER.includes(family));
+  return [...known, ...rest].map((family) => [family, grouped.get(family) ?? []]);
+}
+
+/** Search URLs for every query in a group, for "open all". */
+export function groupSearchUrls(queries: ReconQuery[], engine: EngineKey = "Google"): string[] {
+  return queries.map((query) => searchUrl(query.query, engine));
 }
 
 /**

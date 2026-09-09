@@ -23,7 +23,11 @@ API = "https://api.github.com"
 SEARCH_BODY = {
     "total_count": 1,
     "items": [
-        {"login": LOGIN, "html_url": f"https://github.com/{LOGIN}", "avatar_url": f"https://avatars.githubusercontent.com/u/1?v=4"}
+        {
+            "login": LOGIN,
+            "html_url": f"https://github.com/{LOGIN}",
+            "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4",
+        }
     ],
 }
 
@@ -57,7 +61,9 @@ async def _run_github(profile_body):
 
     collector = GitHubPeopleCollector()
     target = NormalizedTarget(
-        type=TargetType.PERSON, raw_input=NAME, value=NAME.lower(),
+        type=TargetType.PERSON,
+        raw_input=NAME,
+        value=NAME.lower(),
         attributes={"display_name": NAME, "context": {}},
     )
     candidates, _notes = await collector.find_candidates(NAME, target, PersonContext())
@@ -119,9 +125,16 @@ def _finding(session, case_id, target_id, **data):
     }
     payload.update(data)
     finding = Finding(
-        case_id=case_id, target_id=target_id, kind=FindingKind.PERSON_CANDIDATE,
-        title=NAME, summary="", data=payload, collector="github_people",
-        source_url=payload["url"], confidence=0.15, dedupe_key=f"gh:{payload['url']}",
+        case_id=case_id,
+        target_id=target_id,
+        kind=FindingKind.PERSON_CANDIDATE,
+        title=NAME,
+        summary="",
+        data=payload,
+        collector="github_people",
+        source_url=payload["url"],
+        confidence=0.15,
+        dedupe_key=f"gh:{payload['url']}",
     )
     session.add(finding)
     session.flush()
@@ -163,9 +176,7 @@ async def test_a_github_candidate_becomes_a_social_profile(api_client, case_id):
 
 async def test_the_avatar_becomes_image_evidence_by_reference(api_client, case_id):
     """Recorded, but honestly: collection did not download those bytes."""
-    await _promoted(
-        api_client, case_id, avatar_url="https://avatars.githubusercontent.com/u/1?v=4"
-    )
+    await _promoted(api_client, case_id, avatar_url="https://avatars.githubusercontent.com/u/1?v=4")
     images = (await api_client.get(f"/api/v1/cases/{case_id}/images")).json()
     assert len(images) == 1
     image = images[0]
@@ -204,9 +215,7 @@ async def test_a_personal_site_becomes_a_website_contact(api_client, case_id):
     assert contacts[0]["value"] == "https://example.org/~person"
 
 
-async def test_a_social_link_in_the_blog_field_becomes_a_profile_not_a_contact(
-    api_client, case_id
-):
+async def test_a_social_link_in_the_blog_field_becomes_a_profile_not_a_contact(api_client, case_id):
     """A link to an account is a profile; only a real site is a website."""
     await _promoted(api_client, case_id, blog="https://x.com/exampleuser")
     contacts = (await api_client.get(f"/api/v1/cases/{case_id}/public-contacts")).json()
@@ -233,14 +242,16 @@ async def test_promoting_the_same_finding_twice_does_not_duplicate(api_client, c
     with get_session_factory()() as session:
         target = session.get(Target, _uuid.UUID(target_id))
         finding = _finding(
-            session, _uuid.UUID(case_id), target.id,
-            extra={"avatar_url": "https://avatars.githubusercontent.com/u/1?v=4",
-                   "public_email": "person@example.org"},
+            session,
+            _uuid.UUID(case_id),
+            target.id,
+            extra={
+                "avatar_url": "https://avatars.githubusercontent.com/u/1?v=4",
+                "public_email": "person@example.org",
+            },
         )
         for _ in range(3):
-            promote_finding(
-                session, case_id=_uuid.UUID(case_id), finding=finding, target=target
-            )
+            promote_finding(session, case_id=_uuid.UUID(case_id), finding=finding, target=target)
         session.commit()
 
     assert len((await api_client.get(f"/api/v1/cases/{case_id}/social-profiles")).json()) == 1
@@ -281,8 +292,13 @@ def test_a_non_person_finding_promotes_nothing(db_session):
     db_session.add(case)
     db_session.flush()
     finding = Finding(
-        case_id=case.id, kind=FindingKind.DNS_RECORD, title="t", data={"url": "https://example.org"},
-        collector="dns", confidence=0.5, dedupe_key="d",
+        case_id=case.id,
+        kind=FindingKind.DNS_RECORD,
+        title="t",
+        data={"url": "https://example.org"},
+        collector="dns",
+        confidence=0.5,
+        dedupe_key="d",
     )
     db_session.add(finding)
     db_session.flush()

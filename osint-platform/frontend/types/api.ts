@@ -337,7 +337,37 @@ export interface PersonContext {
 }
 
 export type AnalystDecisionValue = "CONFIRMED" | "REJECTED" | "UNRESOLVED" | "NEEDS_REVIEW";
-export type DecisionSubject = "CANDIDATE" | "SOCIAL_PROFILE" | "IMAGE";
+export type DecisionSubject = "CANDIDATE" | "SOCIAL_PROFILE" | "IMAGE" | "CONTACT";
+export type ContactType = "EMAIL" | "PHONE" | "WEBSITE" | "CONTACT_PAGE";
+export type ContactClassification =
+  | "VERIFIED_PUBLIC_BUSINESS"
+  | "PUBLIC_PROFESSIONAL"
+  | "PUBLIC_SELF_PUBLISHED"
+  | "UNVERIFIED_PUBLIC_REFERENCE";
+
+/** A publicly published professional or business contact point. */
+export interface PublicContactRecord {
+  id: string;
+  candidate_entity_id: string | null;
+  social_profile_id: string | null;
+  contact_type: ContactType;
+  value: string;
+  label: string | null;
+  classification: ContactClassification;
+  source_url: string | null;
+  source_name: string;
+  collector: string;
+  evidence_class: string;
+  evidence_id: string | null;
+  /** Computed by the platform. An analyst decision never changes it. */
+  confidence: number;
+  confidence_reasons: string[];
+  /** Why this value was promoted out of a raw payload. */
+  extraction_reason: string | null;
+  retrieved_at: string | null;
+  attributes: Record<string, unknown>;
+  decision: AnalystDecisionRecord | null;
+}
 /** Whether the platform actually read these bytes. */
 export type ImageFetchState = "FETCHED" | "REFERENCE_ONLY" | "BLOCKED";
 
@@ -415,6 +445,7 @@ export interface CandidateGroup {
   identity_established: boolean;
   social_profiles: SocialProfileRecord[];
   images: ImageEvidenceRecord[];
+  public_contacts: PublicContactRecord[];
   decision: AnalystDecisionRecord | null;
 }
 

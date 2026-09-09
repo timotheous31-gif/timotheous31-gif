@@ -10,9 +10,11 @@
 
 import type {
   AnalystDecisionValue,
+  ContactClassification,
   CandidateGroup,
   ImageEvidenceRecord,
   ImageFetchState,
+  PublicContactRecord,
   SocialProfileRecord,
 } from "@/types/api";
 
@@ -136,4 +138,59 @@ export function awaitingReview(groups: CandidateGroup[]): {
  */
 export function leadingCaveat(profile: SocialProfileRecord): string | null {
   return profile.mismatch_reasons[0] ?? null;
+}
+
+
+/**
+ * How well established a contact is, in words.
+ *
+ * About provenance, never about how official the value looks — the label has to
+ * carry that, because an address on a personal profile can look every bit as
+ * authoritative as one on a company's contact page.
+ */
+export function classificationLabel(classification: ContactClassification | string): string {
+  const labels: Record<string, string> = {
+    VERIFIED_PUBLIC_BUSINESS: "Verified public business",
+    PUBLIC_PROFESSIONAL: "Public professional registry",
+    PUBLIC_SELF_PUBLISHED: "Self-published by the subject",
+    UNVERIFIED_PUBLIC_REFERENCE: "Unverified public reference",
+  };
+  return labels[classification] ?? classification;
+}
+
+/** Badge tone: better-established provenance reads stronger. */
+export function classificationTone(
+  classification: ContactClassification | string,
+): string | undefined {
+  const tones: Record<string, string> = {
+    VERIFIED_PUBLIC_BUSINESS: "SUCCESS",
+    PUBLIC_PROFESSIONAL: "SUCCESS",
+    PUBLIC_SELF_PUBLISHED: "PARTIAL",
+    UNVERIFIED_PUBLIC_REFERENCE: "SKIPPED",
+  };
+  return tones[classification];
+}
+
+/** What to say when a case has no public contacts at all. */
+export const NO_CONTACTS = "No verified public contact found.";
+
+/** Contacts grouped by kind, so a list reads as email / phone / website. */
+export function contactsByType(
+  contacts: PublicContactRecord[],
+): Map<string, PublicContactRecord[]> {
+  const grouped = new Map<string, PublicContactRecord[]>();
+  for (const contact of contacts) {
+    grouped.set(contact.contact_type, [...(grouped.get(contact.contact_type) ?? []), contact]);
+  }
+  return grouped;
+}
+
+/** A mailto/tel/http link for a contact, or null when it is not linkable. */
+export function contactHref(contact: PublicContactRecord): string | null {
+  if (contact.contact_type === "EMAIL") return `mailto:${contact.value}`;
+  if (contact.contact_type === "PHONE") return `tel:${contact.value.replace(/\s+/g, "")}`;
+  if (contact.value.startsWith("http://") || contact.value.startsWith("https://")) {
+    return contact.value;
+  }
+  return null;
 }
