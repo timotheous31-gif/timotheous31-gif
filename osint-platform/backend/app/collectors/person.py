@@ -312,6 +312,68 @@ def _assess_name(candidate: PersonCandidate, subject: str, result: Assessment) -
         )
 
 
+def name_relationship(searched: str, declared: str) -> dict[str, str]:
+    """How a name a source declares relates to the name that was searched.
+
+    Recorded rather than resolved. A GitHub profile declaring "Timotheous Samar
+    Dass" for a search of "Timotheous Samar" is corroboration worth showing, but
+    it is not permission to rewrite the target: the investigator named the
+    subject, and a source's spelling of a name is a claim by that source. So
+    this returns a relationship and a sentence, and nothing anywhere writes the
+    declared name back onto the target.
+    """
+    searched_clean = (searched or "").strip()
+    declared_clean = (declared or "").strip()
+    if not declared_clean:
+        return {"relationship": "undeclared", "explanation": "The source declares no name."}
+    if _fold(searched_clean) == _fold(declared_clean):
+        return {
+            "relationship": "exact",
+            "explanation": (
+                f"The source spells the name exactly as searched ({declared_clean!r})."
+            ),
+        }
+
+    searched_parts = _fold(searched_clean).split()
+    declared_parts = _fold(declared_clean).split()
+    searched_set, declared_set = set(searched_parts), set(declared_parts)
+
+    if searched_set and searched_set < declared_set:
+        extra = [part for part in declared_parts if part not in searched_set]
+        return {
+            "relationship": "extends_searched_name",
+            "explanation": (
+                f"The source declares {declared_clean!r}, which carries every part of the "
+                f"searched name {searched_clean!r} plus {', '.join(extra)!r}. The name under "
+                f"investigation is unchanged."
+            ),
+        }
+    if declared_set and declared_set < searched_set:
+        return {
+            "relationship": "shortens_searched_name",
+            "explanation": (
+                f"The source declares {declared_clean!r}, a shorter form of the searched "
+                f"name {searched_clean!r}. The name under investigation is unchanged."
+            ),
+        }
+    if searched_set & declared_set:
+        shared = sorted(searched_set & declared_set)
+        return {
+            "relationship": "partial_overlap",
+            "explanation": (
+                f"The source declares {declared_clean!r}, sharing {', '.join(shared)!r} with "
+                f"the searched name {searched_clean!r} and differing elsewhere."
+            ),
+        }
+    return {
+        "relationship": "unrelated",
+        "explanation": (
+            f"The source declares {declared_clean!r}, which shares no name part with the "
+            f"searched name {searched_clean!r}."
+        ),
+    }
+
+
 def _anchor_matches(candidate: PersonCandidate, context: PersonContext) -> list[tuple[str, str]]:
     """Every anchor kind that matches, each at most once.
 

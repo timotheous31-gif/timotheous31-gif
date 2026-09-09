@@ -28,7 +28,14 @@ from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin, UUIDMixin
-from app.models.enums import AnalystDecision, DecisionSubject, ImageFetchState, ProfileAccess
+from app.models.enums import (
+    AnalystDecision,
+    ContactClassification,
+    ContactType,
+    DecisionSubject,
+    ImageFetchState,
+    ProfileAccess,
+)
 from app.models.types import GUID, JSONType
 
 
@@ -89,6 +96,44 @@ class SocialProfile(UUIDMixin, TimestampMixin, Base):
 
     retrieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     attributes: Mapped[dict] = mapped_column(JSONType, default=dict, nullable=False)
+
+    # What a profile page states about itself lives in ``attributes`` rather
+    # than in six more columns: it is one page's self-description, it differs by
+    # platform, and every reader wants it whole. These properties are the
+    # supported way in, so the API, the report and the UI all read the same
+    # keys instead of each reaching into the JSON with its own spelling.
+
+    @property
+    def profile_facts(self) -> list[dict]:
+        """Explicit statements read from the profile page, each with its line."""
+        facts = (self.attributes or {}).get("profile_facts")
+        return [fact for fact in facts if isinstance(fact, dict)] if isinstance(facts, list) else []
+
+    @property
+    def declared_name(self) -> str | None:
+        """The name the source declares. Never written back onto the target."""
+        return (self.attributes or {}).get("declared_name")
+
+    @property
+    def searched_name(self) -> str | None:
+        """The name the investigation is actually looking for."""
+        return (self.attributes or {}).get("searched_name")
+
+    @property
+    def name_relationship(self) -> dict | None:
+        """How the declared name relates to the searched one, and why."""
+        value = (self.attributes or {}).get("name_relationship")
+        return value if isinstance(value, dict) else None
+
+    @property
+    def detail_source_url(self) -> str | None:
+        """The page the statements above were read from."""
+        return (self.attributes or {}).get("readme_url")
+
+    @property
+    def detail_note(self) -> str | None:
+        """Why there are no statements, when there are none."""
+        return (self.attributes or {}).get("readme_note")
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<SocialProfile {self.platform}:{self.handle or self.profile_url}>"
@@ -198,3 +243,77 @@ class AnalystDecisionRecord(UUIDMixin, TimestampMixin, Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<AnalystDecision {self.subject_type}:{self.decision}>"
+
+
+class PublicContact(UUIDMixin, TimestampMixin, Base):
+    """A publicly published professional or business contact point.
+
+    Deliberately *public and professional only*. There is no field here for a
+    residential address, and no code path that derives an address from a name
+    and a domain — a plausible guess presented beside real evidence is worse
+    than no answer, because it reads as a finding.
+
+    Shaped like ``social_profiles`` on purpose: same candidate attribution, same
+    separation of automated confidence from analyst judgement, same provenance.
+    A parallel structure would have been a second way to say the same thing.
+    """
+
+    __tablename__ = "public_contacts"
+    __table_args__ = (
+        # One row per value per kind per case: the same address found by two
+        # collectors is one contact corroborated twice, not two contacts.
+        UniqueConstraint("case_id", "contact_type", "value", name="uq_public_contact_case_value"),
+        Index("ix_public_contacts_case_type", "case_id", "contact_type"),
+        Index("ix_public_contacts_candidate", "candidate_entity_id"),
+    )
+
+    case_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    candidate_entity_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("entities.id", ondelete="SET NULL"), default=None
+    )
+    social_profile_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("social_profiles.id", ondelete="SET NULL"), default=None
+    )
+
+    contact_type: Mapped[ContactType] = mapped_column(
+        SAEnum(ContactType, name="contact_type", native_enum=False, length=20),
+        nullable=False,
+        index=True,
+    )
+    value: Mapped[str] = mapped_column(String(500), nullable=False)
+    label: Mapped[str | None] = mapped_column(String(300), default=None)
+    classification: Mapped[ContactClassification] = mapped_column(
+        SAEnum(
+            ContactClassification,
+            name="contact_classification",
+            native_enum=False,
+            length=40,
+        ),
+        default=ContactClassification.UNVERIFIED_PUBLIC_REFERENCE,
+        nullable=False,
+        index=True,
+    )
+
+    #: Where it was published. A contact with no source is not evidence.
+    source_url: Mapped[str | None] = mapped_column(String(2048), default=None)
+    source_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    collector: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_class: Mapped[str] = mapped_column(String(40), nullable=False)
+    evidence_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("evidence.id", ondelete="SET NULL"), default=None
+    )
+
+    #: What the platform computed. An analyst decision never edits it.
+    confidence: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    confidence_reasons: Mapped[list] = mapped_column(JSONType, default=list, nullable=False)
+    #: Why this value was promoted out of a raw payload, so a reader can audit
+    #: the transformation rather than trusting it.
+    extraction_reason: Mapped[str | None] = mapped_column(Text, default=None)
+
+    retrieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    attributes: Mapped[dict] = mapped_column(JSONType, default=dict, nullable=False)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<PublicContact {self.contact_type}:{self.value[:40]}>"

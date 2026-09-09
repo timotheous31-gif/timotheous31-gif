@@ -15,10 +15,12 @@ from app.schemas.social import (
     CandidateGroup,
     FetchImageRequest,
     ImageEvidenceRead,
+    PublicContactRead,
     SocialProfileRead,
 )
 from app.services import decisions as decision_service
 from app.services import images as image_service
+from app.services import promotion as contact_service
 from app.services import social_profiles as profile_service
 
 router = APIRouter(prefix="/cases/{case_id}", tags=["social"])
@@ -47,6 +49,28 @@ def list_social_profiles(
     profiles = profile_service.profiles_for_case(session, case_id, candidate_entity_id=entity_id)
     decisions = decision_service.decision_map(session, case_id)
     return _decorate(profiles, decisions, SocialProfileRead)
+
+
+@router.get(
+    "/public-contacts",
+    response_model=list[PublicContactRead],
+    summary="Public professional and business contacts",
+)
+def list_public_contacts(
+    case_id: CaseId,
+    session: DbSession,
+    candidate_id: str | None = Query(default=None),
+) -> list[PublicContactRead]:
+    """Public contacts, best-established provenance first.
+
+    Only values a source published. Nothing here is derived from a name and a
+    domain: a plausible guess printed beside real evidence reads as a finding,
+    which is worse than returning nothing.
+    """
+    entity_id = parse_uuid(candidate_id, "candidate_id") if candidate_id else None
+    contacts = contact_service.contacts_for_case(session, case_id, candidate_entity_id=entity_id)
+    decisions = decision_service.decision_map(session, case_id)
+    return _decorate(contacts, decisions, PublicContactRead)
 
 
 @router.get("/images", response_model=list[ImageEvidenceRead], summary="Public image evidence")
@@ -129,11 +153,13 @@ def list_candidates(case_id: CaseId, session: DbSession) -> list[CandidateGroup]
 
     profiles = profile_service.profiles_for_case(session, case_id)
     images = image_service.images_for_case(session, case_id)
+    contacts = contact_service.contacts_for_case(session, case_id)
 
     groups: list[CandidateGroup] = []
     for entity in candidates:
         mine = [item for item in profiles if item.candidate_entity_id == entity.id]
         my_images = [item for item in images if item.candidate_entity_id == entity.id]
+        my_contacts = [item for item in contacts if item.candidate_entity_id == entity.id]
         found = decisions.get(str(entity.id))
         groups.append(
             CandidateGroup(
@@ -148,6 +174,7 @@ def list_candidates(case_id: CaseId, session: DbSession) -> list[CandidateGroup]
                 identity_established=bool(entity.attributes.get("identity_established", False)),
                 social_profiles=_decorate(mine, decisions, SocialProfileRead),
                 images=_decorate(my_images, decisions, ImageEvidenceRead),
+                public_contacts=_decorate(my_contacts, decisions, PublicContactRead),
                 decision=AnalystDecisionRead.model_validate(found) if found else None,
             )
         )
@@ -156,7 +183,8 @@ def list_candidates(case_id: CaseId, session: DbSession) -> list[CandidateGroup]
     # unattributed profile would silently vanish from the investigation.
     orphan_profiles = [item for item in profiles if item.candidate_entity_id is None]
     orphan_images = [item for item in images if item.candidate_entity_id is None]
-    if orphan_profiles or orphan_images:
+    orphan_contacts = [item for item in contacts if item.candidate_entity_id is None]
+    if orphan_profiles or orphan_images or orphan_contacts:
         groups.append(
             CandidateGroup(
                 entity_id=None,
@@ -172,6 +200,7 @@ def list_candidates(case_id: CaseId, session: DbSession) -> list[CandidateGroup]
                 corroborated_by=[],
                 social_profiles=_decorate(orphan_profiles, decisions, SocialProfileRead),
                 images=_decorate(orphan_images, decisions, ImageEvidenceRead),
+                public_contacts=_decorate(orphan_contacts, decisions, PublicContactRead),
             )
         )
     return groups

@@ -203,6 +203,9 @@ class WikidataCollector(PersonSourceCollector):
                 # appropriate: these are public figures by editorial consensus.
                 "notability": "Has a Wikidata item"
                 + (" and a Wikipedia article" if article else ""),
+                # Promoted to a public website reference: an encyclopaedia
+                # article about the person is published, public and citable.
+                "website": article or None,
             },
             payload=raw,
         )

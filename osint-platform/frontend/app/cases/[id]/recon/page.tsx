@@ -17,17 +17,19 @@ import {
 import { useAsync } from "@/hooks/useApi";
 import { api } from "@/lib/api";
 import {
+  EXPANDED_BY_DEFAULT,
   SEARCH_ENGINES,
   type EngineKey,
   evidenceClassLabel,
   familyLabel,
-  groupQueries,
+  familyPurpose,
   imageEvidence,
+  orderedGroups,
   searchUrl,
   socialResults,
   toImportPayload,
 } from "@/lib/recon";
-import type { ImportedResult, Target } from "@/types/api";
+import type { ImportedResult, ReconQuery, Target } from "@/types/api";
 
 const EMPTY_ROW = { url: "", title: "", snippet: "", imageUrl: "", caption: "" };
 
@@ -141,42 +143,15 @@ export default function ReconPage() {
                 the target produces far narrower queries.
               </p>
             )}
-            <div className="space-y-4 p-4">
-              {Array.from(groupQueries(plan.data.queries)).map(([family, queries]) => (
-                <section key={family}>
-                  <h3 className="text-xs font-medium uppercase tracking-wide text-muted">
-                    {familyLabel(family)}
-                  </h3>
-                  <ul className="mt-1 space-y-1">
-                    {queries.map((query) => (
-                      <li
-                        key={query.query}
-                        className="flex flex-wrap items-center gap-2 rounded-md border border-line px-3 py-2"
-                      >
-                        <Mono>{query.query}</Mono>
-                        {query.anchors_used.map((anchor) => (
-                          <Badge key={anchor} tone="SUCCESS">
-                            {anchor}
-                          </Badge>
-                        ))}
-                        <span className="basis-full text-xs text-muted">{query.rationale}</span>
-                        <div className="flex gap-2">
-                          <a
-                            href={searchUrl(query.query, engine)}
-                            target="_blank"
-                            rel="noreferrer noopener"
-                            className="rounded-md border border-line px-2 py-1 text-xs hover:bg-line"
-                          >
-                            Open in {engine}
-                          </a>
-                          <Button onClick={() => setActiveQuery(query.query)}>
-                            Import a result
-                          </Button>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </section>
+            <div className="space-y-2 p-4">
+              {orderedGroups(plan.data.queries).map(([family, queries]) => (
+                <QueryGroup
+                  key={family}
+                  family={family}
+                  queries={queries}
+                  engine={engine}
+                  onImport={setActiveQuery}
+                />
               ))}
             </div>
           </>
@@ -313,6 +288,114 @@ export default function ReconPage() {
         )}
       </Card>
     </div>
+  );
+}
+
+/**
+ * One collapsible family of queries.
+ *
+ * The page used to be a single vertical wall of every query at once, which is
+ * unreadable and buries the anchored ones that actually matter. Families are
+ * ordered narrowest-first and the broad ones start closed.
+ */
+function QueryGroup({
+  family,
+  queries,
+  engine,
+  onImport,
+}: {
+  family: string;
+  queries: ReconQuery[];
+  engine: EngineKey;
+  onImport: (query: string) => void;
+}) {
+  const [open, setOpen] = useState(EXPANDED_BY_DEFAULT.has(family));
+
+  return (
+    <section className="rounded-md border border-line">
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2">
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          aria-expanded={open}
+          className="flex items-center gap-1.5 text-xs font-medium"
+        >
+          <span aria-hidden="true" className="text-muted">
+            {open ? "▾" : "▸"}
+          </span>
+          {familyLabel(family)}
+          <span className="text-muted">({queries.length})</span>
+        </button>
+        {open && queries.length > 1 ? (
+          // Opens one browser tab per query, in the investigator's own session.
+          <span className="ml-auto flex gap-1">
+            {queries.slice(0, 8).map((query, index) => (
+              <a
+                key={query.query}
+                href={searchUrl(query.query, engine)}
+                target="_blank"
+                rel="noreferrer noopener"
+                className="sr-only"
+              >
+                Open query {index + 1}
+              </a>
+            ))}
+            <OpenAll queries={queries} engine={engine} />
+          </span>
+        ) : null}
+      </div>
+      {open ? (
+        <>
+          <p className="px-3 pb-2 text-[11px] text-muted">{familyPurpose(family)}</p>
+          <ul className="space-y-1 px-3 pb-3">
+            {queries.map((query) => (
+              <li
+                key={query.query}
+                className="flex flex-wrap items-center gap-2 rounded-md border border-line px-3 py-2"
+              >
+                <Mono>{query.query}</Mono>
+                {query.anchors_used.map((anchor) => (
+                  <Badge key={anchor} tone="SUCCESS">
+                    {anchor}
+                  </Badge>
+                ))}
+                <span className="basis-full text-xs text-muted">{query.rationale}</span>
+                <div className="flex gap-2">
+                  <a
+                    href={searchUrl(query.query, engine)}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="rounded-md border border-line px-2 py-1 text-xs hover:bg-line"
+                  >
+                    Open in {engine}
+                  </a>
+                  <Button onClick={() => onImport(query.query)}>Import a result</Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function OpenAll({ queries, engine }: { queries: ReconQuery[]; engine: EngineKey }) {
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        // Capped: a browser blocks a burst of popups, and thirty tabs is not a
+        // workflow. Each opens the investigator's own search session.
+        for (const query of queries.slice(0, 8)) {
+          window.open(searchUrl(query.query, engine), "_blank", "noreferrer,noopener");
+        }
+      }}
+      className="rounded-md border border-line px-2 py-0.5 text-[11px] text-muted hover:bg-line"
+      title={`Opens up to 8 tabs in your own browser. Nothing is submitted by the platform.`}
+    >
+      Open all in {engine}
+    </button>
   );
 }
 

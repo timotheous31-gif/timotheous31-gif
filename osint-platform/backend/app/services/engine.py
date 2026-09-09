@@ -43,7 +43,7 @@ from app.models import (
     Target,
     TargetStatus,
 )
-from app.models.enums import JobState
+from app.models.enums import FindingKind, JobState
 from app.privacy.filter import PrivacyFilter
 from app.services.evidence import EvidenceStore
 from app.services.normalization import NormalizedTarget, normalize_target
@@ -86,6 +86,11 @@ class InvestigationResult:
     timeline_events: int = 0
     #: Identifiers two independently operated sources both published.
     corroborations: int = 0
+    #: Public evidence promoted out of collector payloads into structures the
+    #: investigator can actually see and review.
+    social_profiles: int = 0
+    images: int = 0
+    public_contacts: int = 0
     cancelled: bool = False
     errors: list[dict[str, str]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
@@ -106,6 +111,9 @@ class InvestigationResult:
             "inferred_links": self.inferred_links,
             "timeline_events": self.timeline_events,
             "corroborations": self.corroborations,
+            "social_profiles": self.social_profiles,
+            "images": self.images,
+            "public_contacts": self.public_contacts,
             "cancelled": self.cancelled,
             "errors": self.errors,
             "notes": self.notes,
@@ -446,7 +454,58 @@ class InvestigationEngine:
         else:
             result.corroborations = len(corroboration.corroborations)
             result.notes.extend(item.reason for item in corroboration.corroborations)
+
+        self._promote(session, case_id, result)
         return summary
+
+    def _promote(self, session: Session, case_id: uuid.UUID, result: InvestigationResult) -> None:
+        """Surface the public data collectors already retrieved.
+
+        Runs after resolution, so the candidate entities exist to attach to: a
+        profile or an avatar recorded before its candidate would be orphaned in
+        the UI, which is the state this whole stage exists to end.
+
+        Wrapped like the stages above — promotion is presentation of data
+        already collected and stored, so a failure here must not lose the run.
+        """
+        from app.services.promotion import candidate_for_finding, promote_finding
+
+        try:
+            findings = list(
+                session.scalars(
+                    select(Finding).where(
+                        Finding.case_id == case_id,
+                        Finding.kind == FindingKind.PERSON_CANDIDATE,
+                    )
+                )
+            )
+            targets = {
+                target.id: target
+                for target in session.scalars(select(Target).where(Target.case_id == case_id))
+            }
+            for finding in findings:
+                url = str((finding.data or {}).get("url") or "")
+                candidate = candidate_for_finding(session, case_id, url) if url else None
+                counts = promote_finding(
+                    session,
+                    case_id=case_id,
+                    finding=finding,
+                    target=targets.get(finding.target_id) if finding.target_id else None,
+                    candidate_entity_id=candidate.id if candidate else None,
+                )
+                result.social_profiles += counts["profiles"]
+                result.images += counts["images"]
+                result.public_contacts += counts["contacts"]
+            session.flush()
+        except Exception as exc:  # pragma: no cover - defensive, like the stages above
+            result.errors.append(
+                {
+                    "stage": "promotion",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:500],
+                }
+            )
+            log.exception("investigation.promotion_failed", case_id=str(case_id))
 
     def _build_timeline(
         self, session: Session, case_id: uuid.UUID, result: InvestigationResult

@@ -11,9 +11,16 @@ import {
   hostOf,
   imagesBySource,
   leadingCaveat,
+  nameComparison,
+  orderedFacts,
   profilesByPlatform,
 } from "@/lib/social";
-import type { CandidateGroup, ImageEvidenceRecord, SocialProfileRecord } from "@/types/api";
+import type {
+  CandidateGroup,
+  ImageEvidenceRecord,
+  ProfileFact,
+  SocialProfileRecord,
+} from "@/types/api";
 
 function profile(overrides: Partial<SocialProfileRecord> = {}): SocialProfileRecord {
   return {
@@ -23,7 +30,8 @@ function profile(overrides: Partial<SocialProfileRecord> = {}): SocialProfileRec
     server_fetchable: false, fetch_note: "LinkedIn refuses anonymous requests.",
     collector: "manual_search_recon", evidence_class: "investigator_imported",
     confidence: 0.15, match_reasons: [], mismatch_reasons: [], corroborated_by: [],
-    retrieved_at: null, decision: null,
+    retrieved_at: null, profile_facts: [], declared_name: null, searched_name: null,
+    name_relationship: null, detail_source_url: null, detail_note: null, decision: null,
     ...overrides,
   };
 }
@@ -131,7 +139,7 @@ describe("awaitingReview", () => {
       entity_id: "e1", display_name: "Candidate A", canonical_value: "c",
       confidence: 0.2, confidence_reasons: [], match_reasons: [], mismatch_reasons: [],
       corroborated_by: [], identity_established: false,
-      social_profiles: [], images: [], decision: null,
+      social_profiles: [], images: [], public_contacts: [], decision: null,
       ...overrides,
     };
   }
@@ -168,5 +176,71 @@ describe("leadingCaveat", () => {
 
   it("returns null when there is nothing against it", () => {
     expect(leadingCaveat(profile())).toBeNull();
+  });
+});
+
+describe("profile self-description", () => {
+  const fact = (overrides: Partial<ProfileFact> = {}): ProfileFact => ({
+    kind: "occupation",
+    label: "Occupation / title",
+    value: "Lecturer in English (BPS-17)",
+    source_line: "Lecturer in English (BPS-17), Government of Sindh, Pakistan",
+    basis: "phrase",
+    matched_term: "lecturer",
+    source_url: "https://github.com/example-person/example-person/blob/main/README.md",
+    ...overrides,
+  });
+
+  it("shows the declared name beside the searched one, never instead of it", () => {
+    const result = nameComparison(
+      profile({
+        searched_name: "Example Person",
+        declared_name: "Example Person Dass",
+        name_relationship: {
+          relationship: "extends_searched_name",
+          explanation: "The name under investigation is unchanged.",
+        },
+      }),
+    );
+    expect(result).toEqual({
+      searched: "Example Person",
+      declared: "Example Person Dass",
+      explanation: "The name under investigation is unchanged.",
+    });
+  });
+
+  it("says nothing when the source declares no name", () => {
+    expect(nameComparison(profile())).toBeNull();
+  });
+
+  it("orders statements the way an analyst reads them", () => {
+    const facts = [
+      fact({ kind: "location", value: "Pakistan" }),
+      fact({ kind: "employer", value: "Government of Sindh" }),
+      fact({ kind: "occupation" }),
+    ];
+    expect(orderedFacts(profile({ profile_facts: facts })).map((item) => item.kind)).toEqual([
+      "occupation",
+      "employer",
+      "location",
+    ]);
+  });
+
+  it("carries a geographic statement's limit through to the reader", () => {
+    const geographic = fact({
+      kind: "location",
+      label: "Public geographic association",
+      value: "Pakistan",
+      interpretation: "It is not a claim of nationality, citizenship, residence or location.",
+    });
+    const only = orderedFacts(profile({ profile_facts: [geographic] }))[0]!;
+    expect(only.label).toBe("Public geographic association");
+    expect(only.interpretation).toContain("not a claim of nationality");
+  });
+
+  it("keeps the line a statement was read from, so it can be checked", () => {
+    const only = orderedFacts(profile({ profile_facts: [fact()] }))[0]!;
+    expect(only.source_line).toContain("Government of Sindh");
+    expect(only.value).toBe("Lecturer in English (BPS-17)");
   });
 });

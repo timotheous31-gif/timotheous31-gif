@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  EXPANDED_BY_DEFAULT,
+  FAMILY_ORDER,
   SEARCH_ENGINES,
   evidenceClassLabel,
   familyLabel,
+  familyPurpose,
   groupQueries,
+  groupSearchUrls,
+  orderedGroups,
   imageEvidence,
   searchUrl,
   socialResults,
@@ -167,5 +172,47 @@ describe("evidenceClassLabel", () => {
 
   it("falls back to the raw class rather than inventing a label", () => {
     expect(evidenceClassLabel("something_new")).toBe("something_new");
+  });
+});
+
+describe("grouped recon layout", () => {
+  it("orders families narrowest-first so a list is worked top to bottom", () => {
+    const groups = orderedGroups([
+      query({ query: "a", family: "general" }),
+      query({ query: "b", family: "anchor" }),
+      query({ query: "c", family: "image" }),
+      query({ query: "d", family: "social" }),
+    ]);
+    expect(groups.map(([family]) => family)).toEqual(["anchor", "social", "image", "general"]);
+  });
+
+  it("drops families with no queries rather than showing empty sections", () => {
+    const groups = orderedGroups([query({ family: "anchor" })]);
+    expect(groups).toHaveLength(1);
+  });
+
+  it("keeps an unknown family rather than silently discarding it", () => {
+    const groups = orderedGroups([query({ family: "something-new" })]);
+    expect(groups.map(([family]) => family)).toContain("something-new");
+  });
+
+  it("expands the narrowest families and collapses the rest", () => {
+    expect(EXPANDED_BY_DEFAULT.has("anchor")).toBe(true);
+    expect(EXPANDED_BY_DEFAULT.has("social")).toBe(true);
+    expect(EXPANDED_BY_DEFAULT.has("general")).toBe(false);
+  });
+
+  it("explains what each family is for", () => {
+    for (const family of FAMILY_ORDER) expect(familyPurpose(family)).toBeTruthy();
+  });
+
+  it("says image queries are not a reverse image search", () => {
+    expect(familyPurpose("image")).toMatch(/not a reverse image search/i);
+  });
+
+  it("builds one search link per query for opening a whole group", () => {
+    const urls = groupSearchUrls([query({ query: "a" }), query({ query: "b" })]);
+    expect(urls).toHaveLength(2);
+    expect(urls[0]).toContain("google.com/search");
   });
 });

@@ -7,7 +7,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.enums import AnalystDecision, DecisionSubject
+from app.models.enums import AnalystDecision, ContactClassification, ContactType, DecisionSubject
 
 
 class AnalystDecisionRead(BaseModel):
@@ -55,6 +55,16 @@ class SocialProfileRead(BaseModel):
     mismatch_reasons: list[str]
     corroborated_by: list[str]
     retrieved_at: datetime | None
+    #: What the account states about itself on its own profile page. Explicit
+    #: statements only, each carrying the line it was read from.
+    profile_facts: list[dict] = []
+    #: The declared name beside the searched one. Shown together, never
+    #: substituted: the target keeps the name the investigator gave it.
+    declared_name: str | None = None
+    searched_name: str | None = None
+    name_relationship: dict | None = None
+    detail_source_url: str | None = None
+    detail_note: str | None = None
     #: The analyst's separate judgement, when one has been recorded.
     decision: AnalystDecisionRead | None = None
 
@@ -90,6 +100,32 @@ class ImageEvidenceRead(BaseModel):
     decision: AnalystDecisionRead | None = None
 
 
+class PublicContactRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    candidate_entity_id: uuid.UUID | None
+    social_profile_id: uuid.UUID | None
+    contact_type: ContactType
+    value: str
+    label: str | None
+    classification: ContactClassification
+    source_url: str | None
+    source_name: str
+    collector: str
+    evidence_class: str
+    evidence_id: uuid.UUID | None
+    #: What the platform computed. An analyst decision never changes it.
+    confidence: float
+    confidence_reasons: list[str]
+    #: Why this value was promoted out of a raw payload, so the transformation
+    #: can be audited rather than trusted.
+    extraction_reason: str | None
+    retrieved_at: datetime | None
+    attributes: dict
+    decision: AnalystDecisionRead | None = None
+
+
 class CandidateGroup(BaseModel):
     """One candidate with everything attributed to it.
 
@@ -109,6 +145,7 @@ class CandidateGroup(BaseModel):
     identity_established: bool = False
     social_profiles: list[SocialProfileRead] = Field(default_factory=list)
     images: list[ImageEvidenceRead] = Field(default_factory=list)
+    public_contacts: list[PublicContactRead] = Field(default_factory=list)
     decision: AnalystDecisionRead | None = None
 
 

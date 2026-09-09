@@ -131,3 +131,52 @@ def test_login_gated_platforms_declare_the_block_instead_of_a_workaround():
         assert platform.fetch_note, f"{platform.key} must say why it is not fetched"
         note = platform.fetch_note.lower()
         assert "only the public url shape" in note or "not" in note
+
+
+def test_the_github_profile_page_is_read_through_the_api_never_scraped():
+    """GitHub publishes the profile README as data. That is what we ask for.
+
+    The rendered page at ``github.com/<login>`` carries the same content, and
+    parsing it would be scraping a page the platform already offers as an API —
+    against the rule, and worse evidence besides.
+    """
+    from app.collectors import github_profile
+
+    source = pathlib.Path(github_profile.__file__).read_text("utf-8")
+    fetched = re.findall(r"http\.get\(\s*\n?\s*f?\"([^\"]+)\"", source)
+    assert fetched, "the module must fetch something, or this test proves nothing"
+    for url in fetched:
+        assert url.startswith("{api}/"), f"{url} is not a documented API endpoint"
+    assert "https://github.com/" not in source.replace('f"https://github.com/', "URL_BUILD")
+
+
+def test_no_extracted_profile_fact_can_be_a_nationality_or_a_citizenship():
+    """A country on a profile is where somebody places themselves in public.
+
+    Nationality and citizenship are legal statuses. Naming a place asserts
+    neither, so the vocabulary has no kind that could carry one — which makes
+    the limit structural rather than a rule somebody has to remember.
+    """
+    from app.collectors.github_profile import GEOGRAPHIC_INTERPRETATION, KIND_LABELS
+
+    for kind, label in KIND_LABELS.items():
+        for forbidden in ("national", "citizen", "passport", "residen", "ethnic", "religio"):
+            assert forbidden not in kind.lower(), f"{kind} names a protected status"
+            assert forbidden not in label.lower(), f"{label} names a protected status"
+    assert "not a claim of nationality" in GEOGRAPHIC_INTERPRETATION.lower()
+
+
+def test_no_email_address_is_ever_constructed_from_a_name_and_a_domain():
+    """The one shape that would produce a plausible, unfounded finding.
+
+    Matched on construction, not on the word "email": an f-string or a
+    concatenation that puts an ``@`` between two variables is the pattern, and
+    nothing in the codebase may contain one.
+    """
+    pattern = re.compile(r"[\"']\{[a-z_]+\}@\{[a-z_]+\}|[\"']@[\"']\s*\+|\+\s*[\"']@[\"']", re.I)
+    offenders = []
+    for path in _sources():
+        for line in path.read_text("utf-8").splitlines():
+            if pattern.search(line) and not line.lstrip().startswith(("#", '"', "*", "'")):
+                offenders.append(f"{path}: {line.strip()[:80]}")
+    assert not offenders, offenders

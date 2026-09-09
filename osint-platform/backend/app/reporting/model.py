@@ -220,6 +220,17 @@ class SocialProfileItem:
     corroborated_by: list[str]
     candidate_id: str | None
     retrieved_at: datetime | None
+    #: What the account states about itself on its own profile page, each entry
+    #: carrying the line it was read from. Explicit statements only.
+    profile_facts: list[dict[str, Any]] = field(default_factory=list)
+    #: The name the source declares, beside the name that was searched, and how
+    #: the two relate. Recorded, never applied: the target keeps its own name.
+    declared_name: str | None = None
+    searched_name: str | None = None
+    name_relationship: dict[str, str] | None = None
+    #: The page the statements were read from.
+    detail_source_url: str | None = None
+    detail_note: str | None = None
     #: The analyst's separate judgement, shown alongside rather than instead.
     analyst_decision: str | None = None
     analyst_note: str | None = None
@@ -243,6 +254,12 @@ class SocialProfileItem:
             "corroborated_by": self.corroborated_by,
             "candidate_id": self.candidate_id,
             "retrieved_at": self.retrieved_at.isoformat() if self.retrieved_at else None,
+            "profile_facts": self.profile_facts,
+            "declared_name": self.declared_name,
+            "searched_name": self.searched_name,
+            "name_relationship": self.name_relationship,
+            "detail_source_url": self.detail_source_url,
+            "detail_note": self.detail_note,
             "analyst_decision": self.analyst_decision,
             "analyst_note": self.analyst_note,
         }
@@ -308,6 +325,50 @@ class ImageItem:
 
 
 @dataclass(slots=True)
+class PublicContactItem:
+    """A publicly published professional contact point, with its provenance."""
+
+    id: str
+    contact_type: str
+    value: str
+    label: str | None
+    classification: str
+    source_name: str
+    source_url: str | None
+    collector: str
+    evidence_class: str
+    #: Computed by the platform. Never edited by an analyst decision.
+    confidence: float
+    confidence_reasons: list[str]
+    #: Why this value was promoted out of a raw payload.
+    extraction_reason: str | None
+    candidate_id: str | None
+    retrieved_at: datetime | None
+    analyst_decision: str | None = None
+    analyst_note: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "contact_type": self.contact_type,
+            "value": self.value,
+            "label": self.label,
+            "classification": self.classification,
+            "source_name": self.source_name,
+            "source_url": self.source_url,
+            "collector": self.collector,
+            "evidence_class": self.evidence_class,
+            "confidence": round(self.confidence, 4),
+            "confidence_reasons": self.confidence_reasons,
+            "extraction_reason": self.extraction_reason,
+            "candidate_id": self.candidate_id,
+            "retrieved_at": self.retrieved_at.isoformat() if self.retrieved_at else None,
+            "analyst_decision": self.analyst_decision,
+            "analyst_note": self.analyst_note,
+        }
+
+
+@dataclass(slots=True)
 class AnalystDecisionItem:
     """One recorded human judgement."""
 
@@ -353,6 +414,7 @@ class ReportModel:
     evidence: list[EvidenceRef] = field(default_factory=list)
     social_profiles: list[SocialProfileItem] = field(default_factory=list)
     images: list[ImageItem] = field(default_factory=list)
+    public_contacts: list[PublicContactItem] = field(default_factory=list)
     analyst_decisions: list[AnalystDecisionItem] = field(default_factory=list)
     sources: list[SourceItem] = field(default_factory=list)
     graph: dict[str, Any] = field(default_factory=dict)
@@ -388,6 +450,7 @@ class ReportModel:
             "evidence": [ref.to_dict() for ref in self.evidence],
             "social_profiles": [item.to_dict() for item in self.social_profiles],
             "images": [item.to_dict() for item in self.images],
+            "public_contacts": [item.to_dict() for item in self.public_contacts],
             "analyst_decisions": [item.to_dict() for item in self.analyst_decisions],
             "sources": [item.to_dict() for item in self.sources],
             "graph": self.graph,
@@ -432,6 +495,12 @@ def _social_profile_items(session: Session, case_id: uuid.UUID) -> list[SocialPr
                 corroborated_by=list(row.corroborated_by or []),
                 candidate_id=str(row.candidate_entity_id) if row.candidate_entity_id else None,
                 retrieved_at=row.retrieved_at,
+                profile_facts=row.profile_facts,
+                declared_name=row.declared_name,
+                searched_name=row.searched_name,
+                name_relationship=row.name_relationship,
+                detail_source_url=row.detail_source_url,
+                detail_note=row.detail_note,
                 analyst_decision=str(decision.decision) if decision else None,
                 analyst_note=decision.note if decision else None,
             )
@@ -473,6 +542,36 @@ def _image_items(session: Session, case_id: uuid.UUID) -> list[ImageItem]:
                 # Carried into the report so the limit travels with the data.
                 analysis=str(attributes.get("analysis", "none")),
                 biometric_matching=bool(attributes.get("biometric_matching", False)),
+                analyst_decision=str(decision.decision) if decision else None,
+                analyst_note=decision.note if decision else None,
+            )
+        )
+    return items
+
+
+def _public_contact_items(session: Session, case_id: uuid.UUID) -> list[PublicContactItem]:
+    from app.services.promotion import contacts_for_case
+
+    decisions = _decision_lookup(session, case_id)
+    items = []
+    for row in contacts_for_case(session, case_id):
+        decision = decisions.get(str(row.id))
+        items.append(
+            PublicContactItem(
+                id=str(row.id),
+                contact_type=str(row.contact_type),
+                value=row.value,
+                label=row.label,
+                classification=str(row.classification),
+                source_name=row.source_name,
+                source_url=row.source_url,
+                collector=row.collector,
+                evidence_class=row.evidence_class,
+                confidence=row.confidence,
+                confidence_reasons=list(row.confidence_reasons or []),
+                extraction_reason=row.extraction_reason,
+                candidate_id=str(row.candidate_entity_id) if row.candidate_entity_id else None,
+                retrieved_at=row.retrieved_at,
                 analyst_decision=str(decision.decision) if decision else None,
                 analyst_note=decision.note if decision else None,
             )
@@ -633,6 +732,7 @@ def build_report(
         timeline=[_timeline_item(event) for event in events],
         evidence=[_evidence_ref(row) for row in evidence_rows],
         social_profiles=_social_profile_items(session, case_id),
+        public_contacts=_public_contact_items(session, case_id),
         images=_image_items(session, case_id),
         analyst_decisions=_decision_items(session, case_id),
         sources=_sources(runs, findings),

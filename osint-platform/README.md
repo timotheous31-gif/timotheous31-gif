@@ -186,6 +186,7 @@ facial recognition anywhere in the platform.
 
 See [docs/person-recon.md](docs/person-recon.md).
 - [Social & visual recon](docs/social-recon.md) — public profiles, public images, and analyst decisions
+- [Discovery pipeline](docs/discovery-pipeline.md) — how collector output becomes structured, reviewable evidence
 - [Operations](docs/operations.md) — deleting a case, and what happens when the queue stops moving
 
 ---

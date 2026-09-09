@@ -15,15 +15,27 @@ import { useAsync } from "@/hooks/useApi";
 import { api } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import {
+  NO_CONTACTS,
   awaitingReview,
   canShowThumbnail,
+  classificationLabel,
+  classificationTone,
   confidencePercent,
+  contactHref,
+  contactsByType,
   fetchStateLabel,
   hostOf,
   imagesBySource,
   leadingCaveat,
+  nameComparison,
+  orderedFacts,
 } from "@/lib/social";
-import type { CandidateGroup, ImageEvidenceRecord, SocialProfileRecord } from "@/types/api";
+import type {
+  CandidateGroup,
+  ImageEvidenceRecord,
+  PublicContactRecord,
+  SocialProfileRecord,
+} from "@/types/api";
 
 /**
  * Social profiles, public images and analyst review, grouped by candidate.
@@ -47,8 +59,9 @@ export default function SocialReconPage() {
   const queue = awaitingReview(data);
   const totalProfiles = data.reduce((sum, group) => sum + group.social_profiles.length, 0);
   const totalImages = data.reduce((sum, group) => sum + group.images.length, 0);
+  const totalContacts = data.reduce((sum, group) => sum + group.public_contacts.length, 0);
 
-  if (totalProfiles === 0 && totalImages === 0) {
+  if (totalProfiles === 0 && totalImages === 0 && totalContacts === 0) {
     return (
       <Card>
         <CardHeader title="Social & visual recon" />
@@ -74,6 +87,10 @@ export default function SocialReconPage() {
           <span>
             <strong>{queue.images.length}</strong>{" "}
             <span className="text-muted">image(s) awaiting review</span>
+          </span>
+          <span>
+            <strong>{totalContacts}</strong>{" "}
+            <span className="text-muted">public contact(s)</span>
           </span>
           <span className="basis-full text-xs text-muted">
             A decision is recorded alongside the automated confidence, never instead of it.
@@ -141,6 +158,35 @@ function CandidateCard({
 
       <section className="border-b border-line p-4">
         <h3 className="text-xs font-medium uppercase tracking-wide text-muted">
+          Public contacts ({group.public_contacts.length})
+        </h3>
+        <p className="mt-0.5 text-[11px] text-muted">
+          Published professional and business contact points only. Nothing here is derived
+          from a name and a domain.
+        </p>
+        {group.public_contacts.length === 0 ? (
+          <p className="mt-1 text-xs text-muted">{NO_CONTACTS}</p>
+        ) : (
+          Array.from(contactsByType(group.public_contacts)).map(([kind, contacts]) => (
+            <div key={kind} className="mt-2">
+              <p className="text-[11px] font-medium text-muted">{kind}</p>
+              <ul className="mt-1 space-y-2">
+                {contacts.map((contact) => (
+                  <ContactRow
+                    key={contact.id}
+                    caseId={caseId}
+                    contact={contact}
+                    onChanged={onChanged}
+                  />
+                ))}
+              </ul>
+            </div>
+          ))
+        )}
+      </section>
+
+      <section className="border-b border-line p-4">
+        <h3 className="text-xs font-medium uppercase tracking-wide text-muted">
           Social profiles ({group.social_profiles.length})
         </h3>
         {group.social_profiles.length === 0 ? (
@@ -182,6 +228,64 @@ function CandidateCard({
         )}
       </section>
     </Card>
+  );
+}
+
+function ContactRow({
+  caseId,
+  contact,
+  onChanged,
+}: {
+  caseId: string;
+  contact: PublicContactRecord;
+  onChanged: () => void;
+}) {
+  const href = contactHref(contact);
+  return (
+    <li className="space-y-1 rounded-md border border-line p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone={classificationTone(contact.classification)}>
+          {classificationLabel(contact.classification)}
+        </Badge>
+        {href ? (
+          <a href={href} className="text-sm text-accent underline" rel="noreferrer noopener">
+            {contact.value}
+          </a>
+        ) : (
+          <span className="text-sm">{contact.value}</span>
+        )}
+        <Badge tone="PARTIAL">Automated {confidencePercent(contact.confidence)}</Badge>
+        <AnalystDecisionControl
+          caseId={caseId}
+          subjectType="CONTACT"
+          subjectId={contact.id}
+          current={contact.decision}
+          onChanged={onChanged}
+        />
+      </div>
+      {contact.confidence_reasons.map((reason) => (
+        <p key={reason} className="text-xs text-muted">
+          {reason}
+        </p>
+      ))}
+      {contact.extraction_reason ? (
+        <p className="text-[11px] text-muted">{contact.extraction_reason}</p>
+      ) : null}
+      <p className="text-[11px] text-muted">
+        Source: {contact.source_name} · {contact.evidence_class}
+        {contact.retrieved_at ? ` · ${formatDateTime(contact.retrieved_at)}` : ""}
+      </p>
+      {contact.source_url ? (
+        <a
+          href={contact.source_url}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="block truncate text-[11px] text-accent underline"
+        >
+          Open source page — {hostOf(contact.source_url) || contact.source_url}
+        </a>
+      ) : null}
+    </li>
   );
 }
 
@@ -231,6 +335,7 @@ function ProfileRow({
       >
         Open source page — {profile.profile_url}
       </a>
+      <ProfileDetail profile={profile} />
       {profile.match_reasons.map((reason) => (
         <p key={reason} className="text-xs">
           ✓ {reason}
@@ -245,6 +350,61 @@ function ProfileRow({
         {profile.retrieved_at ? ` · ${formatDateTime(profile.retrieved_at)}` : ""}
       </p>
     </li>
+  );
+}
+
+/**
+ * What a public profile states about itself.
+ *
+ * Two things this deliberately does not do. It does not replace the searched
+ * name with the declared one — both are shown, with the relationship spelled
+ * out, because a source's spelling of a name is a claim by that source. And it
+ * prints a country as a public geographic association, never as nationality or
+ * citizenship: those are legal statuses, and naming a place asserts neither.
+ */
+function ProfileDetail({ profile }: { profile: SocialProfileRecord }) {
+  const comparison = nameComparison(profile);
+  const facts = orderedFacts(profile);
+  if (!comparison && facts.length === 0) return null;
+
+  return (
+    <div className="mt-2 space-y-1 rounded-md border border-line bg-panel p-2">
+      {comparison ? (
+        <div className="text-xs">
+          <p>
+            <span className="text-muted">Searched name:</span> {comparison.searched}
+          </p>
+          <p>
+            <span className="text-muted">Declared name:</span> {comparison.declared}
+          </p>
+          <p className="text-[11px] text-muted">{comparison.explanation}</p>
+        </div>
+      ) : null}
+      {facts.length > 0 ? (
+        <dl className="space-y-1 text-xs">
+          {facts.map((fact) => (
+            <div key={`${fact.kind}:${fact.value}`}>
+              <dt className="text-muted">{fact.label}</dt>
+              <dd>{fact.value}</dd>
+              <dd className="text-[11px] text-muted">Stated as “{fact.source_line}”</dd>
+              {fact.interpretation ? (
+                <dd className="text-[11px] text-muted">{fact.interpretation}</dd>
+              ) : null}
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      {profile.detail_source_url ? (
+        <a
+          href={profile.detail_source_url}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="block text-[11px] text-accent underline"
+        >
+          Source of the statements above
+        </a>
+      ) : null}
+    </div>
   );
 }
 

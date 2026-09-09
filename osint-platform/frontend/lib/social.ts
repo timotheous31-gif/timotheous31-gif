@@ -10,9 +10,12 @@
 
 import type {
   AnalystDecisionValue,
+  ContactClassification,
   CandidateGroup,
   ImageEvidenceRecord,
   ImageFetchState,
+  PublicContactRecord,
+  ProfileFact,
   SocialProfileRecord,
 } from "@/types/api";
 
@@ -137,3 +140,97 @@ export function awaitingReview(groups: CandidateGroup[]): {
 export function leadingCaveat(profile: SocialProfileRecord): string | null {
   return profile.mismatch_reasons[0] ?? null;
 }
+
+
+/**
+ * How well established a contact is, in words.
+ *
+ * About provenance, never about how official the value looks — the label has to
+ * carry that, because an address on a personal profile can look every bit as
+ * authoritative as one on a company's contact page.
+ */
+export function classificationLabel(classification: ContactClassification | string): string {
+  const labels: Record<string, string> = {
+    VERIFIED_PUBLIC_BUSINESS: "Verified public business",
+    PUBLIC_PROFESSIONAL: "Public professional registry",
+    PUBLIC_SELF_PUBLISHED: "Self-published by the subject",
+    UNVERIFIED_PUBLIC_REFERENCE: "Unverified public reference",
+  };
+  return labels[classification] ?? classification;
+}
+
+/** Badge tone: better-established provenance reads stronger. */
+export function classificationTone(
+  classification: ContactClassification | string,
+): string | undefined {
+  const tones: Record<string, string> = {
+    VERIFIED_PUBLIC_BUSINESS: "SUCCESS",
+    PUBLIC_PROFESSIONAL: "SUCCESS",
+    PUBLIC_SELF_PUBLISHED: "PARTIAL",
+    UNVERIFIED_PUBLIC_REFERENCE: "SKIPPED",
+  };
+  return tones[classification];
+}
+
+/** What to say when a case has no public contacts at all. */
+export const NO_CONTACTS = "No verified public contact found.";
+
+/** Contacts grouped by kind, so a list reads as email / phone / website. */
+export function contactsByType(
+  contacts: PublicContactRecord[],
+): Map<string, PublicContactRecord[]> {
+  const grouped = new Map<string, PublicContactRecord[]>();
+  for (const contact of contacts) {
+    grouped.set(contact.contact_type, [...(grouped.get(contact.contact_type) ?? []), contact]);
+  }
+  return grouped;
+}
+
+/** A mailto/tel/http link for a contact, or null when it is not linkable. */
+export function contactHref(contact: PublicContactRecord): string | null {
+  if (contact.contact_type === "EMAIL") return `mailto:${contact.value}`;
+  if (contact.contact_type === "PHONE") return `tel:${contact.value.replace(/\s+/g, "")}`;
+  if (contact.value.startsWith("http://") || contact.value.startsWith("https://")) {
+    return contact.value;
+  }
+  return null;
+}
+
+/**
+ * The declared name beside the searched one, when a source declares one.
+ *
+ * Returned as a pair rather than a single "best" name on purpose. The name
+ * under investigation is what the investigator supplied; a source's spelling is
+ * that source's claim, and showing them together is how an analyst sees the
+ * difference instead of the platform quietly picking a winner.
+ */
+export function nameComparison(
+  profile: SocialProfileRecord,
+): { searched: string; declared: string; explanation: string } | null {
+  if (!profile.declared_name || !profile.name_relationship) return null;
+  return {
+    searched: profile.searched_name ?? "—",
+    declared: profile.declared_name,
+    explanation: profile.name_relationship.explanation,
+  };
+}
+
+/** Profile statements grouped by kind, in the order an analyst reads them. */
+export const FACT_ORDER = [
+  "occupation",
+  "employer",
+  "professional_field",
+  "location",
+  "declared_name",
+] as const;
+
+export function orderedFacts(profile: SocialProfileRecord): ProfileFact[] {
+  const rank = (fact: ProfileFact) => {
+    const index = (FACT_ORDER as readonly string[]).indexOf(fact.kind);
+    return index === -1 ? FACT_ORDER.length : index;
+  };
+  return [...profile.profile_facts].sort((a, b) => rank(a) - rank(b));
+}
+
+/** What to say when a profile publishes no self-description we could read. */
+export const NO_PROFILE_DETAIL = "This profile publishes no self-description we could read.";
