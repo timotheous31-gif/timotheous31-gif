@@ -402,6 +402,9 @@ export interface SocialProfileRecord {
   mismatch_reasons: string[];
   corroborated_by: string[];
   retrieved_at: string | null;
+  /** How the profile entered the case, and the page that published the link. */
+  discovery_method: string | null;
+  discovered_from: string | null;
   /** Explicit statements read from the profile page, each with its own line. */
   profile_facts: ProfileFact[];
   /** The name the source declares, beside the name that was searched. */
@@ -436,6 +439,20 @@ export interface ProfileFact {
 export interface NameRelationship {
   relationship: string;
   explanation: string;
+}
+
+/** One platform, and what the platform may legitimately do with it. */
+export interface SourcePlatform {
+  platform: string;
+  display_name: string;
+  domains: string[];
+  server_fetchable: boolean;
+  public_api_available: boolean;
+  manual_search_supported: boolean;
+  handle_check_supported: boolean;
+  image_reference_supported: boolean;
+  search_filters: string[];
+  notes: string | null;
 }
 
 export interface ImageEvidenceRecord {
@@ -495,6 +512,11 @@ export interface ReconQueryPlan {
   subject_name: string;
   queries: ReconQuery[];
   anchors_used: string[];
+  /** Fuller name spellings a public profile declared. Extra searches only —
+   *  the name under investigation is still the one you supplied. */
+  also_known_as: string[];
+  /** What may be done with each platform, so "manual only" is explained. */
+  capabilities: SourcePlatform[];
   /** States plainly that the platform will not run these itself. */
   execution: string;
 }
@@ -533,6 +555,10 @@ export interface ManualResultInput {
   image_url?: string | null;
   thumbnail_url?: string | null;
   caption?: string | null;
+  /** The handle shown on the result, when the URL's own shape did not give one. */
+  handle?: string | null;
+  /** The name the page displays. Never becomes the target's name. */
+  display_name?: string | null;
 }
 
 export interface NormalizationPreview {

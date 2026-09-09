@@ -6,15 +6,17 @@ from fastapi import APIRouter, status
 from sqlalchemy import select
 
 from app.api.deps import CaseId, DbSession, parse_uuid
+from app.collectors.capabilities import CAPABILITIES
 from app.collectors.person import PersonContext
 from app.core.errors import NotFoundError, ValidationError
-from app.models import Finding, Target
+from app.models import Finding, SocialProfile, Target
 from app.models.enums import FindingKind, TargetType
 from app.schemas.recon import (
     ImportedResultRead,
     ManualResultImport,
     ReconQueryPlan,
     ReconQueryRead,
+    SourcePlatformRead,
 )
 from app.services import recon_import
 from app.services.normalization import NormalizedTarget
@@ -57,12 +59,54 @@ def recon_queries(case_id: CaseId, target_id: str, session: DbSession) -> ReconQ
     context = PersonContext.from_target(normalized)
     name = str(normalized.attributes.get("display_name", target.normalized_value))
 
+    # Discovery feeds recon: a fuller name a public profile declared is worth
+    # searching, and the investigator should not have to retype it. The target's
+    # own name is untouched — these are extra searches, not a rename.
+    declared = _declared_names(session, case_id, name)
+    queries = generate_queries(name, context, also_known_as=declared)
+
     return ReconQueryPlan(
         target_id=target.id,
         subject_name=name,
-        queries=[ReconQueryRead(**query.as_dict()) for query in generate_queries(name, context)],
+        queries=[ReconQueryRead(**query.as_dict()) for query in queries],
         anchors_used=context.describe(),
+        also_known_as=list(declared),
+        capabilities=[
+            SourcePlatformRead(
+                platform=item.platform,
+                display_name=item.display_name,
+                domains=list(item.domains),
+                server_fetchable=item.server_fetchable,
+                public_api_available=item.public_api_available,
+                manual_search_supported=item.manual_search_supported,
+                handle_check_supported=item.handle_check_supported,
+                image_reference_supported=item.image_reference_supported,
+                search_filters=list(item.search_filters),
+                notes=item.notes or item.fetch_note or None,
+            )
+            for item in CAPABILITIES
+        ],
     )
+
+
+def _declared_names(session: DbSession, case_id: CaseId, searched: str) -> tuple[str, ...]:
+    """Fuller name spellings public profiles in this case declared.
+
+    Only names a source actually published, and only where the searched name is
+    contained in them: an unrelated name on an unrelated profile is not a
+    variant of the subject's, and searching it would be searching for somebody
+    else.
+    """
+    wanted = {token for token in searched.lower().split() if token}
+    found: list[str] = []
+    for profile in session.scalars(select(SocialProfile).where(SocialProfile.case_id == case_id)):
+        declared = (profile.declared_name or "").strip()
+        if not declared or declared.lower() == searched.lower():
+            continue
+        parts = {token for token in declared.lower().split() if token}
+        if wanted and wanted <= parts and declared not in found:
+            found.append(declared)
+    return tuple(found)
 
 
 @router.post(

@@ -22,16 +22,27 @@ import {
   type EngineKey,
   evidenceClassLabel,
   familyLabel,
+  capabilitySummary,
   familyPurpose,
   imageEvidence,
   orderedGroups,
+  QUICK_ENGINES,
   searchUrl,
   socialResults,
   toImportPayload,
 } from "@/lib/recon";
 import type { ImportedResult, ReconQuery, Target } from "@/types/api";
 
-const EMPTY_ROW = { url: "", title: "", snippet: "", imageUrl: "", caption: "" };
+const EMPTY_ROW = {
+  url: "",
+  title: "",
+  displayName: "",
+  handle: "",
+  snippet: "",
+  imageUrl: "",
+  caption: "",
+  notes: "",
+};
 
 /**
  * Manual search recon.
@@ -103,6 +114,13 @@ export default function ReconPage() {
           title="Reconnaissance queries"
           description="Run these in your own browser, then import what is relevant"
         />
+        {plan.data && plan.data.also_known_as.length > 0 ? (
+          <p className="border-b border-line px-4 pt-3 text-xs text-muted">
+            A public profile in this case declares{" "}
+            <strong className="text-fg">{plan.data.also_known_as.join(", ")}</strong>. Searches for
+            the fuller name are included below. The name under investigation is unchanged.
+          </p>
+        ) : null}
         <div className="flex flex-wrap items-center gap-2 border-b border-line p-4">
           <select
             aria-label="Person"
@@ -160,6 +178,30 @@ export default function ReconPage() {
         )}
       </Card>
 
+      {plan.data && plan.data.capabilities.length > 0 ? (
+        <Card>
+          <CardHeader
+            title="What this tool can and cannot check"
+            description="A platform that refuses automated access is a boundary respected, not a gap"
+          />
+          <ul className="divide-y divide-line">
+            {plan.data.capabilities.map((platform) => (
+              <li key={platform.platform} className="flex flex-wrap items-center gap-2 px-4 py-2">
+                <span className="text-xs font-medium">{platform.display_name}</span>
+                <Badge tone={platform.handle_check_supported ? "SUCCESS" : "SKIPPED"}>
+                  {platform.handle_check_supported ? "checked directly" : "manual search"}
+                </Badge>
+                {platform.public_api_available ? <Badge tone="PARTIAL">public API</Badge> : null}
+                {platform.image_reference_supported ? <Badge>profile image</Badge> : null}
+                <span className="basis-full text-[11px] text-muted">
+                  {capabilitySummary(platform)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      ) : null}
+
       <Card>
         <CardHeader
           title="Import a public result"
@@ -181,9 +223,12 @@ export default function ReconPage() {
               [
                 ["url", "Result URL", "https://www.linkedin.com/in/example"],
                 ["title", "Title", "Example Person — LinkedIn"],
+                ["displayName", "Displayed name (optional)", "Example Person"],
+                ["handle", "Handle (optional)", "example-person"],
                 ["snippet", "Snippet", "Researcher at Example University"],
                 ["imageUrl", "Image URL (optional)", "https://example.org/photo.jpg"],
                 ["caption", "Caption (optional)", "Speakers at the 2024 conference"],
+                ["notes", "Your notes (optional)", "Same employer as the anchor"],
               ] as const
             ).map(([field, label, placeholder]) => (
               <label key={field} className="block text-xs">
@@ -360,15 +405,18 @@ function QueryGroup({
                   </Badge>
                 ))}
                 <span className="basis-full text-xs text-muted">{query.rationale}</span>
-                <div className="flex gap-2">
-                  <a
-                    href={searchUrl(query.query, engine)}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    className="rounded-md border border-line px-2 py-1 text-xs hover:bg-line"
-                  >
-                    Open in {engine}
-                  </a>
+                <div className="flex flex-wrap gap-2">
+                  {QUICK_ENGINES.map((name) => (
+                    <a
+                      key={name}
+                      href={searchUrl(query.query, name)}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="rounded-md border border-line px-2 py-1 text-xs hover:bg-line"
+                    >
+                      {name}
+                    </a>
+                  ))}
                   <Button onClick={() => onImport(query.query)}>Import a result</Button>
                 </div>
               </li>

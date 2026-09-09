@@ -7,15 +7,32 @@
  * going on.
  */
 
-import type { ImportedResult, ManualResultInput, ReconQuery } from "@/types/api";
+import type {
+  ImportedResult,
+  ManualResultInput,
+  ReconQuery,
+  SourcePlatform,
+} from "@/types/api";
 
-/** Search engines an investigator can open a generated query in. */
+/**
+ * Search engines an investigator can open a generated query in.
+ *
+ * URL construction and nothing else. No engine is ever requested by this
+ * codebase — the investigator follows the link in their own browser, under
+ * their own session, and reads the results themselves. There is no parser for
+ * a result page anywhere in the repository, and a test asserts it.
+ */
 export const SEARCH_ENGINES = [
   { key: "Google", url: "https://www.google.com/search?q=" },
+  { key: "Google Images", url: "https://www.google.com/search?tbm=isch&q=" },
   { key: "Bing", url: "https://www.bing.com/search?q=" },
+  { key: "Bing Images", url: "https://www.bing.com/images/search?q=" },
   { key: "DuckDuckGo", url: "https://duckduckgo.com/?q=" },
   { key: "Startpage", url: "https://www.startpage.com/sp/search?query=" },
 ] as const;
+
+/** Engines offered as one-click buttons beside a query group. */
+export const QUICK_ENGINES: EngineKey[] = ["Google", "Google Images", "Bing", "DuckDuckGo"];
 
 export type EngineKey = (typeof SEARCH_ENGINES)[number]["key"];
 
@@ -45,6 +62,7 @@ export function familyLabel(family: string): string {
     anchor: "Anchored — narrowest, run these first",
     general: "Web",
     social: "Social platforms",
+    handle: "Handles",
     image: "Images",
     academic: "Professional & academic",
     document: "Documents",
@@ -59,6 +77,9 @@ export function familyPurpose(family: string): string {
       "Built from the anchors you supplied. These return the fewest strangers, so run them first.",
     general: "The plain name search — broad, and mostly other people.",
     social: "Public profile pages on each platform.",
+    handle:
+      "Where a handle you supplied appears on platforms this tool may not query itself. " +
+      "The same handle elsewhere is a lead to open, never proof of the same owner.",
     image: "Pages that publish a photograph alongside the name. Not a reverse image search.",
     academic: "Publications, registries and institutional pages.",
     document: "Public documents that mention the name.",
@@ -72,10 +93,18 @@ export function familyPurpose(family: string): string {
  * A recon list is worked top to bottom, so the queries most likely to return
  * the subject rather than a stranger belong at the top.
  */
-export const FAMILY_ORDER = ["anchor", "social", "image", "academic", "general", "document"];
+export const FAMILY_ORDER = [
+  "anchor",
+  "handle",
+  "social",
+  "image",
+  "academic",
+  "general",
+  "document",
+];
 
 /** Families that start expanded. The rest collapse, to end the wall of cards. */
-export const EXPANDED_BY_DEFAULT = new Set(["anchor", "social"]);
+export const EXPANDED_BY_DEFAULT = new Set(["anchor", "handle", "social"]);
 
 /** Group queries into display order, dropping empty families. */
 export function orderedGroups(queries: ReconQuery[]): [string, ReconQuery[]][] {
@@ -99,7 +128,16 @@ export function groupSearchUrls(queries: ReconQuery[], engine: EngineKey = "Goog
 export function toImportPayload(
   query: string,
   engine: string,
-  row: { url: string; title: string; snippet: string; imageUrl: string; caption: string },
+  row: {
+    url: string;
+    title: string;
+    snippet: string;
+    imageUrl: string;
+    caption: string;
+    handle?: string;
+    displayName?: string;
+    notes?: string;
+  },
 ): ManualResultInput | null {
   const url = row.url.trim();
   if (!url) return null;
@@ -111,7 +149,30 @@ export function toImportPayload(
     engine,
     image_url: row.imageUrl.trim() || null,
     caption: row.caption.trim() || null,
+    handle: row.handle?.trim() || null,
+    display_name: row.displayName?.trim() || null,
+    notes: row.notes?.trim() || null,
   };
+}
+
+/**
+ * What a platform's capability row means for the investigator.
+ *
+ * A platform that refuses automated access is not a gap in coverage — it is a
+ * boundary this tool respects. Saying so beside the queries is the difference
+ * between "we found nothing" and "we did not look, and here is why".
+ */
+export function capabilitySummary(platform: SourcePlatform): string {
+  if (platform.handle_check_supported) {
+    return "Handles you supply are checked directly against its public API.";
+  }
+  if (!platform.server_fetchable) {
+    return (
+      platform.notes ||
+      "Refuses anonymous automated requests, so nothing is fetched. Search it yourself."
+    );
+  }
+  return "Reachable by search; this tool does not query it directly.";
 }
 
 /** Imported results that carry an image. */

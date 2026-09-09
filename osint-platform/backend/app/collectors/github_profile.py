@@ -174,7 +174,7 @@ _ROLE_WORDS = """
     accountant auditor actuary banker economist journalist reporter editor
     author writer translator interpreter photographer illustrator animator
     musician composer artist curator librarian archivist
-    student candidate intern apprentice trainee graduate undergraduate
+    student candidate intern apprentice trainee
     entrepreneur founder cofounder freelancer contractor
     """
 ROLE_TERMS = frozenset(_ROLE_WORDS.split())
@@ -204,6 +204,20 @@ _ORG_WORDS = """
     bank insurance
     """
 ORG_TERMS = frozenset(_ORG_WORDS.split())
+
+#: Levels of study. "…teaching across secondary, undergraduate and postgraduate
+#: levels" describes *who somebody teaches*, not what they are — and reading
+#: "undergraduate" as a professional field was exactly that mistake. A segment
+#: made only of these words yields nothing.
+_LEVEL_WORDS = """
+    primary elementary secondary tertiary intermediate matric
+    undergraduate postgraduate graduate postdoctoral doctoral predoctoral
+    bachelor bachelors master masters doctorate diploma certificate
+    freshman sophomore junior senior
+    level levels degree degrees year years grade grades class classes
+    school college university
+    """
+EDUCATION_LEVEL_TERMS = frozenset(_LEVEL_WORDS.split())
 
 #: Country names, for recognising a *public geographic association*. Never a
 #: nationality: naming a country on a profile says where a person situates
@@ -389,9 +403,42 @@ ARTICLE_RE = re.compile(r"^(?:an?|the)\s+", re.I)
 JOINER_RE = re.compile(r"\s+(?:at|with|for)\s+", re.I)
 
 
+#: A self-description is written in phrases. Beyond this many words a segment
+#: is a clause, and a clause carved out of running prose ("English lecturer and
+#: applied linguist with 6+ years of teaching") is not a fact anybody stated.
+MAX_SEGMENT_WORDS = 8
+#: A line holding a single segment this long is a sentence, not a phrase list.
+MAX_LONE_SEGMENT_WORDS = 6
+
+
 def _plausible_segment(segment: str) -> bool:
     """A claim is a phrase, not a paragraph."""
-    return 1 < len(segment) <= 120 and len(segment.split()) <= 12
+    return 1 < len(segment) <= 120 and len(segment.split()) <= MAX_SEGMENT_WORDS
+
+
+def _is_prose(line: str, segments: list[str]) -> bool:
+    """True when a line reads as running prose rather than a phrase list.
+
+    Two shape tests, no world knowledge in either:
+
+    * a line that is one long segment is a sentence — a phrase list has
+      separators, and the header region of a profile README is a phrase list;
+    * a line starting in lower case is the continuation of a wrapped sentence
+      whose head was on the line above, so the words on it belong to a clause
+      this extractor never saw whole.
+
+    Both fail conservatively. A missed statement leaves an investigator where
+    they already were; a clause mistaken for a fact puts words in someone's
+    mouth.
+    """
+    if not line:
+        return True
+    first = line.lstrip()[:1]
+    if first.isalpha() and first.islower():
+        return True
+    return len(segments) == 1 and (
+        len(_strip_openers(segments[0]).split()) > MAX_LONE_SEGMENT_WORDS
+    )
 
 
 def _word_set(text: str) -> set[str]:
@@ -440,7 +487,10 @@ def extract_facts(readme: str) -> list[ProfileFact]:
         if header_budget <= 0:
             continue
         header_budget -= 1
-        for segment in _segments(line):
+        segments = _segments(line)
+        if _is_prose(line, segments):
+            continue
+        for segment in segments:
             for phrase in _phrase_facts(segment, line):
                 add(phrase)
     return facts
@@ -470,6 +520,17 @@ def _labelled_fact(line: str) -> ProfileFact | None:
     )
 
 
+def _strip_openers(segment: str) -> str:
+    """Drop a self-introduction so the claim is the description, not the lead-in."""
+    cleaned = segment.strip()
+    for _ in range(3):
+        stripped = ARTICLE_RE.sub("", OPENER_RE.sub("", cleaned)).strip()
+        if stripped == cleaned:
+            break
+        cleaned = stripped
+    return cleaned
+
+
 def _phrase_fact(segment: str, line: str) -> ProfileFact | None:
     """Recognise one segment of an unlabelled self-description.
 
@@ -477,11 +538,7 @@ def _phrase_fact(segment: str, line: str) -> ProfileFact | None:
     organisation and a role on a vocabulary word inside it — and the value is
     always the segment as written, never the word that triggered the match.
     """
-    for _ in range(3):
-        stripped = ARTICLE_RE.sub("", OPENER_RE.sub("", segment)).strip()
-        if stripped == segment:
-            break
-        segment = stripped
+    segment = _strip_openers(segment)
     if not _plausible_segment(segment):
         return None
 
@@ -492,6 +549,11 @@ def _phrase_fact(segment: str, line: str) -> ProfileFact | None:
         )
 
     words = _word_set(segment)
+    if words and words <= EDUCATION_LEVEL_TERMS:
+        # "undergraduate", "postgraduate levels", "secondary" — a level of
+        # study somebody teaches at or studied at. Never a field, never a post.
+        return None
+
     organisation = words & ORG_TERMS
     if organisation:
         return ProfileFact(
@@ -524,13 +586,7 @@ def _phrase_facts(segment: str, line: str) -> list[ProfileFact]:
     the author joined a post and an employer with a preposition rather than a
     comma, so both are read, each keeping the words that belong to it.
     """
-    cleaned = segment.strip()
-    for _ in range(3):
-        stripped = ARTICLE_RE.sub("", OPENER_RE.sub("", cleaned)).strip()
-        if stripped == cleaned:
-            break
-        cleaned = stripped
-
+    cleaned = _strip_openers(segment)
     words = _word_set(cleaned)
     if words & ROLE_TERMS and words & ORG_TERMS:
         split = JOINER_RE.split(cleaned, maxsplit=1)

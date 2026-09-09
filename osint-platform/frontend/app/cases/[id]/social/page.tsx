@@ -17,7 +17,10 @@ import { formatDateTime } from "@/lib/format";
 import {
   NO_CONTACTS,
   awaitingReview,
+  canRenderThumbnail,
   canShowThumbnail,
+  discoveryLabel,
+  discoveryTone,
   classificationLabel,
   classificationTone,
   confidencePercent,
@@ -25,6 +28,7 @@ import {
   contactsByType,
   fetchStateLabel,
   hostOf,
+  IMAGE_DISCLAIMER,
   imagesBySource,
   leadingCaveat,
   nameComparison,
@@ -319,6 +323,9 @@ function ProfileRow({
         <Badge>{profile.platform_label}</Badge>
         {profile.handle ? <Mono>{profile.handle}</Mono> : null}
         <Badge tone="PARTIAL">Automated {confidencePercent(profile.confidence)}</Badge>
+        <Badge tone={discoveryTone(profile.discovery_method)}>
+          {discoveryLabel(profile.discovery_method)}
+        </Badge>
         <AnalystDecisionControl
           caseId={caseId}
           subjectType="SOCIAL_PROFILE"
@@ -342,6 +349,9 @@ function ProfileRow({
         </p>
       ))}
       {caveat ? <p className="text-xs text-muted">✗ {caveat}</p> : null}
+      {profile.discovered_from ? (
+        <p className="text-[11px] text-muted">Discovered from {profile.discovered_from}</p>
+      ) : null}
       {!profile.server_fetchable && profile.fetch_note ? (
         <p className="text-[11px] text-muted">{profile.fetch_note}</p>
       ) : null}
@@ -420,14 +430,24 @@ function ImageRow({
   return (
     <li className="flex gap-3 rounded-md border border-line p-3">
       {canShowThumbnail(image) ? (
-        // Only ever an image the platform fetched itself. Rendering an unfetched
-        // URL would make the browser retrieve it from a page nobody vetted, and
-        // would look like verification that did not happen.
+        // Bytes this platform fetched and hashed, drawn from the URL it read.
         // eslint-disable-next-line @next/next/no-img-element
         <img
           src={image.final_url || image.image_url}
           alt={image.caption || "Public image recorded as page context"}
           className="h-16 w-16 shrink-0 rounded object-cover"
+        />
+      ) : canRenderThumbnail(image) ? (
+        // Never fetched by the platform, so drawing it makes *this browser*
+        // request it. That is a request the investigator is making while
+        // looking at their own case, which is different from a report doing it
+        // on a reader's behalf later. The REFERENCE_ONLY badge and the line
+        // below keep it from reading as verification that did not happen.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={image.image_url}
+          alt={image.caption || "Public image referenced but not fetched"}
+          className="h-16 w-16 shrink-0 rounded object-cover opacity-80 ring-1 ring-dashed ring-line"
         />
       ) : (
         <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded border border-dashed border-line text-[10px] text-muted">
@@ -457,6 +477,7 @@ function ImageRow({
         >
           Open source page — {hostOf(image.source_page_url) || image.source_page_url}
         </a>
+        <p className="text-[11px] text-muted">{IMAGE_DISCLAIMER}</p>
         {image.sha256 ? (
           <p className="text-[11px] text-muted">
             SHA-256 <Mono>{image.sha256.slice(0, 12)}</Mono>

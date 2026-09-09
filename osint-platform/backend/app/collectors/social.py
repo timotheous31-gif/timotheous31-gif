@@ -309,8 +309,19 @@ def _handle_for(platform: SocialPlatform, segments: list[str], query: str) -> st
     if platform.key == "facebook" and first == "profile.php":
         return dict(parse_qsl(query)).get("id") or None
 
+    # A profile URL is *only* the profile. Anything deeper addresses content
+    # inside somebody's namespace — a repository, an issue, a photo — and
+    # recording github.com/alice/project/issues/1 as Alice's profile would
+    # attribute a page to a person on the strength of a path prefix. The
+    # reserved-segment check above cannot catch these, because a repository
+    # name is not a word any list can enumerate.
     if first in platform.handle_prefixes:
-        return segments[1].lstrip("@") if len(segments) > 1 else None
+        if len(segments) != 2:
+            return None
+        return segments[1].lstrip("@") or None
+
+    if len(segments) != 1:
+        return None
 
     # YouTube and Mastodon put the handle first, marked with "@".
     if segments[0].startswith("@"):

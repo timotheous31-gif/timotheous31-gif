@@ -10,6 +10,10 @@ import {
   fetchStateLabel,
   hostOf,
   imagesBySource,
+  canRenderThumbnail,
+  discoveryLabel,
+  discoveryTone,
+  IMAGE_DISCLAIMER,
   leadingCaveat,
   nameComparison,
   orderedFacts,
@@ -30,7 +34,7 @@ function profile(overrides: Partial<SocialProfileRecord> = {}): SocialProfileRec
     server_fetchable: false, fetch_note: "LinkedIn refuses anonymous requests.",
     collector: "manual_search_recon", evidence_class: "investigator_imported",
     confidence: 0.15, match_reasons: [], mismatch_reasons: [], corroborated_by: [],
-    retrieved_at: null, profile_facts: [], declared_name: null, searched_name: null,
+    retrieved_at: null, discovery_method: null, discovered_from: null, profile_facts: [], declared_name: null, searched_name: null,
     name_relationship: null, detail_source_url: null, detail_note: null, decision: null,
     ...overrides,
   };
@@ -242,5 +246,46 @@ describe("profile self-description", () => {
     const only = orderedFacts(profile({ profile_facts: [fact()] }))[0]!;
     expect(only.source_line).toContain("Government of Sindh");
     expect(only.value).toBe("Lecturer in English (BPS-17)");
+  });
+});
+
+describe("discovery method", () => {
+  it("distinguishes what you supplied from what a search returned", () => {
+    expect(discoveryLabel("supplied_anchor")).toContain("You supplied");
+    expect(discoveryLabel("name_search")).toContain("public search");
+    expect(discoveryLabel("published_link")).toContain("Linked from");
+    expect(discoveryTone("supplied_anchor")).toBe("SUCCESS");
+    expect(discoveryTone("name_search")).toBe("SKIPPED");
+  });
+
+  it("says the method is unrecorded rather than inventing one", () => {
+    expect(discoveryLabel(null)).toBe("Discovery method not recorded");
+    expect(discoveryTone(null)).toBeUndefined();
+  });
+});
+
+describe("thumbnail safety", () => {
+  const withUrl = (image_url: string) => image({ image_url });
+
+  it("draws an https public image", () => {
+    expect(canRenderThumbnail(withUrl("https://example.com/portrait.jpg"))).toBe(true);
+  });
+
+  it.each([
+    "http://example.com/portrait.jpg",
+    "https://127.0.0.1/portrait.jpg",
+    "https://10.1.2.3/portrait.jpg",
+    "https://192.168.0.9/portrait.jpg",
+    "https://172.16.0.1/portrait.jpg",
+    "https://169.254.169.254/portrait.jpg",
+    "https://localhost/portrait.jpg",
+    "not a url",
+    "",
+  ])("refuses %s", (url) => {
+    expect(canRenderThumbnail(withUrl(url))).toBe(false);
+  });
+
+  it("states the limit that travels with every picture", () => {
+    expect(IMAGE_DISCLAIMER).toContain("does not independently establish identity");
   });
 });

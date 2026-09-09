@@ -4,6 +4,7 @@ import {
   EXPANDED_BY_DEFAULT,
   FAMILY_ORDER,
   SEARCH_ENGINES,
+  capabilitySummary,
   evidenceClassLabel,
   familyLabel,
   familyPurpose,
@@ -15,7 +16,7 @@ import {
   socialResults,
   toImportPayload,
 } from "@/lib/recon";
-import type { ImportedResult, ReconQuery } from "@/types/api";
+import type { ImportedResult, ReconQuery, SourcePlatform } from "@/types/api";
 
 function query(overrides: Partial<ReconQuery> = {}): ReconQuery {
   return {
@@ -214,5 +215,106 @@ describe("grouped recon layout", () => {
     const urls = groupSearchUrls([query({ query: "a" }), query({ query: "b" })]);
     expect(urls).toHaveLength(2);
     expect(urls[0]).toContain("google.com/search");
+  });
+});
+
+describe("search engines are navigation only", () => {
+  it("offers Google, Google Images, Bing and DuckDuckGo", () => {
+    const keys = SEARCH_ENGINES.map((engine) => engine.key);
+    expect(keys).toContain("Google");
+    expect(keys).toContain("Google Images");
+    expect(keys).toContain("Bing");
+    expect(keys).toContain("DuckDuckGo");
+  });
+
+  it("builds an image search URL rather than a web one", () => {
+    expect(searchUrl("example", "Google Images")).toContain("tbm=isch");
+  });
+
+  it("percent-encodes the whole query, operators included", () => {
+    const url = searchUrl('"Example Person" site:linkedin.com/in');
+    expect(url).toBe(
+      "https://www.google.com/search?q=%22Example%20Person%22%20site%3Alinkedin.com%2Fin",
+    );
+    // A link the investigator follows. Nothing here fetches anything.
+    expect(url.startsWith("https://www.google.com/search?q=")).toBe(true);
+  });
+
+  it("falls back to Google rather than building a broken link", () => {
+    // @ts-expect-error - deliberately passing an engine that does not exist
+    expect(searchUrl("example", "Nonexistent")).toContain("google.com/search");
+  });
+});
+
+describe("handle queries", () => {
+  it("groups handle searches into their own family, expanded by default", () => {
+    expect(FAMILY_ORDER).toContain("handle");
+    expect(EXPANDED_BY_DEFAULT.has("handle")).toBe(true);
+    expect(familyLabel("handle")).toBe("Handles");
+    expect(familyPurpose("handle")).toContain("never proof of the same owner");
+  });
+});
+
+describe("capabilitySummary", () => {
+  const platform = (overrides: Partial<SourcePlatform> = {}): SourcePlatform => ({
+    platform: "linkedin",
+    display_name: "LinkedIn",
+    domains: ["linkedin.com"],
+    server_fetchable: false,
+    public_api_available: false,
+    manual_search_supported: true,
+    handle_check_supported: false,
+    image_reference_supported: false,
+    search_filters: ["linkedin.com/in"],
+    notes: null,
+    ...overrides,
+  });
+
+  it("says a blocked platform is a boundary, not a gap", () => {
+    expect(capabilitySummary(platform())).toContain("Search it yourself");
+  });
+
+  it("prefers the platform's own explanation when it has one", () => {
+    expect(capabilitySummary(platform({ notes: "Refuses anonymous requests." }))).toBe(
+      "Refuses anonymous requests.",
+    );
+  });
+
+  it("says plainly when a handle is checked directly", () => {
+    expect(
+      capabilitySummary(platform({ handle_check_supported: true, server_fetchable: true })),
+    ).toContain("checked directly");
+  });
+});
+
+describe("import payload", () => {
+  it("carries the handle and displayed name the investigator saw", () => {
+    const payload = toImportPayload("q", "Google", {
+      url: "https://example.org/staff",
+      title: "",
+      snippet: "",
+      imageUrl: "",
+      caption: "",
+      handle: " example-person ",
+      displayName: " Example Person Dass ",
+      notes: " same employer ",
+    });
+    expect(payload).toMatchObject({
+      handle: "example-person",
+      display_name: "Example Person Dass",
+      notes: "same employer",
+    });
+  });
+
+  it("sends null rather than empty strings for optional fields", () => {
+    const payload = toImportPayload("q", "Google", {
+      url: "https://example.org/staff",
+      title: "",
+      snippet: "",
+      imageUrl: "",
+      caption: "",
+    });
+    expect(payload?.handle).toBeNull();
+    expect(payload?.display_name).toBeNull();
   });
 });

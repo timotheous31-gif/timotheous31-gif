@@ -25,6 +25,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.collectors.capabilities import search_platforms
 from app.collectors.person import PersonContext, normalize_handle
 
 #: Query families, ordered by how much signal they usually carry.
@@ -34,19 +35,31 @@ FAMILY_ACADEMIC = "academic"
 FAMILY_DOCUMENT = "document"
 FAMILY_ANCHOR = "anchor"
 FAMILY_IMAGE = "image"
+FAMILY_HANDLE = "handle"
 
-#: Public platforms worth a targeted query, as (label, site: filter).
-SOCIAL_SITES: tuple[tuple[str, str], ...] = (
-    ("LinkedIn", "linkedin.com"),
-    ("Instagram", "instagram.com"),
-    ("Facebook", "facebook.com"),
-    ("YouTube", "youtube.com"),
-    ("X (Twitter)", "x.com"),
-    ("TikTok", "tiktok.com"),
-    ("Snapchat", "snapchat.com"),
-    ("GitHub", "github.com"),
-    ("ORCID", "orcid.org"),
-)
+
+#: Public platforms worth a targeted query, read from the capability registry
+#: rather than restated here. The registry already knows which platforms this
+#: codebase recognises and which ``site:`` filter reaches their profiles; a
+#: second list would drift the moment one was updated and the other was not.
+def social_sites() -> tuple[tuple[str, str], ...]:
+    """``(label, site filter)`` for each searchable platform, worklist order.
+
+    A platform may contribute more than one filter, narrowest first:
+    ``site:linkedin.com/in`` returns personal profiles and nothing else, which
+    is what a PERSON search wants, while ``site:linkedin.com`` also finds the
+    posts and pages that mention them. Both are worth running, so both are
+    generated and the narrow one sorts first.
+    """
+    return tuple(
+        (capability.display_name, site_filter)
+        for capability in search_platforms()
+        for site_filter in capability.search_filters
+    )
+
+
+#: Kept as a module attribute for readability at call sites and in tests.
+SOCIAL_SITES: tuple[tuple[str, str], ...] = social_sites()
 
 #: Words that bring public photographs of a named person to the surface. These
 #: search *pages that publish a picture*, which is what image evidence means
@@ -130,7 +143,7 @@ FORBIDDEN_TERMS: frozenset[str] = NEVER_SEARCHABLE | CONTEXTUAL_TERMS
 
 #: Ceiling on generated queries. A recon list is something a human works
 #: through, so it stays human-sized.
-MAX_QUERIES = 40
+MAX_QUERIES = 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,13 +180,24 @@ def _quoted(name: str) -> str:
     return f'"{name}"'
 
 
-def generate_queries(name: str, context: PersonContext | None = None) -> list[ReconQuery]:
+def generate_queries(
+    name: str,
+    context: PersonContext | None = None,
+    *,
+    also_known_as: Sequence[str] = (),
+) -> list[ReconQuery]:
     """Build the recon query list for ``name`` and its anchors.
 
     Deterministic: the same inputs always produce the same list in the same
     order, so a case can be re-opened and the investigator sees what they saw
     before. Duplicates are collapsed on the query text, keeping the first
     (highest-priority) occurrence and its rationale.
+
+    ``also_known_as`` carries fuller spellings a public source declared — a
+    profile that says "Timotheous Samar Dass" for a search of "Timotheous
+    Samar". Searching the fuller name usually returns far fewer strangers.
+    These are *additional* searches: the name under investigation is still the
+    one the investigator supplied, and nothing here rewrites it.
     """
     display = " ".join((name or "").split())
     if not display:
@@ -189,12 +213,39 @@ def generate_queries(name: str, context: PersonContext | None = None) -> list[Re
             priority=10,
         )
     ]
+    queries.extend(_declared_name_queries(display, also_known_as))
     queries.extend(_social_queries(quoted, display))
     queries.extend(_image_queries(quoted, context))
     queries.extend(_academic_queries(quoted))
     queries.extend(_anchor_queries(quoted, context))
 
     return _finalise(queries, context)
+
+
+def _declared_name_queries(display: str, also_known_as: Sequence[str]) -> list[ReconQuery]:
+    """Searches for a fuller name a public source declared."""
+    out: list[ReconQuery] = []
+    seen = {" ".join(display.lower().split())}
+    for raw in also_known_as:
+        variant = " ".join(str(raw or "").split())
+        key = variant.lower()
+        if not variant or key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            ReconQuery(
+                query=_quoted(variant),
+                family=FAMILY_GENERAL,
+                rationale=(
+                    f"A public source declares the fuller name {variant!r}. Searching it "
+                    f"returns far fewer same-name strangers than {display!r} alone. The "
+                    f"name under investigation is unchanged."
+                ),
+                priority=8,
+                anchors_used=["declared_name"],
+            )
+        )
+    return out
 
 
 def _image_queries(quoted: str, context: PersonContext) -> list[ReconQuery]:
@@ -249,12 +300,19 @@ def _social_queries(quoted: str, display: str) -> list[ReconQuery]:
                 priority=40,
             )
         )
+        # A path in the filter means it reaches profiles specifically, so it
+        # runs before the whole-domain version.
+        narrow = "/" in site
         out.append(
             ReconQuery(
                 query=f"{quoted} site:{site}",
                 family=FAMILY_SOCIAL,
-                rationale=f"Public {label} pages only, which usually surfaces profiles directly.",
-                priority=30,
+                rationale=(
+                    f"Public {label} profile pages only — the narrowest search for a person."
+                    if narrow
+                    else f"Public {label} pages of any kind that name them."
+                ),
+                priority=28 if narrow else 30,
             )
         )
     out.append(
@@ -359,6 +417,24 @@ def _anchor_queries(quoted: str, context: PersonContext) -> list[ReconQuery]:
                 anchors_used=["username"],
             )
         )
+        # A handle paired with a platform name is how an investigator actually
+        # chases an account on a platform this codebase may not query itself.
+        # Finding the same handle there is a lead, not an identification.
+        for capability in search_platforms():
+            if not capability.handle_check_supported:
+                out.append(
+                    ReconQuery(
+                        query=f'"{handle}" {capability.display_name}',
+                        family=FAMILY_HANDLE,
+                        rationale=(
+                            f"Where the handle {handle!r} appears alongside "
+                            f"{capability.display_name}. The same handle on another "
+                            f"platform is a lead to check, never proof of the same owner."
+                        ),
+                        priority=22,
+                        anchors_used=["username"],
+                    )
+                )
     if context.orcid:
         out.append(
             ReconQuery(

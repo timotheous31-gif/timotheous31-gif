@@ -32,6 +32,40 @@ from app.services.normalization import NormalizedTarget
 
 log = get_logger(__name__)
 
+#: How a profile came to be in the case. A closed vocabulary, because a report
+#: reader weighs "the investigator supplied this handle" differently from "a
+#: name search returned it" — and because a free-text field would drift into
+#: prose nobody can filter on.
+DISCOVERY_SUPPLIED_ANCHOR = "supplied_anchor"
+DISCOVERY_HANDLE_CHECK = "handle_check"
+DISCOVERY_NAME_SEARCH = "name_search"
+DISCOVERY_PUBLISHED_LINK = "published_link"
+DISCOVERY_MANUAL_IMPORT = "manual_import"
+DISCOVERY_API_RECORD = "api_record"
+
+DISCOVERY_LABELS: dict[str, str] = {
+    DISCOVERY_SUPPLIED_ANCHOR: "Supplied by the investigator as a known account",
+    DISCOVERY_HANDLE_CHECK: "Public existence check for a supplied handle",
+    DISCOVERY_NAME_SEARCH: "Returned by a public search for the name",
+    DISCOVERY_PUBLISHED_LINK: "Linked from another public page the subject controls",
+    DISCOVERY_MANUAL_IMPORT: "Imported by the investigator from a public search result",
+    DISCOVERY_API_RECORD: "Read from a public API record",
+}
+
+
+def published_link_reason(origin: str) -> str:
+    """The sentence recorded when one public page links to another.
+
+    Regenerated from stored provenance on every refresh rather than kept in the
+    reasons list, so it cannot survive as a stale claim and cannot be lost when
+    the correlation is recomputed.
+    """
+    return (
+        f"This profile is linked from {origin}, so that page's author published the "
+        f"connection. Recorded as provenance; it does not raise the score, because a "
+        f"published link is not proof of ownership."
+    )
+
 
 def target_context(target: Target) -> PersonContext:
     """The anchors stored on a PERSON target, read the way collectors read them."""
@@ -63,17 +97,25 @@ def assess_profile(
     subject_name: str,
     context: PersonContext,
     display_name: str | None = None,
+    handle_verified: bool = True,
 ) -> tuple[float, list[str], list[str], list[str]]:
     """Score a profile against the supplied anchors.
 
     Returns ``(confidence, match_reasons, mismatch_reasons, corroborated_by)``.
     The floor is the name-only rule, whose ceiling sits far below the auto-merge
     threshold, so no quantity of profiles can promote a candidate on its own.
+
+    ``handle_verified=False`` means nobody confirmed an account exists here:
+    the URL was *built* from a handle the investigator supplied for a different
+    platform. Its handle is then withheld from the anchor comparison, because
+    matching a string against the string it was constructed from is not
+    evidence — it is the same fact twice, and scoring it would let a lead about
+    a stranger climb to the confidence of a confirmed account.
     """
     candidate = PersonCandidate(
         url=classified.url,
         name=display_name or subject_name,
-        handles=[classified.handle] if classified.handle else [],
+        handles=[classified.handle] if (classified.handle and handle_verified) else [],
     )
     matched = anchor_matches(candidate, context)
 
@@ -95,8 +137,14 @@ def assess_profile(
         mismatch_reasons.append(
             "No anchors were supplied, so no profile here can be corroborated or ruled out"
         )
+    if not handle_verified:
+        mismatch_reasons.append(
+            "Nobody confirmed that an account exists at this URL. It was built from a "
+            "handle you supplied for another platform, and the same handle elsewhere "
+            "may belong to somebody else entirely — open it yourself to check."
+        )
     handle_anchored = {"username", "github_username"} & set(corroborated)
-    if classified.handle and not handle_anchored:
+    if classified.handle and handle_verified and not handle_anchored:
         mismatch_reasons.append(
             f"The handle {classified.handle!r} is not one you supplied; a matching "
             f"handle alone would not establish ownership in any case"
@@ -125,6 +173,8 @@ def record_profile(
     retrieved_at: datetime | None = None,
     attributes: dict | None = None,
     linked_from: str | None = None,
+    discovery_method: str | None = None,
+    handle_verified: bool = True,
 ) -> SocialProfile | None:
     """Record a public profile URL, scored against the target's anchors.
 
@@ -132,11 +182,21 @@ def record_profile(
     listing is a web page, and storing it as a person's profile would invent an
     attribution out of a path.
 
-    ``linked_from`` records that another public profile published this link.
-    That is a real correlation signal and it is written down as a reason — but
-    it deliberately fires no confidence rule. A person can link to an account
-    that is not theirs, and the anchor model exists so that a score rises only
-    on something the investigator supplied independently of the source.
+    Calling this again for a URL already in the case **refreshes** it: the
+    correlation is a pure function of the URL and the anchors currently on the
+    target, so an older answer is simply wrong once the anchors change. Keeping
+    one is how a report came to show a profile at 0.15 saying "no anchors were
+    supplied" beside a finding at 0.70 saying the handle matched.
+
+    ``linked_from`` records that another public page published this link. That
+    is a real correlation signal and it is written down as a reason — but it
+    deliberately fires no confidence rule. A person can link to an account that
+    is not theirs, and the anchor model exists so that a score rises only on
+    something the investigator supplied independently of the source.
+
+    ``discovery_method`` is one of the ``DISCOVERY_*`` constants above.
+    ``handle_verified=False`` marks a URL built from a supplied handle that
+    nobody has checked — see :func:`assess_profile`.
     """
     classified = classify_url(url)
     if classified is None or not classified.is_social:
@@ -156,32 +216,66 @@ def record_profile(
         subject_name = str(target.attributes.get("display_name", target.normalized_value))
         context = target_context(target)
 
-    confidence, match_reasons, mismatch_reasons, corroborated = assess_profile(
-        classified, subject_name=subject_name, context=context, display_name=display_name
-    )
+    # Provenance merges; correlation is recomputed. Keeping them apart is what
+    # lets a refresh replace a stale score without losing how the profile was
+    # found, and lets a second pass that learned nothing new leave the first
+    # pass's provenance intact.
+    stored = dict((existing.attributes if existing is not None else None) or {})
+    merged_attributes = {**stored, **(attributes or {})}
     if linked_from:
-        match_reasons.append(
-            f"This profile is linked from {linked_from}, so that page's author published "
-            f"the connection. Recorded as provenance; it does not raise the score, because "
-            f"a published link is not proof of ownership."
-        )
+        merged_attributes["discovered_from"] = linked_from
+    if discovery_method:
+        merged_attributes["discovery_method"] = discovery_method
+
+    confidence, match_reasons, mismatch_reasons, corroborated = assess_profile(
+        classified,
+        subject_name=subject_name,
+        context=context,
+        display_name=display_name,
+        handle_verified=handle_verified,
+    )
+    origin = merged_attributes.get("discovered_from")
+    if isinstance(origin, str) and origin:
+        match_reasons.append(published_link_reason(origin))
 
     if existing is not None:
-        if candidate_entity_id and existing.candidate_entity_id is None:
+        # The correlation is *replaced*, not merged. It is a pure function of
+        # the URL and the anchors currently on the target, so keeping an older
+        # answer beside a newer one is how a report came to show a profile at
+        # 0.15 saying "no anchors were supplied" next to a finding at 0.70
+        # saying the handle matched. Both cannot be true of the same evidence,
+        # and the stale one is always the wrong one to keep.
+        existing.confidence = confidence
+        existing.match_reasons = list(match_reasons)
+        existing.mismatch_reasons = list(mismatch_reasons)
+        existing.corroborated_by = list(corroborated)
+        existing.accessibility = accessibility_for(classified)
+        existing.server_fetchable = classified.server_fetchable
+        existing.fetch_note = classified.fetch_note or None
+        if candidate_entity_id and existing.candidate_entity_id is not candidate_entity_id:
             existing.candidate_entity_id = candidate_entity_id
+        if target is not None and existing.target_id is None:
+            existing.target_id = target.id
         if display_name and not existing.display_name:
             existing.display_name = display_name
         if bio and not existing.bio:
             existing.bio = bio
-        # Re-running an investigation should enrich the record, never shrink
-        # it: a later pass that read the profile README must be able to add
-        # what it found to a row an earlier pass created bare.
-        if attributes:
-            existing.attributes = {**(existing.attributes or {}), **attributes}
-        for reason in match_reasons:
-            if reason not in (existing.match_reasons or []):
-                existing.match_reasons = [*(existing.match_reasons or []), reason]
+        if source_url and not existing.source_url:
+            existing.source_url = source_url
+        existing.attributes = merged_attributes
+        existing.retrieved_at = moment
         session.flush()
+        log.info(
+            "social_profile.refreshed",
+            case_id=str(case_id),
+            platform=existing.platform,
+            confidence=round(confidence, 4),
+            corroborated_by=corroborated,
+        )
+        # Nothing here touches ``analyst_decisions``: the analyst's judgement
+        # lives in its own table, so a refreshed automated score cannot reset
+        # it and it cannot edit the score. That separation is the point of the
+        # two tables, and it is asserted by a test rather than left to memory.
         return existing
 
     profile = SocialProfile(
@@ -205,7 +299,7 @@ def record_profile(
         mismatch_reasons=mismatch_reasons,
         corroborated_by=corroborated,
         retrieved_at=moment,
-        attributes=dict(attributes or {}),
+        attributes=merged_attributes,
     )
     session.add(profile)
     session.flush()

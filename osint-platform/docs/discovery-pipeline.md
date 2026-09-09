@@ -125,6 +125,88 @@ something the investigator supplied independently of the source. The linked
 profile therefore lands at the name-only ceiling, well below anything that could
 merge identities.
 
+## Social discovery
+
+### The capability registry
+
+Three questions kept being answered by an `if` in whichever module needed
+them — can a logged-out server read this platform, does it publish an API, is a
+`site:` query worth generating. `app/collectors/capabilities.py` is now the one
+answer. It does not restate the two tables that already exist:
+`collectors/social.py` owns URL *shape*, `collectors/platforms.py` owns
+*existence checks*, and the registry composes them and adds only what neither
+records.
+
+| | Platforms |
+|---|---|
+| **Directly checked** (single unauthenticated request) | GitHub, GitLab, PyPI, Reddit, Mastodon, Keybase, Hacker News, DEV, npm |
+| **API-backed** | GitHub, GitLab, ORCID, Reddit, Mastodon, Keybase, Hacker News, DEV, npm |
+| **Reference-only** (refuses anonymous automation) | LinkedIn, Instagram, Facebook, X/Twitter, TikTok, Snapchat |
+| **Manual search only** | LinkedIn, Instagram, Facebook, YouTube, Snapchat, ORCID, X/Twitter, TikTok |
+
+A platform in the reference-only row is a boundary respected, not a gap in
+coverage. Nothing is fetched from it, and **a refusal to answer is never
+recorded as an absence** — a test asserts no capability note says "not found".
+
+### Layer A — supplied handles
+
+For each handle the investigator supplied, the blocking platforms get a
+**reference-only lead**: the URL where that handle *would* live, marked
+`SAME_USERNAME`, `verification=manual_required`. Bounded at 12 per run.
+
+The lead deliberately carries **no handle** into the anchor engine. Matching a
+string against the string it was built from is the same fact twice, and scoring
+it would let a lead about a stranger reach the confidence of a confirmed
+account.
+
+This surfaced a real defect in the anchor model. `PersonContext.all_handles`
+merged `github_username` into the general handle pool, so a *GitHub* anchor
+fired the generic `username` rule on any platform — a LinkedIn account reusing
+the handle scored 0.70 as though the investigator had vouched for it.
+`_match_handle` now reads `known_usernames` only; `github_username` is matched
+by the GitHub branch that already existed. `known_usernames` carries no
+platform, so it still matches anywhere, which is what the investigator meant by
+supplying it.
+
+### Layer B — links a page publishes about its owner
+
+A GitHub profile README and an ORCID record's `researcher-urls` mean the same
+thing: the person saying, in public, where else to find them. One function
+promotes both (`_promote_links`), because two copies is how two paths come to
+disagree about what a published link is worth.
+
+It is worth **provenance and no score**. The linked profile lands at the
+name-only ceiling with a match reason naming the page that published it. A
+person can link to an account that is not theirs.
+
+### Layer C — manual search recon
+
+The platform generates queries; the investigator runs them in their own
+browser. No engine is ever requested by this codebase, and a test greps every
+source file for a consumer search URL to keep it that way.
+
+Queries are built from the capability registry, so a platform added there is
+searched without touching the query generator. Both filters are generated where
+a platform has them — `site:linkedin.com/in` finds profiles and nothing else,
+`site:linkedin.com` also finds the posts that mention someone — narrowest
+first. Handle queries are generated only for platforms that *cannot* be checked
+directly, which is exactly where a human has to look.
+
+A fuller name a discovered profile declares (`Timotheous Samar Dass` for a
+search of `Timotheous Samar`) becomes an **additional** query. Nothing renames
+the target.
+
+### Layer D — imported results
+
+An import runs through the same anchor correlation a collected result does.
+There is no shortcut for pasting a URL: choosing a result is a judgement about
+relevance, not evidence about identity, and a test asserts an imported profile
+scores exactly what `assess_profile` gives the same URL.
+
+A handle typed into the form is used only where the URL's own shape yielded
+none, and is recorded as `handle_source: investigator` — the investigator's
+reading of the page, not the page's claim.
+
 ## Two rules that govern every promotion
 
 **Nothing is derived.** An address is promoted only when a source published one.
@@ -135,6 +217,50 @@ reads as a finding — which is worse than returning nothing. A test greps
 **Nothing claims identity from an image.** An avatar is evidence that an account
 publishes a picture. It says nothing about who is in it. No facial recognition,
 no embeddings, no comparison of any two images.
+
+## Correlation is recomputed; provenance merges
+
+A report showed a GitHub *finding* at 0.70 saying the handle matched, beside the
+*promoted profile* for the same account at 0.15 saying no anchors were supplied.
+Both cannot be true of the same evidence.
+
+The cause: `record_profile`'s existing-row branch updated names and attributes
+but never the correlation. So the split is now explicit.
+
+**Correlation is replaced.** Confidence, match reasons, mismatch reasons,
+`corroborated_by`, accessibility and fetch notes are a pure function of the URL
+and the anchors *currently* on the target. An older answer is not a second
+opinion; it is a wrong one. Withdraw an anchor and the score drops with it.
+
+**Provenance merges.** How a profile was found, the page that linked it, and the
+facts a README stated are things that happened. A later pass that read nothing
+new must not erase what an earlier one read.
+
+**Analyst decisions are untouched by both.** They live in their own table, so a
+refreshed score cannot reset a decision and a decision cannot edit a score.
+Tests assert the decision *and its note* survive a refresh that moves the
+confidence.
+
+## Images in reports
+
+The canonical model now carries `render_safe` per image — https only, no
+credentials, no private literal — decided on shape with **no DNS lookup**,
+because building a report must not resolve a hostname per image.
+
+Whether a format *draws* the image is the renderer's choice:
+
+- **Static Markdown does not embed by default.** A remote `![](https://…)`
+  makes the reader's viewer fetch a third-party URL when the document is
+  opened — an outbound request the investigator never made, to a host that logs
+  when and from where the report was read. The default is an explicit image
+  card: the URL as a link, candidate and profile context, state, provenance,
+  hash where one exists. `?embed_images=true` opts in.
+- **The frontend draws thumbnails**, including reference-only ones, because the
+  investigator is already online and looking at their own case. A reference-only
+  thumbnail is visually distinct and labelled, so it cannot read as verification
+  that did not happen.
+
+No SHA-256 is invented for bytes nobody read; the card says *why* there is none.
 
 ## Public contacts
 
@@ -213,6 +339,15 @@ here would mean shipping something untested against the live service.
 The larger honest point: this round's gain came from surfacing data the platform
 *already had*, not from new sources. That was the correct place to spend the
 effort.
+
+**Education levels are not professional fields.** "…teaching across secondary,
+undergraduate and postgraduate levels" describes who somebody teaches, not what
+they are, and `undergraduate` was being promoted as a professional field. Two
+conservative guards fixed it without loosening anything: a closed
+`EDUCATION_LEVEL_TERMS` set whose members yield nothing on their own, and a
+line-shape test that skips running prose — a line that is one long segment is a
+sentence, and a line starting in lower case is the tail of a wrapped one. Both
+fail towards producing nothing.
 
 **No free-text interpretation.** The README extractor recognises a closed
 vocabulary and nothing else. A language model reading the prose would find more,

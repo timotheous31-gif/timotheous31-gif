@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from app import __version__
 from app.core.errors import NotFoundError
 from app.core.logging import get_logger
+from app.core.ssrf import is_safe_url
 from app.correlation.confidence import classify
 from app.graph import build_graph, graph_summary
 from app.models import (
@@ -220,6 +221,10 @@ class SocialProfileItem:
     corroborated_by: list[str]
     candidate_id: str | None
     retrieved_at: datetime | None
+    #: How the profile entered the case, from a closed vocabulary, and the
+    #: public page that published the link when one did.
+    discovery_method: str | None = None
+    discovered_from: str | None = None
     #: What the account states about itself on its own profile page, each entry
     #: carrying the line it was read from. Explicit statements only.
     profile_facts: list[dict[str, Any]] = field(default_factory=list)
@@ -254,6 +259,8 @@ class SocialProfileItem:
             "corroborated_by": self.corroborated_by,
             "candidate_id": self.candidate_id,
             "retrieved_at": self.retrieved_at.isoformat() if self.retrieved_at else None,
+            "discovery_method": self.discovery_method,
+            "discovered_from": self.discovered_from,
             "profile_facts": self.profile_facts,
             "declared_name": self.declared_name,
             "searched_name": self.searched_name,
@@ -265,6 +272,34 @@ class SocialProfileItem:
         }
 
 
+#: Said on every image, in every format. It is the one thing a reader might
+#: otherwise assume, and assuming it is how a photograph becomes an accusation.
+IMAGE_DISCLAIMER = (
+    "This image appears on a public page associated with this candidate. It does not "
+    "independently establish identity."
+)
+
+
+def render_safety(image_url: str) -> tuple[bool, str]:
+    """Whether a viewer may be pointed at this URL to draw it inline.
+
+    Shape only — scheme, credentials, literal address — with no DNS lookup:
+    building a report must not perform network resolution per image, and a name
+    that resolved safely at fetch time can resolve elsewhere by the time a
+    reader opens the document. The resolving check runs where it matters, in
+    the SSRF-guarded fetch path.
+
+    ``http`` is refused as well as unsafe hosts: a plaintext image request from
+    inside a report discloses to the network what is being read.
+    """
+    url = (image_url or "").strip()
+    if not url.lower().startswith("https://"):
+        return False, "Not drawn inline: only https image URLs are rendered."
+    if not is_safe_url(url, resolve=False):
+        return False, "Not drawn inline: the URL is not a safe public address."
+    return True, ""
+
+
 @dataclass(slots=True)
 class ImageItem:
     """A public image as page context, with its provenance.
@@ -272,6 +307,11 @@ class ImageItem:
     Never a biometric claim: ``analysis`` and ``biometric_matching`` are carried
     into the report so the limit travels with the data rather than living only
     in the code that produced it.
+
+    ``render_safe`` says whether a viewer may be pointed at ``image_url`` to
+    draw it. Whether a given format *does* draw it is the renderer's decision —
+    an interactive view can, a document that will be opened later somewhere
+    else should not fetch third-party URLs on the reader's behalf.
     """
 
     id: str
@@ -293,6 +333,19 @@ class ImageItem:
     evidence_class: str
     candidate_id: str | None
     retrieved_at: datetime | None
+    #: Who and what the picture is filed against, so a report reads as evidence
+    #: about a candidate rather than as a bare URL.
+    platform_label: str | None = None
+    profile_url: str | None = None
+    handle: str | None = None
+    candidate_name: str | None = None
+    #: The candidate's automated confidence at render time. Never the image's:
+    #: a picture carries no identity score of its own, because nothing here
+    #: analyses it.
+    candidate_confidence: float | None = None
+    render_safe: bool = False
+    render_note: str = ""
+    disclaimer: str = IMAGE_DISCLAIMER
     analysis: str = "none"
     biometric_matching: bool = False
     analyst_decision: str | None = None
@@ -317,6 +370,18 @@ class ImageItem:
             "evidence_class": self.evidence_class,
             "candidate_id": self.candidate_id,
             "retrieved_at": self.retrieved_at.isoformat() if self.retrieved_at else None,
+            "platform_label": self.platform_label,
+            "profile_url": self.profile_url,
+            "handle": self.handle,
+            "candidate_name": self.candidate_name,
+            "candidate_confidence": (
+                round(self.candidate_confidence, 4)
+                if self.candidate_confidence is not None
+                else None
+            ),
+            "render_safe": self.render_safe,
+            "render_note": self.render_note or None,
+            "disclaimer": self.disclaimer,
             "analysis": self.analysis,
             "biometric_matching": self.biometric_matching,
             "analyst_decision": self.analyst_decision,
@@ -495,6 +560,8 @@ def _social_profile_items(session: Session, case_id: uuid.UUID) -> list[SocialPr
                 corroborated_by=list(row.corroborated_by or []),
                 candidate_id=str(row.candidate_entity_id) if row.candidate_entity_id else None,
                 retrieved_at=row.retrieved_at,
+                discovery_method=row.discovery_method,
+                discovered_from=row.discovered_from,
                 profile_facts=row.profile_facts,
                 declared_name=row.declared_name,
                 searched_name=row.searched_name,
@@ -510,15 +577,33 @@ def _social_profile_items(session: Session, case_id: uuid.UUID) -> list[SocialPr
 
 def _image_items(session: Session, case_id: uuid.UUID) -> list[ImageItem]:
     decisions = _decision_lookup(session, case_id)
-    rows = session.scalars(
-        select(ImageEvidence)
-        .where(ImageEvidence.case_id == case_id)
-        .order_by(ImageEvidence.created_at.desc())
+    rows = list(
+        session.scalars(
+            select(ImageEvidence)
+            .where(ImageEvidence.case_id == case_id)
+            .order_by(ImageEvidence.created_at.desc())
+        )
     )
+    # Resolved once rather than per row: an image is filed against a profile and
+    # a candidate, and a report that prints only a URL makes the reader go
+    # looking for both.
+    profiles = {
+        profile.id: profile
+        for profile in session.scalars(
+            select(SocialProfile).where(SocialProfile.case_id == case_id)
+        )
+    }
+    candidates = {
+        entity.id: entity
+        for entity in session.scalars(select(Entity).where(Entity.case_id == case_id))
+    }
     items = []
     for row in rows:
         decision = decisions.get(str(row.id))
         attributes = row.attributes or {}
+        profile = profiles.get(row.social_profile_id) if row.social_profile_id else None
+        candidate = candidates.get(row.candidate_entity_id) if row.candidate_entity_id else None
+        safe, note = render_safety(row.image_url)
         items.append(
             ImageItem(
                 id=str(row.id),
@@ -539,6 +624,13 @@ def _image_items(session: Session, case_id: uuid.UUID) -> list[ImageItem]:
                 evidence_class=row.evidence_class,
                 candidate_id=str(row.candidate_entity_id) if row.candidate_entity_id else None,
                 retrieved_at=row.retrieved_at,
+                platform_label=(profile.platform_label if profile else row.platform),
+                profile_url=(profile.profile_url if profile else None),
+                handle=(profile.handle if profile else None),
+                candidate_name=(candidate.display_name if candidate else None),
+                candidate_confidence=(candidate.confidence if candidate else None),
+                render_safe=safe,
+                render_note=note,
                 # Carried into the report so the limit travels with the data.
                 analysis=str(attributes.get("analysis", "none")),
                 biometric_matching=bool(attributes.get("biometric_matching", False)),
