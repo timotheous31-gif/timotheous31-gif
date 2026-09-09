@@ -123,12 +123,20 @@ def record_profile(
     source_url: str | None = None,
     candidate_entity_id: uuid.UUID | None = None,
     retrieved_at: datetime | None = None,
+    attributes: dict | None = None,
+    linked_from: str | None = None,
 ) -> SocialProfile | None:
     """Record a public profile URL, scored against the target's anchors.
 
     Returns ``None`` when the URL is not profile-shaped: a video page or a job
     listing is a web page, and storing it as a person's profile would invent an
     attribution out of a path.
+
+    ``linked_from`` records that another public profile published this link.
+    That is a real correlation signal and it is written down as a reason — but
+    it deliberately fires no confidence rule. A person can link to an account
+    that is not theirs, and the anchor model exists so that a score rises only
+    on something the investigator supplied independently of the source.
     """
     classified = classify_url(url)
     if classified is None or not classified.is_social:
@@ -151,6 +159,12 @@ def record_profile(
     confidence, match_reasons, mismatch_reasons, corroborated = assess_profile(
         classified, subject_name=subject_name, context=context, display_name=display_name
     )
+    if linked_from:
+        match_reasons.append(
+            f"This profile is linked from {linked_from}, so that page's author published "
+            f"the connection. Recorded as provenance; it does not raise the score, because "
+            f"a published link is not proof of ownership."
+        )
 
     if existing is not None:
         if candidate_entity_id and existing.candidate_entity_id is None:
@@ -159,6 +173,14 @@ def record_profile(
             existing.display_name = display_name
         if bio and not existing.bio:
             existing.bio = bio
+        # Re-running an investigation should enrich the record, never shrink
+        # it: a later pass that read the profile README must be able to add
+        # what it found to a row an earlier pass created bare.
+        if attributes:
+            existing.attributes = {**(existing.attributes or {}), **attributes}
+        for reason in match_reasons:
+            if reason not in (existing.match_reasons or []):
+                existing.match_reasons = [*(existing.match_reasons or []), reason]
         session.flush()
         return existing
 
@@ -183,7 +205,7 @@ def record_profile(
         mismatch_reasons=mismatch_reasons,
         corroborated_by=corroborated,
         retrieved_at=moment,
-        attributes={},
+        attributes=dict(attributes or {}),
     )
     session.add(profile)
     session.flush()

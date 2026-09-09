@@ -58,6 +58,10 @@ async def _run_github(profile_body):
 
     respx.get(f"{API}/search/users").mock(return_value=httpx.Response(200, json=SEARCH_BODY))
     respx.get(f"{API}/users/{LOGIN}").mock(return_value=httpx.Response(200, json=profile_body))
+    # This account publishes no special profile repository. Mocked explicitly so
+    # the tests below exercise the plain path deliberately rather than by
+    # accident; the enrichment path has its own file.
+    respx.get(f"{API}/repos/{LOGIN}/{LOGIN}").mock(return_value=httpx.Response(404))
 
     collector = GitHubPeopleCollector()
     target = NormalizedTarget(

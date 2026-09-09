@@ -55,6 +55,16 @@ class SocialProfileRead(BaseModel):
     mismatch_reasons: list[str]
     corroborated_by: list[str]
     retrieved_at: datetime | None
+    #: What the account states about itself on its own profile page. Explicit
+    #: statements only, each carrying the line it was read from.
+    profile_facts: list[dict] = []
+    #: The declared name beside the searched one. Shown together, never
+    #: substituted: the target keeps the name the investigator gave it.
+    declared_name: str | None = None
+    searched_name: str | None = None
+    name_relationship: dict | None = None
+    detail_source_url: str | None = None
+    detail_note: str | None = None
     #: The analyst's separate judgement, when one has been recorded.
     decision: AnalystDecisionRead | None = None
 

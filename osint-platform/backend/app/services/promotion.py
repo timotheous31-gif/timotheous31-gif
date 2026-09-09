@@ -41,9 +41,11 @@ from app.models import (
     Finding,
     ImageFetchState,
     PublicContact,
+    SocialProfile,
     Target,
 )
 from app.models.enums import FindingKind
+from app.services.evidence import EvidenceStore
 from app.services.images import record_image
 from app.services.social_profiles import record_profile
 
@@ -59,9 +61,14 @@ PROFESSIONAL_SOURCES = frozenset({"orcid", "openalex", "crossref", "wikidata"})
 #: order; the first present wins. No key here is ever *constructed*.
 EMAIL_KEYS = ("public_email", "email")
 #: Keys carrying a personal or professional website the source published.
-WEBSITE_KEYS = ("blog", "website", "homepage", "url_homepage")
+WEBSITE_KEYS = ("blog", "website", "homepage", "url_homepage", "repository_homepage")
 #: Keys carrying a profile picture the source published.
 IMAGE_KEYS = ("avatar_url", "profile_image_url", "image_url", "thumbnail_url")
+
+#: Fact kinds from a profile README that describe a person professionally.
+#: Shown as a block on the profile rather than promoted into contacts: an
+#: occupation is not something you can write to.
+DESCRIPTIVE_KINDS = ("declared_name", "occupation", "employer", "professional_field", "location")
 
 
 def classification_for(source: str) -> ContactClassification:
@@ -208,6 +215,7 @@ def promote_finding(
         source_url=url,
         candidate_entity_id=candidate_entity_id,
         retrieved_at=moment,
+        attributes=profile_attributes(data),
     )
     if profile is not None:
         counts["profiles"] += 1
@@ -314,7 +322,242 @@ def promote_finding(
             if promoted is not None:
                 counts["profiles"] += 1
 
+    # 4. Everything the account published on its own profile page.
+    _promote_readme(
+        session,
+        case_id=case_id,
+        data=data,
+        finding=finding,
+        target=target,
+        profile=profile,
+        source=source,
+        source_label=source_label,
+        candidate_entity_id=candidate_entity_id,
+        moment=moment,
+        counts=counts,
+    )
     return counts
+
+
+def profile_facts(data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Explicitly stated facts a profile README carried, if any."""
+    raw = data.get("readme_facts")
+    if not isinstance(raw, list):
+        return []
+    return [fact for fact in raw if isinstance(fact, dict) and fact.get("value")]
+
+
+def profile_attributes(data: dict[str, Any]) -> dict[str, Any]:
+    """The self-description block stored alongside a profile.
+
+    Kept on the profile row rather than spread across new columns: it is a
+    description of one page, it varies by platform, and a report reads it back
+    whole. What matters is that it is *stored*, so the UI can show an
+    investigator what the account says about itself without opening raw JSON.
+    """
+    facts = [fact for fact in profile_facts(data) if fact.get("kind") in DESCRIPTIVE_KINDS]
+    relationship = data.get("name_relationship")
+    repository = data.get("profile_repository")
+    attributes: dict[str, Any] = {}
+    if facts:
+        attributes["profile_facts"] = facts
+    if isinstance(relationship, dict) and relationship.get("relationship"):
+        # Both names, side by side. The searched name is what the investigator
+        # is looking for; the declared name is what the source claims. Storing
+        # the pair is what lets a report explain the difference instead of
+        # quietly preferring one.
+        attributes["searched_name"] = data.get("searched_name")
+        attributes["declared_name"] = data.get("declared_name")
+        attributes["name_relationship"] = relationship
+    if isinstance(repository, dict) and repository.get("exists"):
+        attributes["profile_repository"] = repository
+    if data.get("readme_url"):
+        attributes["readme_url"] = data["readme_url"]
+    if data.get("readme_note"):
+        attributes["readme_note"] = data["readme_note"]
+    if data.get("repository_description"):
+        attributes["repository_description"] = data["repository_description"]
+    return attributes
+
+
+def _readme_evidence_id(
+    session: Session,
+    *,
+    case_id: uuid.UUID,
+    finding: Finding,
+    data: dict[str, Any],
+    source: str,
+    moment: datetime,
+) -> uuid.UUID | None:
+    """Store a provenance descriptor for the README, and return its id.
+
+    Content-addressed like every other artefact, so each promoted value points
+    at a hash of exactly what was read. Re-running deduplicates on that hash
+    rather than storing the page again.
+    """
+    readme_url = data.get("readme_url")
+    if not readme_url:
+        return None
+    stored = EvidenceStore().store(
+        session,
+        case_id=case_id,
+        collector=source,
+        source_url=str(readme_url),
+        content={
+            "readme_url": readme_url,
+            "readme_sha": data.get("readme_sha"),
+            "profile_repository": data.get("profile_repository"),
+            "extracted_facts": profile_facts(data),
+            "extracted_emails": list(data.get("readme_emails") or []),
+            "extracted_links": list(data.get("readme_links") or []),
+            "extracted_images": list(data.get("readme_images") or []),
+            "retrieved_at": moment.isoformat(),
+            "extraction": (
+                "Only values the README states explicitly, each carrying the source "
+                "line it came from. Nothing is inferred and no contact is derived."
+            ),
+        },
+        retrieved_at=moment,
+        finding=finding,
+    )
+    return stored.evidence.id
+
+
+def _promote_readme(
+    session: Session,
+    *,
+    case_id: uuid.UUID,
+    data: dict[str, Any],
+    finding: Finding,
+    target: Target | None,
+    profile: SocialProfile | None,
+    source: str,
+    source_label: str,
+    candidate_entity_id: uuid.UUID | None,
+    moment: datetime,
+    counts: dict[str, int],
+) -> None:
+    """Promote what an account published on its own profile page.
+
+    A profile README is self-published, so a contact in it is
+    ``PUBLIC_SELF_PUBLISHED`` whatever its domain looks like — classification
+    follows provenance, not plausibility. A link in it is recorded as a profile
+    with the README named as the page that published it, and a picture in it is
+    recorded as page context. None of it is followed any further.
+    """
+    readme_url = str(data.get("readme_url") or "")
+    if not readme_url:
+        return
+
+    evidence_id = _readme_evidence_id(
+        session, case_id=case_id, finding=finding, data=data, source=source, moment=moment
+    )
+    origin = f"the public profile README of {data.get('login') or source_label}"
+
+    for address in data.get("readme_emails") or []:
+        if not isinstance(address, str) or "@" not in address:
+            continue
+        recorded = record_contact(
+            session,
+            case_id=case_id,
+            contact_type=ContactType.EMAIL,
+            value=address,
+            source_name=f"{source_label} profile README",
+            collector=source,
+            evidence_class="page_fetched",
+            classification=ContactClassification.PUBLIC_SELF_PUBLISHED,
+            source_url=readme_url,
+            candidate_entity_id=candidate_entity_id,
+            social_profile_id=profile.id if profile else None,
+            evidence_id=evidence_id,
+            confidence=finding.confidence,
+            confidence_reasons=[
+                f"Written out in {origin}",
+                "Published by the account holder; not derived from a name and a domain",
+            ],
+            extraction_reason=(
+                f"Read verbatim from {origin}. The platform never constructs an address "
+                f"from a person's name and an employer's domain."
+            ),
+            retrieved_at=moment,
+        )
+        if recorded is not None:
+            counts["contacts"] += 1
+
+    for link in data.get("readme_links") or []:
+        if not isinstance(link, str) or not link.startswith(("http://", "https://")):
+            continue
+        classified = classify_url(link)
+        if classified is not None and classified.is_social:
+            promoted = record_profile(
+                session,
+                case_id=case_id,
+                target=target,
+                url=link,
+                collector=source,
+                evidence_class="page_fetched",
+                source_url=readme_url,
+                candidate_entity_id=candidate_entity_id,
+                retrieved_at=moment,
+                linked_from=origin,
+            )
+            if promoted is not None:
+                counts["profiles"] += 1
+            continue
+        recorded = record_contact(
+            session,
+            case_id=case_id,
+            contact_type=ContactType.WEBSITE,
+            value=link,
+            source_name=f"{source_label} profile README",
+            collector=source,
+            evidence_class="page_fetched",
+            classification=ContactClassification.PUBLIC_SELF_PUBLISHED,
+            source_url=readme_url,
+            candidate_entity_id=candidate_entity_id,
+            social_profile_id=profile.id if profile else None,
+            evidence_id=evidence_id,
+            confidence=finding.confidence,
+            confidence_reasons=[f"Linked from {origin}"],
+            extraction_reason=f"Read from a link published in {origin}.",
+            retrieved_at=moment,
+        )
+        if recorded is not None:
+            counts["contacts"] += 1
+
+    for image_url in data.get("readme_images") or []:
+        if not isinstance(image_url, str) or not image_url.startswith(("http://", "https://")):
+            continue
+        record_image(
+            session,
+            case_id=case_id,
+            image_url=image_url,
+            # The README is the page that gives the picture its meaning, so it
+            # is the source page — not the profile URL, and not the image alone.
+            source_page_url=readme_url,
+            origin=source,
+            evidence_class="page_fetched",
+            platform=(profile.platform if profile else None),
+            caption=f"Image published in {origin}",
+            candidate_entity_id=candidate_entity_id,
+            social_profile_id=profile.id if profile else None,
+            fetch={
+                "fetch_state": ImageFetchState.REFERENCE_ONLY,
+                "fetch_note": (
+                    f"Referenced by {origin}. The bytes were not downloaded during "
+                    f"collection; fetch the image to hash it."
+                ),
+                "sha256": None,
+                "content_type": None,
+                "byte_length": None,
+                "width": None,
+                "height": None,
+                "redirects": [],
+                "final_url": None,
+            },
+            retrieved_at=moment,
+        )
+        counts["images"] += 1
 
 
 def contacts_for_case(

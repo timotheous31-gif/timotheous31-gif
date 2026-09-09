@@ -220,6 +220,17 @@ class SocialProfileItem:
     corroborated_by: list[str]
     candidate_id: str | None
     retrieved_at: datetime | None
+    #: What the account states about itself on its own profile page, each entry
+    #: carrying the line it was read from. Explicit statements only.
+    profile_facts: list[dict[str, Any]] = field(default_factory=list)
+    #: The name the source declares, beside the name that was searched, and how
+    #: the two relate. Recorded, never applied: the target keeps its own name.
+    declared_name: str | None = None
+    searched_name: str | None = None
+    name_relationship: dict[str, str] | None = None
+    #: The page the statements were read from.
+    detail_source_url: str | None = None
+    detail_note: str | None = None
     #: The analyst's separate judgement, shown alongside rather than instead.
     analyst_decision: str | None = None
     analyst_note: str | None = None
@@ -243,6 +254,12 @@ class SocialProfileItem:
             "corroborated_by": self.corroborated_by,
             "candidate_id": self.candidate_id,
             "retrieved_at": self.retrieved_at.isoformat() if self.retrieved_at else None,
+            "profile_facts": self.profile_facts,
+            "declared_name": self.declared_name,
+            "searched_name": self.searched_name,
+            "name_relationship": self.name_relationship,
+            "detail_source_url": self.detail_source_url,
+            "detail_note": self.detail_note,
             "analyst_decision": self.analyst_decision,
             "analyst_note": self.analyst_note,
         }
@@ -478,6 +495,12 @@ def _social_profile_items(session: Session, case_id: uuid.UUID) -> list[SocialPr
                 corroborated_by=list(row.corroborated_by or []),
                 candidate_id=str(row.candidate_entity_id) if row.candidate_entity_id else None,
                 retrieved_at=row.retrieved_at,
+                profile_facts=row.profile_facts,
+                declared_name=row.declared_name,
+                searched_name=row.searched_name,
+                name_relationship=row.name_relationship,
+                detail_source_url=row.detail_source_url,
+                detail_note=row.detail_note,
                 analyst_decision=str(decision.decision) if decision else None,
                 analyst_note=decision.note if decision else None,
             )

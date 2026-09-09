@@ -15,6 +15,7 @@ import type {
   ImageEvidenceRecord,
   ImageFetchState,
   PublicContactRecord,
+  ProfileFact,
   SocialProfileRecord,
 } from "@/types/api";
 
@@ -194,3 +195,42 @@ export function contactHref(contact: PublicContactRecord): string | null {
   }
   return null;
 }
+
+/**
+ * The declared name beside the searched one, when a source declares one.
+ *
+ * Returned as a pair rather than a single "best" name on purpose. The name
+ * under investigation is what the investigator supplied; a source's spelling is
+ * that source's claim, and showing them together is how an analyst sees the
+ * difference instead of the platform quietly picking a winner.
+ */
+export function nameComparison(
+  profile: SocialProfileRecord,
+): { searched: string; declared: string; explanation: string } | null {
+  if (!profile.declared_name || !profile.name_relationship) return null;
+  return {
+    searched: profile.searched_name ?? "—",
+    declared: profile.declared_name,
+    explanation: profile.name_relationship.explanation,
+  };
+}
+
+/** Profile statements grouped by kind, in the order an analyst reads them. */
+export const FACT_ORDER = [
+  "occupation",
+  "employer",
+  "professional_field",
+  "location",
+  "declared_name",
+] as const;
+
+export function orderedFacts(profile: SocialProfileRecord): ProfileFact[] {
+  const rank = (fact: ProfileFact) => {
+    const index = (FACT_ORDER as readonly string[]).indexOf(fact.kind);
+    return index === -1 ? FACT_ORDER.length : index;
+  };
+  return [...profile.profile_facts].sort((a, b) => rank(a) - rank(b));
+}
+
+/** What to say when a profile publishes no self-description we could read. */
+export const NO_PROFILE_DETAIL = "This profile publishes no self-description we could read.";

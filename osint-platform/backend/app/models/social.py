@@ -97,6 +97,44 @@ class SocialProfile(UUIDMixin, TimestampMixin, Base):
     retrieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     attributes: Mapped[dict] = mapped_column(JSONType, default=dict, nullable=False)
 
+    # What a profile page states about itself lives in ``attributes`` rather
+    # than in six more columns: it is one page's self-description, it differs by
+    # platform, and every reader wants it whole. These properties are the
+    # supported way in, so the API, the report and the UI all read the same
+    # keys instead of each reaching into the JSON with its own spelling.
+
+    @property
+    def profile_facts(self) -> list[dict]:
+        """Explicit statements read from the profile page, each with its line."""
+        facts = (self.attributes or {}).get("profile_facts")
+        return [fact for fact in facts if isinstance(fact, dict)] if isinstance(facts, list) else []
+
+    @property
+    def declared_name(self) -> str | None:
+        """The name the source declares. Never written back onto the target."""
+        return (self.attributes or {}).get("declared_name")
+
+    @property
+    def searched_name(self) -> str | None:
+        """The name the investigation is actually looking for."""
+        return (self.attributes or {}).get("searched_name")
+
+    @property
+    def name_relationship(self) -> dict | None:
+        """How the declared name relates to the searched one, and why."""
+        value = (self.attributes or {}).get("name_relationship")
+        return value if isinstance(value, dict) else None
+
+    @property
+    def detail_source_url(self) -> str | None:
+        """The page the statements above were read from."""
+        return (self.attributes or {}).get("readme_url")
+
+    @property
+    def detail_note(self) -> str | None:
+        """Why there are no statements, when there are none."""
+        return (self.attributes or {}).get("readme_note")
+
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<SocialProfile {self.platform}:{self.handle or self.profile_url}>"
 

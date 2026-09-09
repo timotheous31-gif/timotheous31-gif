@@ -25,7 +25,7 @@ PERSON
 
 | Collector | Promoted |
 |---|---|
-| `github_people` | profile URL, login, display name, **avatar**, **published email**, company, location, blog, bio, repo count |
+| `github_people` | profile URL, login, display name, **avatar**, **published email**, company, location, blog, bio, repo count, **the special profile repository's README** |
 | `orcid` | ORCID iD, institutions, **published email** where the researcher made one public |
 | `openalex` | author record, institutions, works |
 | `crossref` | authored works, DOIs |
@@ -36,6 +36,94 @@ PERSON
 `avatar_url` and `email` were being read from the GitHub API response and then
 dropped on the floor. Every GitHub account has an avatar; it was the single
 largest piece of public data the collector discarded.
+
+## The special GitHub profile repository
+
+GitHub gives every account a documented way to publish a personal page: a public
+repository whose name equals the login, whose README is rendered on the profile.
+It is the one place on GitHub where a person writes about themselves in prose,
+and it was being ignored — which is how an account could be reported as a bare
+login while its own profile stated the person's post, their employer and their
+field.
+
+Two documented API calls per login, and no more:
+
+```
+GET /repos/{login}/{login}          does it exist, is it public, what is its
+                                    description / homepage / default branch
+GET /repos/{login}/{login}/readme   the README, base64 in the JSON body
+```
+
+Never the rendered page at `github.com/<login>`. GitHub publishes this as data,
+so parsing HTML would be scraping something already offered as an API — against
+the rules, and worse evidence besides. A test asserts every fetch in
+`github_profile.py` targets an `{api}/` endpoint.
+
+**Bounded, not a crawler.** At most three accounts per run, the one you anchored
+on first. No repository listing, no second page, and nothing found inside a
+README is followed. A test asserts `/users/{login}/repos` is never called.
+
+### What counts as "explicitly stated"
+
+Two shapes, both closed:
+
+1. **A labelled field** — the author wrote `Occupation:`, `Employer:`,
+   `Email:`. Read anywhere in the README, because a label is the author saying
+   what a value means. The label vocabulary is a fixed map; an unrecognised
+   label produces nothing.
+2. **A recognised phrase**, in the first 30 lines only — the header region where
+   a profile states who someone is, rather than the project prose below it. A
+   segment must match a closed vocabulary: a country name, an organisation word
+   (`Government`, `University`, `Ministry`…), or an occupational noun
+   (`Lecturer`, `Engineer`, `Linguist`…). The matched word is never the value;
+   the value is the segment exactly as written.
+
+A post is told from a field syntactically, not by world knowledge: a role phrase
+carrying a subject, an employer, a grade or a seniority level (`in`, `of`, `at`,
+`(BPS-17)`, `Senior`) names a **post**; a bare role phrase names a **field**. So
+
+```
+Lecturer in English (BPS-17), Government of Sindh, Pakistan - Applied Linguist
+```
+
+yields occupation `Lecturer in English (BPS-17)`, employer
+`Government of Sindh`, geographic association `Pakistan`, professional field
+`Applied Linguist` — four claims, each carrying that line verbatim as its
+source, and each linked to the README's URL and stored SHA-256.
+
+Anything the vocabulary does not recognise produces nothing. That is the
+intended failure: a missed statement leaves an investigator where they already
+were, while an invented one puts a fabrication in a report.
+
+### A country is not a nationality
+
+A place named on a profile is recorded as a **public geographic association**
+and labelled that way everywhere — model, API, report and UI. Nationality,
+citizenship and residence are legal statuses, and naming a country asserts none
+of them. There is no fact kind that could carry one, which makes the limit
+structural rather than a rule someone has to remember; a test asserts the
+vocabulary contains no such kind.
+
+### A declared name is recorded, never applied
+
+A GitHub profile declaring `Timotheous Samar Dass` for a search of
+`Timotheous Samar` is corroboration worth showing. It is not permission to
+rewrite the target: the investigator named the subject, and a source's spelling
+is that source's claim. So both names are stored side by side with a computed
+relationship (`extends_searched_name`, `shortens_searched_name`,
+`partial_overlap`, `unrelated`) and a sentence explaining it. Nothing writes a
+declared name back onto a `Target`, and a test asserts the target is unchanged
+after a run.
+
+### A link published on a profile is provenance, not proof
+
+A LinkedIn URL in a GitHub README is a real correlation signal: the account
+holder published the connection. It is recorded as a match *reason* naming the
+README — and it fires **no** confidence rule. A person can link to an account
+that is not theirs, and the anchor model exists so a score rises only on
+something the investigator supplied independently of the source. The linked
+profile therefore lands at the name-only ceiling, well below anything that could
+merge identities.
 
 ## Two rules that govern every promotion
 
@@ -125,6 +213,12 @@ here would mean shipping something untested against the live service.
 The larger honest point: this round's gain came from surfacing data the platform
 *already had*, not from new sources. That was the correct place to spend the
 effort.
+
+**No free-text interpretation.** The README extractor recognises a closed
+vocabulary and nothing else. A language model reading the prose would find more,
+and would also produce claims no line supports — and this is a report an
+investigator signs. Extraction that cannot point at the exact words it came from
+is not extraction.
 
 **Deep public-page extraction** (rel=me, JSON-LD, mailto harvesting from
 arbitrary pages) is deferred. `http_meta` already extracts title, description,

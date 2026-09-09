@@ -27,6 +27,8 @@ import {
   hostOf,
   imagesBySource,
   leadingCaveat,
+  nameComparison,
+  orderedFacts,
 } from "@/lib/social";
 import type {
   CandidateGroup,
@@ -333,6 +335,7 @@ function ProfileRow({
       >
         Open source page — {profile.profile_url}
       </a>
+      <ProfileDetail profile={profile} />
       {profile.match_reasons.map((reason) => (
         <p key={reason} className="text-xs">
           ✓ {reason}
@@ -347,6 +350,61 @@ function ProfileRow({
         {profile.retrieved_at ? ` · ${formatDateTime(profile.retrieved_at)}` : ""}
       </p>
     </li>
+  );
+}
+
+/**
+ * What a public profile states about itself.
+ *
+ * Two things this deliberately does not do. It does not replace the searched
+ * name with the declared one — both are shown, with the relationship spelled
+ * out, because a source's spelling of a name is a claim by that source. And it
+ * prints a country as a public geographic association, never as nationality or
+ * citizenship: those are legal statuses, and naming a place asserts neither.
+ */
+function ProfileDetail({ profile }: { profile: SocialProfileRecord }) {
+  const comparison = nameComparison(profile);
+  const facts = orderedFacts(profile);
+  if (!comparison && facts.length === 0) return null;
+
+  return (
+    <div className="mt-2 space-y-1 rounded-md border border-line bg-panel p-2">
+      {comparison ? (
+        <div className="text-xs">
+          <p>
+            <span className="text-muted">Searched name:</span> {comparison.searched}
+          </p>
+          <p>
+            <span className="text-muted">Declared name:</span> {comparison.declared}
+          </p>
+          <p className="text-[11px] text-muted">{comparison.explanation}</p>
+        </div>
+      ) : null}
+      {facts.length > 0 ? (
+        <dl className="space-y-1 text-xs">
+          {facts.map((fact) => (
+            <div key={`${fact.kind}:${fact.value}`}>
+              <dt className="text-muted">{fact.label}</dt>
+              <dd>{fact.value}</dd>
+              <dd className="text-[11px] text-muted">Stated as “{fact.source_line}”</dd>
+              {fact.interpretation ? (
+                <dd className="text-[11px] text-muted">{fact.interpretation}</dd>
+              ) : null}
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      {profile.detail_source_url ? (
+        <a
+          href={profile.detail_source_url}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="block text-[11px] text-accent underline"
+        >
+          Source of the statements above
+        </a>
+      ) : null}
+    </div>
   );
 }
 

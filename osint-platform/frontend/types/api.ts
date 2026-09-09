@@ -402,8 +402,40 @@ export interface SocialProfileRecord {
   mismatch_reasons: string[];
   corroborated_by: string[];
   retrieved_at: string | null;
+  /** Explicit statements read from the profile page, each with its own line. */
+  profile_facts: ProfileFact[];
+  /** The name the source declares, beside the name that was searched. */
+  declared_name: string | null;
+  searched_name: string | null;
+  name_relationship: NameRelationship | null;
+  /** The page those statements were read from, when there is one. */
+  detail_source_url: string | null;
+  detail_note: string | null;
   /** The analyst's separate judgement, shown alongside rather than instead. */
   decision: AnalystDecisionRecord | null;
+}
+
+/**
+ * One thing a public profile says about itself, with the line it says it on.
+ *
+ * `interpretation` is present on a geographic fact and states its limit: a
+ * country named on a profile is a public association, not a nationality.
+ */
+export interface ProfileFact {
+  kind: string;
+  label: string;
+  value: string;
+  source_line: string;
+  basis: string;
+  matched_term: string | null;
+  source_url: string | null;
+  interpretation?: string;
+}
+
+/** How a name a source declares relates to the name under investigation. */
+export interface NameRelationship {
+  relationship: string;
+  explanation: string;
 }
 
 export interface ImageEvidenceRecord {

@@ -186,6 +186,19 @@ def render_markdown(model: ReportModel) -> str:
         add("No relationships were derived.")
 
     add("")
+    add("## Public profiles and contacts")
+    add("")
+    add(
+        "Public accounts, the professional information they publish about themselves, and the "
+        "contact points a source actually printed. Nothing here is derived: no address is built "
+        "from a name and a domain, and no image is used to identify anybody — the platform runs "
+        "no facial recognition, no biometric analysis and no image comparison of any kind."
+    )
+    _render_profiles(add, model)
+    _render_contacts(add, model)
+    _render_images(add, model)
+
+    add("")
     add("## Confidence assessment")
     add("")
     add(
@@ -276,6 +289,100 @@ def render_markdown(model: ReportModel) -> str:
     )
     add("")
     return "\n".join(out)
+
+
+def _render_profiles(add: Any, model: ReportModel) -> None:
+    """Each public profile, with what it states about itself.
+
+    The declared name is printed beside the searched name rather than instead
+    of it. A source's spelling of a name is that source's claim; the name under
+    investigation is the one the investigator supplied, and this report never
+    silently swaps one for the other.
+    """
+    add("")
+    add("### Social profiles")
+    add("")
+    if not model.social_profiles:
+        add("No public profile was recorded for this case.")
+        return
+    for profile in model.social_profiles:
+        handle = f" @{profile.handle}" if profile.handle else ""
+        add(f"#### {profile.platform_label}{handle}")
+        add("")
+        add(f"<{profile.profile_url}>")
+        add("")
+        if profile.searched_name or profile.declared_name:
+            add(f"- Searched name: {profile.searched_name or '—'}")
+            add(f"- Declared name: {profile.declared_name or '—'}")
+            if profile.name_relationship:
+                add(f"- Name relationship: {profile.name_relationship.get('explanation', '—')}")
+        for fact in profile.profile_facts:
+            add(f"- {fact.get('label', fact.get('kind'))}: {fact.get('value')}")
+            line = fact.get("source_line")
+            if line:
+                add(f"  - Stated as: \u201c{line}\u201d")
+            if fact.get("interpretation"):
+                add(f"  - {fact['interpretation']}")
+        if profile.detail_source_url:
+            add(f"- Source of the statements above: <{profile.detail_source_url}>")
+        elif profile.detail_note:
+            add(f"- {profile.detail_note}")
+        add(f"- Automated confidence: {profile.confidence:.2f} (computed by the platform)")
+        add(
+            f"- Analyst decision: {profile.analyst_decision or 'none recorded'}"
+            + (f" — {profile.analyst_note}" if profile.analyst_note else "")
+        )
+        if profile.corroborated_by:
+            add(f"- Corroborated by: {', '.join(profile.corroborated_by)}")
+        for reason in profile.match_reasons:
+            add(f"- Why it may match: {reason}")
+        for reason in profile.mismatch_reasons:
+            add(f"- Why it may not: {reason}")
+        if not profile.server_fetchable and profile.fetch_note:
+            add(f"- {profile.fetch_note}")
+        add("")
+
+
+def _render_contacts(add: Any, model: ReportModel) -> None:
+    add("")
+    add("### Public contacts")
+    add("")
+    if not model.public_contacts:
+        add("No verified public contact was found.")
+        return
+    add("| Kind | Value | Classification | Source | Confidence | Analyst decision |")
+    add("| --- | --- | --- | --- | ---: | --- |")
+    for contact in model.public_contacts:
+        add(
+            f"| {contact.contact_type} | {contact.value} | {contact.classification} | "
+            f"{contact.source_url or contact.source_name} | {contact.confidence:.2f} | "
+            f"{contact.analyst_decision or 'none recorded'} |"
+        )
+    add("")
+    for contact in model.public_contacts:
+        if contact.extraction_reason:
+            add(f"- `{contact.value}` — {contact.extraction_reason}")
+
+
+def _render_images(add: Any, model: ReportModel) -> None:
+    add("")
+    add("### Public image evidence")
+    add("")
+    if not model.images:
+        add("No public image was recorded.")
+        return
+    add("| Image | Appears on | State | SHA-256 | Analyst decision |")
+    add("| --- | --- | --- | --- | --- |")
+    for image in model.images:
+        add(
+            f"| {image.image_url} | {image.source_page_url} | {image.fetch_state} | "
+            f"{image.sha256 or '—'} | {image.analyst_decision or 'none recorded'} |"
+        )
+    add("")
+    add(
+        "Each image is page context: it appears on a public page associated with a candidate. "
+        "That is the whole of the claim. No image here identifies anyone."
+    )
 
 
 RENDERERS: dict[str, Any] = {
