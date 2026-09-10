@@ -234,3 +234,60 @@ export function orderedFacts(profile: SocialProfileRecord): ProfileFact[] {
 
 /** What to say when a profile publishes no self-description we could read. */
 export const NO_PROFILE_DETAIL = "This profile publishes no self-description we could read.";
+
+/** How a profile came to be in the case, in words an investigator weighs. */
+export function discoveryLabel(method: string | null | undefined): string {
+  const labels: Record<string, string> = {
+    supplied_anchor: "You supplied this account",
+    handle_check: "Public existence check for a handle you supplied",
+    name_search: "Returned by a public search for the name",
+    published_link: "Linked from another public page",
+    manual_import: "You imported this from a search result",
+    api_record: "Read from a public API record",
+  };
+  if (!method) return "Discovery method not recorded";
+  return labels[method] ?? method;
+}
+
+/** Badge tone for a discovery method: how much the method itself is worth. */
+export function discoveryTone(method: string | null | undefined): string | undefined {
+  const tones: Record<string, string> = {
+    supplied_anchor: "SUCCESS",
+    handle_check: "SUCCESS",
+    api_record: "PARTIAL",
+    published_link: "PARTIAL",
+    name_search: "SKIPPED",
+    manual_import: "PARTIAL",
+  };
+  return method ? tones[method] : undefined;
+}
+
+/**
+ * Whether a thumbnail may be drawn for this image.
+ *
+ * Mirrors the backend's rule so the two cannot disagree: https only, and never
+ * a URL the SSRF classification would refuse. A thumbnail is page context — it
+ * shows what a public page publishes, and identifies nobody.
+ */
+export function canRenderThumbnail(image: ImageEvidenceRecord): boolean {
+  const url = (image.image_url || "").trim();
+  if (!url.toLowerCase().startsWith("https://")) return false;
+  try {
+    const parsed = new URL(url);
+    if (parsed.username || parsed.password) return false;
+    const host = parsed.hostname.toLowerCase();
+    // Loopback and private literals never reach a viewer's browser from here.
+    if (host === "localhost" || host.endsWith(".localhost")) return false;
+    if (/^(?:10|127)\./.test(host) || /^192\.168\./.test(host)) return false;
+    if (/^172\.(?:1[6-9]|2\d|3[01])\./.test(host)) return false;
+    if (host === "169.254.169.254" || host.startsWith("169.254.")) return false;
+    return host.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Said under every thumbnail, in every view. */
+export const IMAGE_DISCLAIMER =
+  "This image appears on a public page associated with this candidate. It does not " +
+  "independently establish identity.";

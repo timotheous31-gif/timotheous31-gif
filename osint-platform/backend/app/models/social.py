@@ -126,6 +126,16 @@ class SocialProfile(UUIDMixin, TimestampMixin, Base):
         return value if isinstance(value, dict) else None
 
     @property
+    def discovery_method(self) -> str | None:
+        """How this profile came to be in the case, from a closed vocabulary."""
+        return (self.attributes or {}).get("discovery_method")
+
+    @property
+    def discovered_from(self) -> str | None:
+        """The public page that published this link, when one did."""
+        return (self.attributes or {}).get("discovered_from")
+
+    @property
     def detail_source_url(self) -> str | None:
         """The page the statements above were read from."""
         return (self.attributes or {}).get("readme_url")

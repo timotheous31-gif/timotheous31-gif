@@ -34,8 +34,14 @@ def render_report(
     report_format: ReportFormat = ReportFormat.HTML,
     max_classification: Classification = Classification.PERSONAL,
     min_confidence: float = 0.0,
+    embed_images: bool = False,
 ) -> str:
-    """Build and render a case report in ``report_format``."""
+    """Build and render a case report in ``report_format``.
+
+    ``embed_images`` reaches the Markdown renderer only. See
+    :func:`app.reporting.renderers._render_images` for why embedding remote
+    images in a document that will be opened elsewhere is off by default.
+    """
     renderer = RENDERERS.get(str(report_format))
     if renderer is None:
         raise ValidationError(f"Unsupported report format {report_format!r}")
@@ -45,4 +51,6 @@ def render_report(
         max_classification=max_classification,
         min_confidence=min_confidence,
     )
+    if renderer is render_markdown:
+        return render_markdown(model, embed_images=embed_images)
     return str(renderer(model))

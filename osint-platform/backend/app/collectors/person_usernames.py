@@ -20,6 +20,7 @@ from app.collectors.base import (
     CollectorResult,
     RawPayload,
 )
+from app.collectors.capabilities import SourceCapability, reference_only
 from app.collectors.person import PersonCandidate, PersonContext, PersonSourceCollector
 from app.collectors.platforms import PLATFORMS, Platform
 from app.collectors.registry import register_collector
@@ -34,6 +35,16 @@ log = get_logger(__name__)
 #: Supplied handles checked per run. A handful is a context list; fifty is a
 #: crawl.
 MAX_HANDLES = 5
+
+#: Reference-only leads emitted per run for platforms that refuse anonymous
+#: automated access. A lead is a place for the investigator to look, and a
+#: worklist of thirty is not a worklist.
+MAX_REFERENCE_LEADS = 12
+
+#: Said on every reference-only lead. The whole point of the record is that it
+#: is *not* a finding: nobody checked whether the account exists, and a handle
+#: is not a person.
+SAME_USERNAME_SIGNAL = "SAME_USERNAME"
 
 
 @register_collector
@@ -143,7 +154,91 @@ class PersonUsernameCollector(PersonSourceCollector):
                 f"None of the supplied handles ({', '.join(handles)}) has a public "
                 f"profile on the {len(PLATFORMS)} platforms checked."
             )
+
+        leads, lead_note = self._reference_leads(handles)
+        candidates.extend(leads)
+        if lead_note:
+            notes.append(lead_note)
         return candidates, notes
+
+    def _reference_leads(self, handles: list[str]) -> tuple[list[PersonCandidate], str]:
+        """Where a supplied handle *would* live on platforms we may not check.
+
+        These platforms refuse anonymous automated access, so the honest record
+        is a URL and a note telling the investigator to look themselves —
+        never a fetch attempt, and never an inference that the absence of a
+        check means the absence of an account.
+
+        The handle is deliberately **not** put on the candidate, so the anchor
+        engine cannot fire a username match on it. That is the whole point: the
+        investigator said this handle is the subject's *on the platform they
+        named*. Whoever holds the same string elsewhere is a different question,
+        and one this platform answers with a lead rather than a score.
+        """
+        platforms = [item for item in reference_only() if item.profile_url_pattern]
+        if not platforms or not handles:
+            return [], ""
+
+        leads: list[PersonCandidate] = []
+        for handle in handles:
+            for capability in platforms:
+                if len(leads) >= MAX_REFERENCE_LEADS:
+                    break
+                url = capability.profile_url(handle)
+                if url:
+                    leads.append(self._lead(capability, handle, url))
+        if not leads:
+            return [], ""
+        names = ", ".join(sorted({item.display_name for item in platforms}))
+        return leads, (
+            f"{len(leads)} reference-only lead(s) were recorded for {names}. These "
+            f"platforms refuse anonymous server-side requests, so nothing was fetched "
+            f"and nothing was confirmed: each is a URL for you to open yourself. A "
+            f"handle held by someone on one platform is not evidence about the holder "
+            f"of the same handle on another."
+        )
+
+    def _lead(self, capability: SourceCapability, handle: str, url: str) -> PersonCandidate:
+        return PersonCandidate(
+            url=url,
+            # The handle, not the subject's name: naming this record after the
+            # person under investigation would assert the very thing that has
+            # not been checked.
+            name=handle,
+            summary=(
+                f"Where the supplied handle {handle!r} would appear on "
+                f"{capability.display_name}. Not checked and not confirmed — "
+                f"{capability.display_name} refuses anonymous server-side requests."
+            ),
+            identifiers={},
+            # Deliberately empty: see ``_reference_leads``.
+            handles=[],
+            extra={
+                "platform": capability.platform,
+                "platform_name": capability.display_name,
+                "same_username_as": handle,
+                "signal": SAME_USERNAME_SIGNAL,
+                "verification": "manual_required",
+                "access": "reference_only",
+                "server_fetchable": False,
+                "fetch_note": capability.fetch_note or capability.notes,
+                "evidence": "supplied_handle_would_resolve_here",
+                "interpretation": (
+                    "A URL built from a handle you supplied. Nobody checked whether an "
+                    "account exists at it, and an account that does exist may belong to "
+                    "somebody else entirely."
+                ),
+            },
+            payload=RawPayload(
+                source_url=url,
+                content={
+                    "platform": capability.platform,
+                    "username": handle,
+                    "checked": False,
+                    "reason": "platform refuses anonymous server-side requests",
+                },
+            ),
+        )
 
     async def _check(self, platform: Platform, username: str) -> tuple[bool, int, str]:
         """One existence check. Returns ``(exists, status_code, probe_url)``."""

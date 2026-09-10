@@ -26,6 +26,15 @@ def get_report(
         description="Content above this classification is withheld from the report.",
     ),
     min_confidence: float = Query(default=0.0, ge=0.0, le=1.0),
+    embed_images: bool = Query(
+        default=False,
+        description=(
+            "Markdown only: draw render-safe image evidence inline. Off by default "
+            "because a remote image in an exported document makes the reader's viewer "
+            "fetch a third-party URL, disclosing when and from where the report was "
+            "opened. The image card always carries the URL and full provenance."
+        ),
+    ),
 ) -> Response:
     """Render the case as a report.
 
@@ -41,5 +50,6 @@ def get_report(
         report_format=report_format,
         max_classification=max_classification,
         min_confidence=min_confidence,
+        embed_images=embed_images,
     )
     return Response(content=body, media_type=MEDIA_TYPES[report_format])

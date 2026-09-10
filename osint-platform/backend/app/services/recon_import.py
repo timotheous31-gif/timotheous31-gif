@@ -33,7 +33,7 @@ from app.schemas.recon import ManualResultImport
 from app.services.evidence import EvidenceStore
 from app.services.images import record_image
 from app.services.normalization import NormalizedTarget
-from app.services.social_profiles import record_profile
+from app.services.social_profiles import DISCOVERY_MANUAL_IMPORT, record_profile
 
 log = get_logger(__name__)
 
@@ -87,6 +87,11 @@ def import_results(
         is_image = bool(image_url or thumbnail_url)
 
         profile = classify_url(url)
+        # The URL's own shape is the better source for a handle. A handle typed
+        # into a form is the investigator's reading of the page, kept only where
+        # the URL yielded none — and marked as theirs, not the page's.
+        observed_handle = (item.handle or "").strip().lstrip("@") or None
+        handle = (profile.handle if profile and profile.handle else None) or observed_handle
         data: dict[str, Any] = {
             "url": url,
             "host": (profile.platform if profile else ""),
@@ -106,6 +111,13 @@ def import_results(
             "subject_name": subject_name,
             "subject_value": target.normalized_value,
             "candidate_key": url,
+            "handle": handle,
+            "handle_source": (
+                "url_shape" if profile and profile.handle else ("investigator" if handle else None)
+            ),
+            # What the page displays, recorded as the page's claim. It never
+            # becomes the target's name: the investigator named the subject.
+            "displayed_name": (item.display_name or "").strip() or None,
         }
 
         # An imported URL is checked against the anchors exactly as a collected
@@ -116,7 +128,7 @@ def import_results(
             PersonCandidate(
                 url=url,
                 name=subject_name,
-                handles=[profile.handle] if profile and profile.handle else [],
+                handles=[handle] if handle else [],
             ),
             context,
         )
@@ -131,7 +143,6 @@ def import_results(
                     "platform": profile.platform,
                     "platform_label": profile.display_name,
                     "url_kind": profile.kind,
-                    "handle": profile.handle,
                     "server_fetchable": profile.server_fetchable,
                     "fetch_note": profile.fetch_note,
                 }
@@ -203,10 +214,11 @@ def import_results(
             url=url,
             collector=MANUAL_COLLECTOR,
             evidence_class=EVIDENCE_INVESTIGATOR_IMPORTED,
-            display_name=item.title or None,
+            display_name=(item.display_name or "").strip() or item.title or None,
             bio=item.snippet or None,
             source_url=url,
             retrieved_at=imported_at,
+            discovery_method=DISCOVERY_MANUAL_IMPORT,
         )
         if is_image:
             # Imported images are reference-only by default: the investigator

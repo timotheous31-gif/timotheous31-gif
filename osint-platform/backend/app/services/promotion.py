@@ -47,7 +47,15 @@ from app.models import (
 from app.models.enums import FindingKind
 from app.services.evidence import EvidenceStore
 from app.services.images import record_image
-from app.services.social_profiles import record_profile
+from app.services.social_profiles import (
+    DISCOVERY_API_RECORD,
+    DISCOVERY_HANDLE_CHECK,
+    DISCOVERY_MANUAL_IMPORT,
+    DISCOVERY_NAME_SEARCH,
+    DISCOVERY_PUBLISHED_LINK,
+    DISCOVERY_SUPPLIED_ANCHOR,
+    record_profile,
+)
 
 log = get_logger(__name__)
 
@@ -69,6 +77,29 @@ IMAGE_KEYS = ("avatar_url", "profile_image_url", "image_url", "thumbnail_url")
 #: Shown as a block on the profile rather than promoted into contacts: an
 #: occupation is not something you can write to.
 DESCRIPTIVE_KINDS = ("declared_name", "occupation", "employer", "professional_field", "location")
+
+
+def discovery_method_for(data: dict[str, Any], source: str) -> str:
+    """How this finding's profile came to be in the case.
+
+    Read from what the collector recorded rather than guessed from its name, so
+    a new collector that sets the same keys is described correctly without this
+    function learning about it.
+    """
+    if data.get("access") == "reference_only" or data.get("signal") == "SAME_USERNAME":
+        return DISCOVERY_SUPPLIED_ANCHOR
+    if data.get("evidence") == "profile_exists_for_supplied_handle":
+        return DISCOVERY_HANDLE_CHECK
+    if source == "manual_search_recon":
+        return DISCOVERY_MANUAL_IMPORT
+    corroborated = data.get("corroborated_by")
+    if isinstance(corroborated, list) and {"github_username", "username", "profile_url"} & set(
+        corroborated
+    ):
+        return DISCOVERY_SUPPLIED_ANCHOR
+    if source in PROFESSIONAL_SOURCES:
+        return DISCOVERY_API_RECORD
+    return DISCOVERY_NAME_SEARCH
 
 
 def classification_for(source: str) -> ContactClassification:
@@ -216,6 +247,10 @@ def promote_finding(
         candidate_entity_id=candidate_entity_id,
         retrieved_at=moment,
         attributes=profile_attributes(data),
+        discovery_method=discovery_method_for(data, source),
+        # A URL built from a supplied handle on a platform nobody checked is a
+        # lead. Its handle must not score against the handle it was built from.
+        handle_verified=data.get("access") != "reference_only",
     )
     if profile is not None:
         counts["profiles"] += 1
@@ -318,11 +353,31 @@ def promote_finding(
                 source_url=url,
                 candidate_entity_id=candidate_entity_id,
                 retrieved_at=moment,
+                discovery_method=DISCOVERY_PUBLISHED_LINK,
+                linked_from=f"the {source_label} record for this candidate",
             )
             if promoted is not None:
                 counts["profiles"] += 1
 
-    # 4. Everything the account published on its own profile page.
+    # 4. Links the record's own owner published elsewhere on it. Same rule as
+    #    the README below: provenance, never proof.
+    published = data.get("published_links")
+    if isinstance(published, list) and published:
+        origin = str(data.get("published_links_source") or url)
+        counts["profiles"] += _promote_links(
+            session,
+            case_id=case_id,
+            links=published,
+            target=target,
+            source=source,
+            evidence_class=evidence_class,
+            source_page_url=origin,
+            origin_label=f"the public {source_label} record {origin}",
+            candidate_entity_id=candidate_entity_id,
+            moment=moment,
+        )
+
+    # 5. Everything the account published on its own profile page.
     _promote_readme(
         session,
         case_id=case_id,
@@ -337,6 +392,51 @@ def promote_finding(
         counts=counts,
     )
     return counts
+
+
+def _promote_links(
+    session: Session,
+    *,
+    case_id: uuid.UUID,
+    links: list[Any],
+    target: Target | None,
+    source: str,
+    evidence_class: str,
+    source_page_url: str,
+    origin_label: str,
+    candidate_entity_id: uuid.UUID | None,
+    moment: datetime,
+) -> int:
+    """Record profile-shaped links a public page published about its owner.
+
+    One implementation for every page that carries such links — a GitHub
+    profile README, an ORCID record's "also known as" list — because they mean
+    the same thing and a second copy is how two paths come to disagree about
+    what a published link is worth. It is worth provenance and no score.
+    """
+    promoted = 0
+    for link in links:
+        if not isinstance(link, str) or not link.startswith(("http://", "https://")):
+            continue
+        classified = classify_url(link)
+        if classified is None or not classified.is_social:
+            continue
+        profile = record_profile(
+            session,
+            case_id=case_id,
+            target=target,
+            url=link,
+            collector=source,
+            evidence_class=evidence_class,
+            source_url=source_page_url,
+            candidate_entity_id=candidate_entity_id,
+            retrieved_at=moment,
+            linked_from=origin_label,
+            discovery_method=DISCOVERY_PUBLISHED_LINK,
+        )
+        if profile is not None:
+            promoted += 1
+    return promoted
 
 
 def profile_facts(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -500,6 +600,7 @@ def _promote_readme(
                 candidate_entity_id=candidate_entity_id,
                 retrieved_at=moment,
                 linked_from=origin,
+                discovery_method=DISCOVERY_PUBLISHED_LINK,
             )
             if promoted is not None:
                 counts["profiles"] += 1

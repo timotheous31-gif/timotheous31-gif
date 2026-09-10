@@ -44,8 +44,13 @@ def render_json(model: ReportModel) -> str:
     return json.dumps(model.to_dict(), indent=2, ensure_ascii=False, default=str)
 
 
-def render_markdown(model: ReportModel) -> str:
-    """Render a Markdown report."""
+def render_markdown(model: ReportModel, *, embed_images: bool = False) -> str:
+    """Render a Markdown report.
+
+    ``embed_images`` draws render-safe image evidence with Markdown image
+    syntax. Off by default — see :func:`_render_images` for why a document that
+    will be opened elsewhere should not fetch third-party URLs for its reader.
+    """
     out: list[str] = []
     add = out.append
 
@@ -196,7 +201,7 @@ def render_markdown(model: ReportModel) -> str:
     )
     _render_profiles(add, model)
     _render_contacts(add, model)
-    _render_images(add, model)
+    _render_images(add, model, embed_images=embed_images)
 
     add("")
     add("## Confidence assessment")
@@ -291,6 +296,19 @@ def render_markdown(model: ReportModel) -> str:
     return "\n".join(out)
 
 
+#: Mirrors ``app.services.social_profiles.DISCOVERY_LABELS``. A reader weighs
+#: "you supplied this account" very differently from "a name search returned
+#: it", so the method is printed rather than left implicit in the collector name.
+_DISCOVERY_LABELS: dict[str, str] = {
+    "supplied_anchor": "supplied by the investigator as a known account",
+    "handle_check": "public existence check for a supplied handle",
+    "name_search": "returned by a public search for the name",
+    "published_link": "linked from another public page the subject controls",
+    "manual_import": "imported by the investigator from a public search result",
+    "api_record": "read from a public API record",
+}
+
+
 def _render_profiles(add: Any, model: ReportModel) -> None:
     """Each public profile, with what it states about itself.
 
@@ -311,6 +329,11 @@ def _render_profiles(add: Any, model: ReportModel) -> None:
         add("")
         add(f"<{profile.profile_url}>")
         add("")
+        if profile.discovery_method:
+            method = _DISCOVERY_LABELS.get(profile.discovery_method, profile.discovery_method)
+            add(f"- How it was found: {method}")
+        if profile.discovered_from:
+            add(f"- Linked from: {profile.discovered_from}")
         if profile.searched_name or profile.declared_name:
             add(f"- Searched name: {profile.searched_name or '—'}")
             add(f"- Declared name: {profile.declared_name or '—'}")
@@ -364,24 +387,83 @@ def _render_contacts(add: Any, model: ReportModel) -> None:
             add(f"- `{contact.value}` — {contact.extraction_reason}")
 
 
-def _render_images(add: Any, model: ReportModel) -> None:
+def _render_images(add: Any, model: ReportModel, *, embed_images: bool) -> None:
+    """One card per image, with everything needed to judge it.
+
+    **Why a static Markdown export does not embed by default.** A remote
+    ``![](https://…)`` makes the *reader's* viewer fetch a third-party URL when
+    the document is opened — an outbound request the investigator never made,
+    to a host that logs when and from where the report was read. For an
+    investigation report that is a disclosure, so the default is an explicit
+    image card: the URL as a link, all the metadata, nothing fetched. Pass
+    ``embed_images=True`` (``?embed_images=true`` on the endpoint) when the
+    report is for a viewer where that trade is acceptable; the frontend report
+    view draws thumbnails directly, because the investigator is already online
+    and already looking at the case.
+    """
     add("")
     add("### Public image evidence")
     add("")
     if not model.images:
         add("No public image was recorded.")
         return
-    add("| Image | Appears on | State | SHA-256 | Analyst decision |")
-    add("| --- | --- | --- | --- | --- |")
     for image in model.images:
-        add(
-            f"| {image.image_url} | {image.source_page_url} | {image.fetch_state} | "
-            f"{image.sha256 or '—'} | {image.analyst_decision or 'none recorded'} |"
-        )
-    add("")
+        heading = image.platform_label or image.platform or "Public image"
+        add(f"#### {heading} image evidence")
+        add("")
+        if embed_images and image.render_safe:
+            alt = image.caption or "Public image evidence"
+            add(f"![{alt}]({image.image_url})")
+            add("")
+        elif not image.render_safe and image.render_note:
+            add(f"*{image.render_note}*")
+            add("")
+        if image.candidate_name:
+            add(f"- Candidate: {image.candidate_name}")
+        if image.handle or image.profile_url:
+            handle = f"@{image.handle}" if image.handle else ""
+            add(
+                f"- Profile: {handle} <{image.profile_url}>"
+                if image.profile_url
+                else f"- Profile: {handle}"
+            )
+        add(f"- Source page: <{image.source_page_url}>")
+        add(f"- Image source: <{image.image_url}>")
+        add(f"- State: {image.fetch_state}")
+        if image.candidate_confidence is not None:
+            add(f"- Automated candidate confidence: {image.candidate_confidence:.2f}")
+        add(f"- Analyst decision: {image.analyst_decision or 'none recorded'}")
+        if image.analyst_note:
+            add(f"  - {image.analyst_note}")
+        add(f"- Origin: `{image.origin}` · {image.evidence_class}")
+        if image.retrieved_at:
+            add(f"- Retrieved: {image.retrieved_at:%Y-%m-%d %H:%M UTC}")
+        if image.sha256:
+            add(f"- SHA-256: `{image.sha256}`")
+            if image.content_type:
+                add(f"- Content type: {image.content_type}")
+            if image.byte_length is not None:
+                add(f"- Byte length: {image.byte_length}")
+            if image.width and image.height:
+                add(f"- Dimensions: {image.width} x {image.height}")
+            if image.final_url and image.final_url != image.image_url:
+                add(f"- Final URL after redirects: <{image.final_url}>")
+            if image.redirects:
+                add(f"- Redirect chain: {len(image.redirects)} hop(s), each re-validated")
+        else:
+            # No hash is invented for bytes nobody read. Saying why is the
+            # difference between "we did not check" and "there is nothing".
+            add(
+                "- SHA-256: unavailable because the image bytes were not fetched"
+                + (f" — {image.fetch_note}" if image.fetch_note else "")
+            )
+        add("")
+        add(f"> {image.disclaimer}")
+        add("")
     add(
-        "Each image is page context: it appears on a public page associated with a candidate. "
-        "That is the whole of the claim. No image here identifies anyone."
+        "Every image above is page context. The platform performs no facial recognition, "
+        "no biometric analysis and no comparison of one image with another, so nothing "
+        "here identifies a person or links two pictures to the same one."
     )
 
 

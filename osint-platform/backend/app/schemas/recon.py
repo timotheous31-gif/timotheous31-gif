@@ -26,11 +26,35 @@ class ReconQueryPlan(BaseModel):
     queries: list[ReconQueryRead]
     #: Anchors the queries were built from, for display. Values, not secrets.
     anchors_used: list[str] = Field(default_factory=list)
+    #: Fuller name spellings a public profile declared. Extra searches, never a
+    #: replacement for the name the investigator supplied.
+    also_known_as: list[str] = Field(default_factory=list)
+    #: What may be done with each platform, so "manual only" is explained.
+    capabilities: list[SourcePlatformRead] = Field(default_factory=list)
     #: Stated on the plan so the UI never implies the platform will run these.
     execution: str = (
         "These queries are for you to run in your own browser. The platform does not "
         "submit them to any search engine and does not scrape search result pages."
     )
+
+
+class SourcePlatformRead(BaseModel):
+    """One platform and what this codebase may legitimately do with it.
+
+    Sent to the UI so the investigator can see *why* a platform is manual-only
+    rather than discovering it from an empty result list.
+    """
+
+    platform: str
+    display_name: str
+    domains: list[str]
+    server_fetchable: bool
+    public_api_available: bool
+    manual_search_supported: bool
+    handle_check_supported: bool
+    image_reference_supported: bool
+    search_filters: list[str]
+    notes: str | None = None
 
 
 class ManualResult(BaseModel):
@@ -51,6 +75,14 @@ class ManualResult(BaseModel):
     image_url: str | None = Field(default=None, max_length=2048)
     thumbnail_url: str | None = Field(default=None, max_length=2048)
     caption: str | None = Field(default=None, max_length=1000)
+    #: The handle shown on the result, when the investigator saw one. Used only
+    #: where the URL's own shape did not already yield it — a handle typed into
+    #: a form is a claim about the page, and the page's URL is the better
+    #: source when it has one.
+    handle: str | None = Field(default=None, max_length=200)
+    #: The name displayed on the result. Recorded as what the page shows; it
+    #: never becomes the target's name.
+    display_name: str | None = Field(default=None, max_length=300)
 
 
 class ManualResultImport(BaseModel):

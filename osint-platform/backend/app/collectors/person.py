@@ -497,7 +497,17 @@ def _match_link(candidate: PersonCandidate, supplied: tuple[str, ...]) -> str | 
 
 
 def _match_handle(candidate: PersonCandidate, context: PersonContext) -> str | None:
-    known = {normalize_handle(item) for item in context.all_handles}
+    """Match a candidate's handle against the *platform-agnostic* handles.
+
+    ``known_usernames`` only, never ``all_handles``. ``github_username`` is an
+    anchor about GitHub: the investigator said *this account on that platform*
+    is the subject's, and the GitHub branch above is where it belongs. Letting
+    it into the general handle pool made a LinkedIn account that happens to use
+    the same string score as though the investigator had vouched for it — and
+    a shared handle is not a shared owner. ``known_usernames`` carries no such
+    platform, so it still matches anywhere.
+    """
+    known = {normalize_handle(item) for item in context.known_usernames}
     for handle in candidate.handles:
         if normalize_handle(handle) in known:
             return handle

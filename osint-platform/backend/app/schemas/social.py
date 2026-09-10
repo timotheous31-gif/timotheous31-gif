@@ -55,6 +55,11 @@ class SocialProfileRead(BaseModel):
     mismatch_reasons: list[str]
     corroborated_by: list[str]
     retrieved_at: datetime | None
+    #: How this profile came to be in the case, and the page that published it
+    #: when one did. A reader weighs "you supplied this handle" differently
+    #: from "a name search returned it".
+    discovery_method: str | None = None
+    discovered_from: str | None = None
     #: What the account states about itself on its own profile page. Explicit
     #: statements only, each carrying the line it was read from.
     profile_facts: list[dict] = []
