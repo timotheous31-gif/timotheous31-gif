@@ -12,6 +12,7 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from app.reporting.coverage import STATE_MEANINGS
 from app.reporting.model import ReportModel
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
@@ -254,6 +255,56 @@ def render_markdown(model: ReportModel, *, embed_images: bool = False) -> str:
             )
     else:
         add("No evidence was stored.")
+
+    add("")
+    add("## Source coverage")
+    add("")
+    add(
+        "What was searched, what was not, and why. A source that was never searched says "
+        "nothing about the subject, and is not the same as a source that searched and "
+        "found nothing — only the second is evidence of absence, and only for what that "
+        "source indexes."
+    )
+    add("")
+    if model.coverage:
+        add("| Source | State | What that means | Findings |")
+        add("| --- | --- | --- | ---: |")
+        for item in model.coverage:
+            meaning = STATE_MEANINGS.get(item.state, "")
+            detail = f" {item.detail}" if item.detail else ""
+            add(
+                f"| {item.display_name} | `{item.state}` | {meaning}{detail} | "
+                f"{item.findings or '—'} |"
+            )
+    else:
+        add("No source ran in this investigation.")
+    if model.coverage_gaps:
+        add("")
+        add("**Gaps a reader must weigh:**")
+        for line in model.coverage_gaps:
+            add(f"- {line}")
+
+    add("")
+    add("## Investigation executions")
+    add("")
+    execution = model.execution
+    add(
+        f"This case has been investigated {execution.executions} time(s). The figures below "
+        f"describe the latest execution; the full run history is kept and counted separately, "
+        f"so a rerun never makes an investigation look broader than it was."
+    )
+    add("")
+    add("| Metric | Value |")
+    add("| --- | ---: |")
+    add(f"| Investigation executions | {execution.executions} |")
+    add(f"| Latest execution — collectors attempted | {execution.collectors_attempted} |")
+    add(f"| Latest execution — successful | {execution.successful} |")
+    add(f"| Latest execution — failed | {execution.failed} |")
+    add(f"| Latest execution — skipped | {execution.skipped} |")
+    add(f"| Historical collector runs (all executions) | {execution.historical_runs} |")
+    if execution.latest_state:
+        add("")
+        add(f"Latest execution state: `{execution.latest_state}`.")
 
     add("")
     add("## Sources")

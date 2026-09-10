@@ -150,6 +150,41 @@ DEFAULT_RULES: dict[str, ConfidenceRule] = {
             "names are shared by many people and are not identifiers",
             ceiling=0.30,
         ),
+        # A source may publish a shorter or differently-punctuated form of the
+        # name. Searching those forms is how a real footprint gets found, but a
+        # shorter name matches *more* strangers than the full one — so each form
+        # has its own named rule and its own ceiling, below the exact spelling.
+        # None of them identifies anybody; they differ only in how weak they are.
+        ConfidenceRule(
+            "name_variant_hyphenation",
+            0.14,
+            "The name matches on its parts, punctuated differently (a hyphenated "
+            "surname). The same parts, so no weaker than the exact spelling by much — "
+            "and a name still identifies nobody",
+            ceiling=0.28,
+        ),
+        ConfidenceRule(
+            "name_variant_initial",
+            0.12,
+            "The name matches with a middle name shortened to an initial. An initial "
+            "carries less information than the name it replaces",
+            ceiling=0.24,
+        ),
+        ConfidenceRule(
+            "name_variant_reduced",
+            0.08,
+            "The source publishes a shorter form of the name, with a part dropped. "
+            "Shorter forms are shared by many more people, so this is a lead to "
+            "check rather than a match",
+            ceiling=0.18,
+        ),
+        ConfidenceRule(
+            "name_variant_partial",
+            0.05,
+            "The name shares only some of its parts with the subject. Worth looking "
+            "at; on its own, close to worthless as evidence",
+            ceiling=0.12,
+        ),
         ConfidenceRule(
             "context_profile_url_match",
             0.85,

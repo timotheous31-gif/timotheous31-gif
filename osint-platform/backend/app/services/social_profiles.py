@@ -15,6 +15,7 @@ it, well below anything that could merge identities.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -28,6 +29,12 @@ from app.correlation.anchors import ANCHOR_REASONS, ANCHOR_RULES
 from app.correlation.confidence import default_engine
 from app.models import ProfileAccess, SocialProfile, Target
 from app.models.enums import TargetType
+from app.services.name_variants import (
+    EXACT,
+    EXTENDED,
+    classify_observed_name,
+    confidence_rule_for,
+)
 from app.services.normalization import NormalizedTarget
 
 log = get_logger(__name__)
@@ -41,6 +48,7 @@ DISCOVERY_HANDLE_CHECK = "handle_check"
 DISCOVERY_NAME_SEARCH = "name_search"
 DISCOVERY_PUBLISHED_LINK = "published_link"
 DISCOVERY_MANUAL_IMPORT = "manual_import"
+DISCOVERY_PROVIDER_SEARCH = "provider_search"
 DISCOVERY_API_RECORD = "api_record"
 
 DISCOVERY_LABELS: dict[str, str] = {
@@ -49,6 +57,7 @@ DISCOVERY_LABELS: dict[str, str] = {
     DISCOVERY_NAME_SEARCH: "Returned by a public search for the name",
     DISCOVERY_PUBLISHED_LINK: "Linked from another public page the subject controls",
     DISCOVERY_MANUAL_IMPORT: "Imported by the investigator from a public search result",
+    DISCOVERY_PROVIDER_SEARCH: "Returned by a configured public search provider",
     DISCOVERY_API_RECORD: "Read from a public API record",
 }
 
@@ -98,12 +107,22 @@ def assess_profile(
     context: PersonContext,
     display_name: str | None = None,
     handle_verified: bool = True,
+    observed_affiliations: Sequence[str] = (),
+    observed_locations: Sequence[str] = (),
 ) -> tuple[float, list[str], list[str], list[str]]:
     """Score a profile against the supplied anchors.
 
     Returns ``(confidence, match_reasons, mismatch_reasons, corroborated_by)``.
     The floor is the name-only rule, whose ceiling sits far below the auto-merge
     threshold, so no quantity of profiles can promote a candidate on its own.
+
+    ``observed_affiliations`` and ``observed_locations`` are what the *source*
+    published about this profile — an employer in a search snippet, an
+    institution on an API record. They exist because the finding for a profile
+    and the promoted profile itself must be scored on the same evidence: without
+    them, a result whose page text matched a supplied employer scored 0.54 as a
+    finding and 0.08 as a profile, and a report showed both. That is the same
+    class of contradiction PR #9 fixed, arriving by a new route.
 
     ``handle_verified=False`` means nobody confirmed an account exists here:
     the URL was *built* from a handle the investigator supplied for a different
@@ -116,10 +135,16 @@ def assess_profile(
         url=classified.url,
         name=display_name or subject_name,
         handles=[classified.handle] if (classified.handle and handle_verified) else [],
+        affiliations=list(observed_affiliations),
+        locations=list(observed_locations),
     )
     matched = anchor_matches(candidate, context)
 
-    signals = [default_engine.signal("same_person_name")]
+    # The same variant-aware name rule the collectors use. Scoring a profile on
+    # a flat "the name matched" while its own finding scored the spelling was
+    # exactly how the two came to disagree once already.
+    variant_type, variant_reason = classify_observed_name(candidate.name, subject_name)
+    signals = [default_engine.signal(confidence_rule_for(variant_type))]
     corroborated: list[str] = []
     match_reasons: list[str] = []
     for kind, detail in matched:
@@ -128,6 +153,8 @@ def assess_profile(
         match_reasons.append(ANCHOR_REASONS[kind].format(detail=detail))
 
     mismatch_reasons: list[str] = []
+    if variant_type not in {EXACT, EXTENDED} and variant_reason:
+        mismatch_reasons.append(variant_reason)
     if not corroborated:
         mismatch_reasons.append(
             "Nothing beyond the name connects this profile to the subject"
@@ -175,6 +202,8 @@ def record_profile(
     linked_from: str | None = None,
     discovery_method: str | None = None,
     handle_verified: bool = True,
+    observed_affiliations: Sequence[str] = (),
+    observed_locations: Sequence[str] = (),
 ) -> SocialProfile | None:
     """Record a public profile URL, scored against the target's anchors.
 
@@ -233,6 +262,8 @@ def record_profile(
         context=context,
         display_name=display_name,
         handle_verified=handle_verified,
+        observed_affiliations=observed_affiliations,
+        observed_locations=observed_locations,
     )
     origin = merged_attributes.get("discovered_from")
     if isinstance(origin, str) and origin:

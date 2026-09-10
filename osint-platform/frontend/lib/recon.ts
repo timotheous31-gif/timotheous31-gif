@@ -12,6 +12,7 @@ import type {
   ManualResultInput,
   ReconQuery,
   SourcePlatform,
+  StagedReconPlan,
 } from "@/types/api";
 
 /**
@@ -198,4 +199,69 @@ export function evidenceClassLabel(evidenceClass: string): string {
     investigator_imported: "Imported by you from your own search",
   };
   return labels[evidenceClass] ?? evidenceClass;
+}
+
+/**
+ * How a name variant should read in the UI, and how much it is worth.
+ *
+ * The weight matters as much as the label. A hit on "Tabitha Afzal" while
+ * investigating "Tabitha Afzal Imdad" is a lead, not a match, and the interface
+ * has to say so where the investigator is looking — not only in the report.
+ */
+export function variantTone(variantType: string): string | undefined {
+  const tones: Record<string, string> = {
+    EXACT_NAME: "SUCCESS",
+    EXTENDED_NAME_MATCH: "SUCCESS",
+    HYPHENATION_VARIANT: "PARTIAL",
+    INITIAL_VARIANT: "PARTIAL",
+    REDUCED_NAME_VARIANT: "SKIPPED",
+    PARTIAL_NAME_MATCH: "SKIPPED",
+  };
+  return tones[variantType];
+}
+
+/** Whether a spelling is weak enough that a hit needs corroborating. */
+export function needsCorroboration(variantType: string): boolean {
+  return variantType === "REDUCED_NAME_VARIANT" || variantType === "PARTIAL_NAME_MATCH";
+}
+
+/** Queries shown per stage before "Show all". A worklist, not a wall. */
+export const QUERIES_SHOWN = 4;
+
+/**
+ * What the public-web channel can do right now, in one sentence.
+ *
+ * Never "no results": an unconfigured provider has not searched, and conflating
+ * the two is the reporting failure this whole round exists to fix.
+ */
+export function providerStatus(plan: StagedReconPlan): {
+  tone: string;
+  label: string;
+  detail: string;
+} {
+  if (plan.search_provider_configured) {
+    return {
+      tone: "SUCCESS",
+      label: `${plan.search_provider} configured`,
+      detail:
+        "Public web results are fetched and fed through the same correlation a collector's " +
+        "findings use. A search engine returning a page earns it no extra confidence.",
+    };
+  }
+  return {
+    tone: "SKIPPED",
+    label: "Public web not searched",
+    detail:
+      plan.search_provider_note ||
+      "No search provider is configured, so the public web is not searched automatically. " +
+        "Run the queries below yourself and import what is relevant.",
+  };
+}
+
+/** Image-search engines, for the queries where a picture is the point. */
+export const IMAGE_ENGINES: EngineKey[] = ["Google Images", "Bing Images"];
+
+/** Whether a query family is about finding a published picture. */
+export function isImageQuery(family: string): boolean {
+  return family === "image";
 }

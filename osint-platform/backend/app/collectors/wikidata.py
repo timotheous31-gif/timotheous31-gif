@@ -36,11 +36,32 @@ log = get_logger(__name__)
 SEARCH_LIMIT = 20
 #: Q5 is "human". Anything else a name search returns is not a person.
 HUMAN = "Q5"
-#: Claims worth resolving to labels: employer, educated at, citizenship,
-#: occupation. Deliberately no date of birth, no residence, no family.
+#: Claims worth resolving to labels: employer, educated at, occupation.
+#: Deliberately no date of birth, no residence, no family.
 AFFILIATION_PROPERTIES = ("P108", "P69")
-LOCATION_PROPERTIES = ("P27",)
+#: P27 is *country of citizenship*, and it was being read into the candidate's
+#: locations. Citizenship is a legal status; a location is where something is.
+#: Conflating them let an anchor comparison match a supplied city or country
+#: against a citizenship claim, which is the nationality inference this platform
+#: will not make — in the anchor engine, of all places.
+#:
+#: So it is kept, because Wikidata genuinely publishes it about public figures,
+#: but as an explicitly source-claimed citizenship fact that feeds *nothing*: it
+#: is not a location, not an affiliation, and not an anchor. It is displayed with
+#: its source and its limit, and that is all.
+CITIZENSHIP_PROPERTY = "P27"
+#: No property is read as a location. Wikidata's place claims that *are* places
+#: (P19 birthplace, P551 residence) are deliberately not collected at all.
+LOCATION_PROPERTIES: tuple[str, ...] = ()
 OCCUPATION_PROPERTY = "P106"
+
+#: Carried on every citizenship fact, so the limit travels with the data.
+CITIZENSHIP_INTERPRETATION = (
+    "Wikidata publishes this as a country-of-citizenship claim about a public figure. "
+    "It is that source's claim, recorded as stated. It is not a location, not a "
+    "residence, and nothing here infers a nationality from a name, a place or a "
+    "language."
+)
 
 
 @register_collector
@@ -134,7 +155,12 @@ class WikidataCollector(PersonSourceCollector):
         """Turn referenced item IDs into English labels, in one request."""
         referenced: set[str] = set()
         for entity in humans.values():
-            for prop in (*AFFILIATION_PROPERTIES, *LOCATION_PROPERTIES, OCCUPATION_PROPERTY):
+            for prop in (
+                *AFFILIATION_PROPERTIES,
+                *LOCATION_PROPERTIES,
+                CITIZENSHIP_PROPERTY,
+                OCCUPATION_PROPERTY,
+            ):
                 referenced.update(_claim_ids(entity, prop))
         if not referenced:
             return {}
@@ -180,6 +206,9 @@ class WikidataCollector(PersonSourceCollector):
             for item in _claim_ids(entity, prop)
             if item in labels
         ]
+        citizenship = [
+            labels[item] for item in _claim_ids(entity, CITIZENSHIP_PROPERTY) if item in labels
+        ]
         occupations = [
             labels[item] for item in _claim_ids(entity, OCCUPATION_PROPERTY) if item in labels
         ]
@@ -199,6 +228,10 @@ class WikidataCollector(PersonSourceCollector):
                 "description": description or None,
                 "wikipedia_url": article,
                 "occupations": occupations,
+                # A stated claim, kept apart from anything the anchor engine
+                # compares. It corroborates nothing and is never a location.
+                "citizenship_claims": citizenship,
+                "citizenship_interpretation": (CITIZENSHIP_INTERPRETATION if citizenship else None),
                 # Having an encyclopaedia entry is what makes this source
                 # appropriate: these are public figures by editorial consensus.
                 "notability": "Has a Wikidata item"

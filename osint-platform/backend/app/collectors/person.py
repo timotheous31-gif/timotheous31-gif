@@ -40,6 +40,14 @@ from app.core.errors import CollectorUnavailable
 from app.correlation.anchors import ANCHOR_REASONS, ANCHOR_RULES
 from app.correlation.confidence import ConfidenceSignal, default_engine
 from app.models.enums import Classification, FindingKind, TargetType
+from app.services.name_variants import (
+    EXACT,
+    PARTIAL,
+    REDUCED,
+    VARIANT_LABELS,
+    classify_observed_name,
+    confidence_rule_for,
+)
 from app.services.normalization import NormalizedTarget
 
 #: Candidates kept per source. A name search is a starting point for a human,
@@ -260,18 +268,30 @@ class Assessment:
     #: Anchor kinds the source contradicts. A conflict never subtracts score —
     #: it is surfaced so a human can rule the candidate out themselves.
     conflicts: list[str] = field(default_factory=list)
+    #: How the source's spelling of the name relates to the canonical one, and
+    #: why. A discovery signal; never an identity claim.
+    name_variant_type: str = EXACT
+    name_variant_reason: str = ""
 
 
 def assess(candidate: PersonCandidate, subject: str, context: PersonContext) -> Assessment:
     """Score one candidate against the subject and the supplied anchors.
 
-    The name always contributes ``same_person_name``, capped low enough that it
-    can never on its own suggest a match. Everything above that comes from
-    anchors the investigator supplied independently of the search, and each
-    anchor kind fires exactly one named rule with its own ceiling — so no
-    quantity of weak agreements can substitute for one strong one.
+    The name always contributes a name rule, capped low enough that it can never
+    on its own suggest a match — and *which* rule depends on how the source's
+    spelling relates to the canonical name. A record published under a shorter
+    form of the name fires a weaker rule than one published under the full
+    spelling, because a shorter name is shared by more people. Everything above
+    that comes from anchors the investigator supplied independently of the
+    search, and each anchor kind fires exactly one named rule with its own
+    ceiling — so no quantity of weak agreements can substitute for one strong one.
     """
-    result = Assessment(signals=[default_engine.signal("same_person_name")])
+    variant_type, variant_reason = classify_observed_name(candidate.name, subject)
+    result = Assessment(
+        signals=[default_engine.signal(confidence_rule_for(variant_type))],
+        name_variant_type=variant_type,
+        name_variant_reason=variant_reason,
+    )
     _assess_name(candidate, subject, result)
 
     for kind, detail in _anchor_matches(candidate, context):
@@ -298,17 +318,27 @@ def assess(candidate: PersonCandidate, subject: str, context: PersonContext) -> 
 
 
 def _assess_name(candidate: PersonCandidate, subject: str, result: Assessment) -> None:
-    if _fold(candidate.name) == _fold(subject):
+    """Explain the name relationship the variant engine already classified."""
+    if result.name_variant_type == EXACT:
         result.match_reasons.append(
             f"The source spells the name exactly as searched: {candidate.name!r}"
         )
-    else:
-        result.match_reasons.append(
-            f"The source names {candidate.name!r}, a variant of the searched name"
-        )
+        return
+
+    result.match_reasons.append(
+        f"{VARIANT_LABELS.get(result.name_variant_type, 'A name variant')}: "
+        f"the source names {candidate.name!r}"
+    )
+    result.mismatch_reasons.append(
+        f"The spelling differs from the searched name ({subject!r}), "
+        f"which may mean a different person"
+    )
+    if result.name_variant_reason:
+        result.mismatch_reasons.append(result.name_variant_reason)
+    if result.name_variant_type in {REDUCED, PARTIAL}:
         result.mismatch_reasons.append(
-            f"The spelling differs from the searched name ({subject!r}), "
-            f"which may mean a different person"
+            "A shorter or partial name is shared by more people than the full one, so "
+            "this record needs independent corroboration before it means anything"
         )
 
 
@@ -668,6 +698,12 @@ class PersonSourceCollector(BaseCollector):
                 "match_reasons": assessment.match_reasons,
                 "mismatch_reasons": assessment.mismatch_reasons,
                 "corroborated_by": assessment.corroborated_by,
+                # How this source's spelling relates to the canonical name, and
+                # why. Recorded, never applied: the target keeps the name the
+                # investigator supplied.
+                "name_variant_type": assessment.name_variant_type,
+                "name_variant_reason": assessment.name_variant_reason,
+                "canonical_target": subject_name,
                 **candidate.extra,
             },
             source_url=candidate.url,

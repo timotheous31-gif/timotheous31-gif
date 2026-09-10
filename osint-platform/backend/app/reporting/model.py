@@ -35,6 +35,7 @@ from app.models import (
     Evidence,
     Finding,
     ImageEvidence,
+    Job,
     Relationship,
     SocialProfile,
     Target,
@@ -42,6 +43,15 @@ from app.models import (
 )
 from app.models.enums import Classification, RunStatus, TargetType
 from app.privacy.filter import PrivacyFilter
+from app.reporting.coverage import (
+    CoverageItem,
+    CoverageState,
+    image_search_coverage,
+    manual_only_platforms,
+    state_for_run,
+    summarise_gaps,
+    web_search_coverage,
+)
 from app.services.timeline import timeline_summary
 
 log = get_logger(__name__)
@@ -456,6 +466,58 @@ class AnalystDecisionItem:
 
 
 @dataclass(slots=True)
+class ExecutionSummary:
+    """The latest investigation execution, told apart from the case's history.
+
+    A case with five reruns had forty collector rows, and a report that simply
+    counted them read as though the investigation had used forty sources. It had
+    used eight, five times. No new entity was needed to say so: a ``Job`` *is* an
+    execution, and every ``CollectorRun`` already records the ``job_id`` it
+    belonged to — so the current execution is the latest job's runs, and the rest
+    is history that stays exactly where it is.
+    """
+
+    #: How many distinct executions this case has had.
+    executions: int = 0
+    latest_job_id: str | None = None
+    latest_started_at: datetime | None = None
+    latest_finished_at: datetime | None = None
+    latest_state: str | None = None
+    #: The latest execution only.
+    collectors_attempted: int = 0
+    successful: int = 0
+    failed: int = 0
+    skipped: int = 0
+    #: Findings attributable to the collectors this execution used. Not "findings
+    #: this execution created": findings are deduplicated across reruns, so no
+    #: such number exists, and inventing one would be worse than omitting it.
+    findings: int = 0
+    #: Every run the case has ever recorded. Kept, never conflated.
+    historical_runs: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "executions": self.executions,
+            "latest": {
+                "job_id": self.latest_job_id,
+                "state": self.latest_state,
+                "started_at": (
+                    self.latest_started_at.isoformat() if self.latest_started_at else None
+                ),
+                "finished_at": (
+                    self.latest_finished_at.isoformat() if self.latest_finished_at else None
+                ),
+                "collectors_attempted": self.collectors_attempted,
+                "successful": self.successful,
+                "failed": self.failed,
+                "skipped": self.skipped,
+                "findings": self.findings,
+            },
+            "historical_collector_runs": self.historical_runs,
+        }
+
+
+@dataclass(slots=True)
 class ReportModel:
     """Everything a report renders."""
 
@@ -482,6 +544,11 @@ class ReportModel:
     public_contacts: list[PublicContactItem] = field(default_factory=list)
     analyst_decisions: list[AnalystDecisionItem] = field(default_factory=list)
     sources: list[SourceItem] = field(default_factory=list)
+    #: What was searched, what was not, and why. The section that keeps "nothing
+    #: was found" from being read as "there is nothing to find".
+    coverage: list[CoverageItem] = field(default_factory=list)
+    coverage_gaps: list[str] = field(default_factory=list)
+    execution: ExecutionSummary = field(default_factory=lambda: ExecutionSummary())
     graph: dict[str, Any] = field(default_factory=dict)
     confidence: dict[str, Any] = field(default_factory=dict)
     counts: dict[str, int] = field(default_factory=dict)
@@ -518,6 +585,9 @@ class ReportModel:
             "public_contacts": [item.to_dict() for item in self.public_contacts],
             "analyst_decisions": [item.to_dict() for item in self.analyst_decisions],
             "sources": [item.to_dict() for item in self.sources],
+            "coverage": [item.to_dict() for item in self.coverage],
+            "coverage_gaps": self.coverage_gaps,
+            "execution": self.execution.to_dict(),
             "graph": self.graph,
             "methodology": self.methodology,
             "limitations": self.limitations,
@@ -828,6 +898,8 @@ def build_report(
         images=_image_items(session, case_id),
         analyst_decisions=_decision_items(session, case_id),
         sources=_sources(runs, findings),
+        coverage=_coverage_items(session, case_id, runs, findings),
+        execution=_execution_summary(session, case_id, runs, findings),
         graph=graph_summary(graph),
         methodology=list(METHODOLOGY),
         limitations=list(LIMITATIONS),
@@ -845,8 +917,13 @@ def build_report(
         "relationships": len(relationships),
         "evidence": len(evidence_rows),
         "timeline_events": len(events),
+        # Every run the case has recorded, which is not the same number as the
+        # collectors the latest execution used. `execution` tells them apart.
         "collector_runs": len(runs),
+        "investigation_executions": model.execution.executions,
+        "latest_execution_collectors": model.execution.collectors_attempted,
     }
+    model.coverage_gaps = summarise_gaps(model.coverage)
     model.confidence = _confidence_summary(finding_items, relationships)
     model.confidence["timeline"] = timeline_summary(events)
     if any(target.type is TargetType.PERSON for target in targets):
@@ -991,6 +1068,198 @@ def _sources(runs: list[CollectorRun], findings: list[Finding]) -> list[SourceIt
     return items
 
 
+def _execution_summary(
+    session: Session,
+    case_id: uuid.UUID,
+    runs: list[CollectorRun],
+    findings: list[Finding],
+) -> ExecutionSummary:
+    """Split the latest execution from the case's history.
+
+    A ``Job`` is an execution, and ``CollectorRun.job_id`` already says which one
+    a run belonged to — so no new table is needed to answer "what did this run
+    do?". Runs with no job (a direct engine call, no queue) are grouped as one
+    unattributed execution rather than being dropped: they happened.
+    """
+    summary = ExecutionSummary(historical_runs=len(runs))
+    jobs = list(
+        session.scalars(select(Job).where(Job.case_id == case_id).order_by(Job.created_at.desc()))
+    )
+    unattributed = [run for run in runs if run.job_id is None]
+    summary.executions = len(jobs) + (1 if unattributed else 0)
+    if not runs:
+        return summary
+
+    latest = jobs[0] if jobs else None
+    if latest is not None:
+        current = [run for run in runs if run.job_id == latest.id]
+        summary.latest_job_id = str(latest.id)
+        summary.latest_state = str(latest.state)
+        summary.latest_started_at = latest.started_at
+        summary.latest_finished_at = latest.finished_at
+    else:
+        current = unattributed
+    if not current:
+        # The newest job recorded no runs of its own (queued, cancelled before
+        # work began). Saying "0 collectors" would be accurate but unhelpful, so
+        # fall back to the newest runs that do exist and say which job they were.
+        newest = max(runs, key=lambda run: run.created_at)
+        current = [run for run in runs if run.job_id == newest.job_id]
+        summary.latest_job_id = str(newest.job_id) if newest.job_id else None
+
+    collectors = {run.collector for run in current}
+    summary.collectors_attempted = len(collectors)
+    summary.successful = sum(
+        1 for run in current if run.status in {RunStatus.SUCCESS, RunStatus.PARTIAL}
+    )
+    summary.skipped = sum(1 for run in current if run.status is RunStatus.SKIPPED)
+    summary.failed = sum(
+        1 for run in current if run.status in {RunStatus.FAILED, RunStatus.TIMEOUT}
+    )
+    # Findings are deduplicated across reruns, so they do not belong to one
+    # execution and cannot be counted per execution. What can be said honestly is
+    # how many findings the collectors in this execution account for — stated as
+    # that, rather than dressed up as "findings this run produced".
+    summary.findings = sum(1 for finding in findings if finding.collector in collectors)
+    return summary
+
+
+def _latest_runs(
+    session: Session, case_id: uuid.UUID, runs: list[CollectorRun]
+) -> list[CollectorRun]:
+    """The runs belonging to the most recent execution."""
+    latest_job = session.scalar(
+        select(Job).where(Job.case_id == case_id).order_by(Job.created_at.desc()).limit(1)
+    )
+    if latest_job is not None:
+        current = [run for run in runs if run.job_id == latest_job.id]
+        if current:
+            return current
+    unattributed = [run for run in runs if run.job_id is None]
+    if unattributed:
+        return unattributed
+    return runs
+
+
+def _coverage_items(
+    session: Session,
+    case_id: uuid.UUID,
+    runs: list[CollectorRun],
+    findings: list[Finding],
+) -> list[CoverageItem]:
+    """What each source family can honestly be said to have contributed.
+
+    Read from the *latest* execution's runs. A collector that succeeded three
+    reruns ago and was skipped today is skipped today, and a report describing
+    the current investigation must say so.
+    """
+    current = _latest_runs(session, case_id, runs)
+    per_collector: dict[str, int] = {}
+    for finding in findings:
+        per_collector[finding.collector] = per_collector.get(finding.collector, 0) + 1
+
+    items: list[CoverageItem] = []
+    by_collector: dict[str, list[CollectorRun]] = {}
+    for run in current:
+        by_collector.setdefault(run.collector, []).append(run)
+
+    for collector, collector_runs in sorted(by_collector.items()):
+        found = per_collector.get(collector, 0)
+        # Best outcome across this execution's runs of the collector: a success
+        # against one target is a search that happened, whatever another target did.
+        states = [state_for_run(run.status, found) for run in collector_runs]
+        state = min(states, key=_coverage_rank)
+        detail = ""
+        if state is CoverageState.FAILED:
+            failure = next(
+                (run for run in collector_runs if run.error_message or run.error_type), None
+            )
+            if failure is not None:
+                detail = f"{failure.error_type}: {(failure.error_message or '')[:200]}".strip(": ")
+        elif state is CoverageState.SKIPPED:
+            note = next((run for run in collector_runs if run.error_message), None)
+            detail = (note.error_message or "")[:200] if note else ""
+        items.append(
+            CoverageItem(
+                source=collector,
+                display_name=collector,
+                state=state,
+                detail=detail,
+                findings=found,
+                runs=len(collector_runs),
+            )
+        )
+
+    searched = {item.source for item in items}
+    ingest = _ingest_coverage(session, case_id)
+    if ingest is not None:
+        items.append(ingest)
+    images = len(_image_items(session, case_id))
+    items.append(
+        image_search_coverage(
+            images=images,
+            provider_configured=bool(
+                ingest and ingest.state is not CoverageState.PROVIDER_NOT_CONFIGURED
+            ),
+        )
+    )
+    items.extend(item for item in manual_only_platforms() if item.source not in searched)
+    return items
+
+
+def _ingest_coverage(session: Session, case_id: uuid.UUID) -> CoverageItem | None:
+    """The public-web channel, from what the last ingestion run recorded.
+
+    Read off the job's stored result rather than re-deriving it: the report
+    describes what happened, and what happened was recorded when it happened.
+    """
+    from app.services.providers.search import get_search_provider
+
+    latest = session.scalar(
+        select(Job).where(Job.case_id == case_id).order_by(Job.created_at.desc()).limit(1)
+    )
+    recorded = ((latest.result if latest else None) or {}).get("search_ingest")
+    if isinstance(recorded, dict):
+        return web_search_coverage(
+            provider=str(recorded.get("provider", "unknown")),
+            configured=bool(recorded.get("configured")),
+            queries_run=int(recorded.get("queries_run", 0)),
+            results_stored=int(recorded.get("results_stored", 0)),
+            reason=str(recorded.get("reason") or ""),
+            failures=len(recorded.get("failures") or []),
+        )
+    try:
+        provider = get_search_provider()
+    except Exception:
+        return web_search_coverage(
+            provider="unknown", configured=False, queries_run=0, results_stored=0
+        )
+    available, reason = provider.is_available()
+    return web_search_coverage(
+        provider=provider.key,
+        configured=available,
+        queries_run=0,
+        results_stored=0,
+        reason=reason,
+    )
+
+
+#: Worst-first, so one collector's best outcome across targets wins.
+_COVERAGE_RANK = {
+    CoverageState.FOUND: 0,
+    CoverageState.NO_MATCH_RETURNED: 1,
+    CoverageState.SKIPPED: 2,
+    CoverageState.FAILED: 3,
+    CoverageState.NOT_SEARCHED: 4,
+    CoverageState.MANUAL_REVIEW_AVAILABLE: 5,
+    CoverageState.PROVIDER_NOT_CONFIGURED: 6,
+}
+
+
+def _coverage_rank(state: CoverageState) -> int:
+    return _COVERAGE_RANK.get(state, 9)
+
+
 def _confidence_summary(
     findings: list[FindingItem], relationships: list[Relationship]
 ) -> dict[str, Any]:
@@ -1031,9 +1300,21 @@ def _executive_summary(model: ReportModel, runs: list[CollectorRun]) -> list[str
         + (f": {target_desc}." if target_desc else ".")
     )
     lines.append(
-        f"{len(model.sources)} collector(s) ran, producing {model.counts['findings']} finding(s) "
-        f"supported by {model.counts['evidence']} stored artefact(s)."
+        f"{model.execution.collectors_attempted} collector(s) ran in the latest execution, "
+        f"producing {model.counts['findings']} finding(s) across the case supported by "
+        f"{model.counts['evidence']} stored artefact(s). The case has been investigated "
+        f"{model.execution.executions} time(s); see Investigation executions."
     )
+    # The gap lines come first among the caveats and are never omitted. A summary
+    # that reports "0 findings" without saying which channels were never searched
+    # invites the reader to conclude there is nothing to find, which is the single
+    # most damaging thing this report could imply.
+    lines.extend(model.coverage_gaps)
+    if not model.counts["findings"] and model.coverage_gaps:
+        lines.append(
+            "No findings were recorded. Given the gaps above, that is not a statement that "
+            "no public record exists — it is a statement about what was searched."
+        )
     if model.counts["entities"]:
         lines.append(
             f"{model.counts['entities']} entities and {model.counts['relationships']} "

@@ -205,6 +205,10 @@ class FindingKind(StrEnum):
     #: A publicly indexed image and the page it appears on. Context evidence,
     #: never biometric identification.
     IMAGE_EVIDENCE = "IMAGE_EVIDENCE"
+    #: A public document — a PDF, a programme, a report — that names the subject.
+    #: Separate from SEARCH_RESULT because a document is citable in a way a web
+    #: page is not, and a report groups the two differently.
+    PUBLIC_DOCUMENT = "PUBLIC_DOCUMENT"
     EMAIL_DOMAIN = "EMAIL_DOMAIN"
     EXPOSURE_SUMMARY = "EXPOSURE_SUMMARY"
     POTENTIAL_SECRET_EXPOSURE = "POTENTIAL_SECRET_EXPOSURE"  # noqa: S105 - a category name

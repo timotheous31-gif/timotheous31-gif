@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 from app.collectors.base import CollectorContext, FindingDraft, RawPayload
 from app.collectors.registry import load_builtin_collectors, plan_collectors
 from app.collectors.runner import RunOutcome, run_all
+from app.core import http
 from app.core.errors import NotFoundError
 from app.core.logging import case_id_var, get_logger, target_id_var
 from app.core.settings import Settings, get_settings
@@ -42,8 +43,9 @@ from app.models import (
     RunStatus,
     Target,
     TargetStatus,
+    TargetType,
 )
-from app.models.enums import FindingKind, JobState
+from app.models.enums import JobState
 from app.privacy.filter import PrivacyFilter
 from app.services.evidence import EvidenceStore
 from app.services.normalization import NormalizedTarget, normalize_target
@@ -88,6 +90,7 @@ class InvestigationResult:
     corroborations: int = 0
     #: Public evidence promoted out of collector payloads into structures the
     #: investigator can actually see and review.
+    search_results: int = 0
     social_profiles: int = 0
     images: int = 0
     public_contacts: int = 0
@@ -181,6 +184,11 @@ class InvestigationEngine:
                     f"Collected {target.type} {target.normalized_value}",
                 )
 
+            # Before correlation, so provider results are resolved into
+            # candidates and promoted by the stages that follow rather than
+            # sitting outside the pipeline.
+            self._search(session, case_id, result, job)
+            self._report(options, 0.9, "Searching public web sources")
             self._correlate(session, case_id, result)
             self._report(options, 0.95, "Correlating entities")
             self._build_timeline(session, case_id, result)
@@ -237,15 +245,7 @@ class InvestigationEngine:
                 attributes=dict(target.attributes or {}),
             )
             ctx = CollectorContext(case_id=case_id, target_id=target.id, settings=self.settings)
-            outcomes = asyncio.run(
-                run_all(
-                    collectors,
-                    normalized,
-                    ctx,
-                    concurrency=self.settings.collector_concurrency,
-                    should_cancel=options.should_cancel,
-                )
-            )
+            outcomes = asyncio.run(self._collect(collectors, normalized, ctx, options))
             for outcome in outcomes:
                 self._persist_outcome(session, case_id, target, outcome, result, job)
             target.status = (
@@ -458,6 +458,52 @@ class InvestigationEngine:
         self._promote(session, case_id, result)
         return summary
 
+    def _search(
+        self,
+        session: Session,
+        case_id: uuid.UUID,
+        result: InvestigationResult,
+        job: Job | None,
+    ) -> None:
+        """Search the public web, when a provider is configured.
+
+        A no-op that *records itself* otherwise. The coverage table has to be
+        able to say "the public web was not searched because no provider is
+        configured", and it can only say that if the attempt leaves a trace.
+        """
+        ingest: dict[str, Any] | None = None
+        try:
+            for target in session.scalars(
+                select(Target).where(Target.case_id == case_id, Target.type == TargetType.PERSON)
+            ):
+                report = asyncio.run(
+                    self._search_one(session, case_id=case_id, target_id=target.id)
+                )
+                ingest = report.to_dict()
+                result.search_results += report.results_stored
+                if not report.configured:
+                    # One unconfigured provider is the same answer for every
+                    # target; saying it once is enough.
+                    break
+        except Exception as exc:  # pragma: no cover - defensive, like the stages above
+            result.errors.append(
+                {"stage": "search", "error_type": type(exc).__name__, "error": str(exc)[:500]}
+            )
+            log.exception("investigation.search_failed", case_id=str(case_id))
+        if ingest is not None and job is not None:
+            # Recorded on the job so the report describes what happened rather
+            # than re-deriving it from whatever the settings say at render time.
+            job.result = {**dict(job.result or {}), "search_ingest": ingest}
+            session.flush()
+
+    async def _search_one(self, session: Session, *, case_id: uuid.UUID, target_id: uuid.UUID):
+        from app.services.search_ingest import search_target
+
+        try:
+            return await search_target(session, case_id=case_id, target_id=target_id)
+        finally:
+            await http.close_owned_client()
+
     def _promote(self, session: Session, case_id: uuid.UUID, result: InvestigationResult) -> None:
         """Surface the public data collectors already retrieved.
 
@@ -471,11 +517,13 @@ class InvestigationEngine:
         from app.services.promotion import candidate_for_finding, promote_finding
 
         try:
+            from app.services.promotion import PROMOTABLE_KINDS
+
             findings = list(
                 session.scalars(
                     select(Finding).where(
                         Finding.case_id == case_id,
-                        Finding.kind == FindingKind.PERSON_CANDIDATE,
+                        Finding.kind.in_(tuple(PROMOTABLE_KINDS)),
                     )
                 )
             )
@@ -506,6 +554,34 @@ class InvestigationEngine:
                 }
             )
             log.exception("investigation.promotion_failed", case_id=str(case_id))
+
+    async def _collect(
+        self,
+        collectors: list[Any],
+        normalized: NormalizedTarget,
+        ctx: CollectorContext,
+        options: Any,
+    ) -> list[Any]:
+        """Run the collectors, then tear the HTTP pool down inside this loop.
+
+        Each target gets its own ``asyncio.run``, and a connection pool outlives
+        neither its loop nor this function. Closing here — rather than leaving
+        the module-level client for the next loop to inherit — is what keeps a
+        later run from reusing a keep-alive connection whose loop has been
+        closed, which surfaced as an intermittent "Event loop is closed".
+        """
+        try:
+            return list(
+                await run_all(
+                    collectors,
+                    normalized,
+                    ctx,
+                    concurrency=self.settings.collector_concurrency,
+                    should_cancel=options.should_cancel,
+                )
+            )
+        finally:
+            await http.close_owned_client()
 
     def _build_timeline(
         self, session: Session, case_id: uuid.UUID, result: InvestigationResult

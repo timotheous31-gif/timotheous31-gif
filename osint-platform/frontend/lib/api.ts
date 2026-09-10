@@ -32,6 +32,8 @@ import type {
   Page,
   PersonContext,
   ReconQueryPlan,
+  SearchIngestResult,
+  StagedReconPlan,
   Relationship,
   RunResponse,
   Target,
@@ -167,6 +169,20 @@ export const api = {
    */
   reconQueries: (caseId: string, targetId: string) =>
     request<ReconQueryPlan>(`/cases/${caseId}/targets/${targetId}/recon-queries`),
+  /** The staged plan: variants, then anchors, then the broad sweeps. */
+  reconPlan: (caseId: string, targetId: string) =>
+    request<StagedReconPlan>(`/cases/${caseId}/targets/${targetId}/recon-plan`),
+  /**
+   * Run the plan through a configured search provider and ingest the results.
+   *
+   * With no provider configured this returns `configured: false` and does
+   * nothing — which the UI must show as "not searched", never as "found
+   * nothing".
+   */
+  runProviderSearch: (caseId: string, targetId: string) =>
+    request<SearchIngestResult>(`/cases/${caseId}/targets/${targetId}/search`, {
+      method: "POST",
+    }),
   importReconResults: (caseId: string, targetId: string, results: ManualResultInput[]) =>
     request<ImportedResult[]>(`/cases/${caseId}/targets/${targetId}/recon-results`, {
       method: "POST",

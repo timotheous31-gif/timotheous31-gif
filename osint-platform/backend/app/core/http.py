@@ -12,6 +12,7 @@ Centralising networking means the safety controls cannot be bypassed:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -34,6 +35,21 @@ log = get_logger(__name__)
 
 _limiter = ProviderLimiter()
 _client: httpx.AsyncClient | None = None
+#: The event loop the shared client belongs to.
+#:
+#: ``httpx.AsyncClient`` binds its connection pool to the loop that created it,
+#: and ``AsyncClient.is_closed`` only tracks an explicit ``aclose()`` — not
+#: whether that loop is still alive. The engine runs each target under its own
+#: ``asyncio.run``, so without this the second run reused a client whose
+#: keep-alive connections belonged to a loop that had already been closed, and
+#: the next request on one of them raised ``RuntimeError: Event loop is closed``.
+#: Intermittent by nature: it needed a connection the previous loop had actually
+#: kept alive, which is why it showed up on Crossref and not on every source.
+_client_loop: asyncio.AbstractEventLoop | None = None
+#: False when a caller injected the client (tests do, with respx). An injected
+#: client is the caller's to close, and must never be swapped out underneath
+#: them — that would silently disconnect their mock transport.
+_client_owned: bool = False
 
 
 @dataclass(slots=True)
@@ -101,14 +117,34 @@ def register_provider(provider: str, limit: RateLimit) -> None:
 
 
 async def get_http_client() -> httpx.AsyncClient:
-    """Return the shared ``httpx`` client.
+    """Return the shared ``httpx`` client for the running event loop.
 
     Redirects are disabled at the transport level: this module follows them
     manually so each hop can be re-validated by the SSRF guard.
+
+    A client we own is rebuilt when the running loop is not the one it was
+    created in. Callers that drive their own loop should close it properly with
+    :func:`close_owned_client`; this check is what keeps a caller that forgets
+    from resurrecting the closed-loop bug rather than merely moving it.
     """
-    global _client
+    global _client, _client_loop, _client_owned
+    loop = asyncio.get_running_loop()
+    if _client is not None and _client_owned and _client_loop is not loop:
+        log.warning(
+            "http.client_loop_changed",
+            reason=(
+                "the shared client was created in a different event loop and has been "
+                "rebuilt; close it with close_owned_client() when a loop ends"
+            ),
+        )
+        # Not awaited: aclose() would schedule work on the loop that is gone.
+        # Dropping the reference lets the transport be collected instead.
+        _client = None
+        _client_loop = None
     if _client is None or _client.is_closed:
         settings = get_settings()
+        _client_loop = loop
+        _client_owned = True
         _client = httpx.AsyncClient(
             follow_redirects=False,
             timeout=httpx.Timeout(settings.http_timeout_seconds),
@@ -123,16 +159,39 @@ async def get_http_client() -> httpx.AsyncClient:
 
 async def close_http_client() -> None:
     """Close the shared client (application shutdown)."""
-    global _client
+    global _client, _client_loop, _client_owned
     if _client is not None and not _client.is_closed:
         await _client.aclose()
     _client = None
+    _client_loop = None
+    _client_owned = False
+
+
+async def close_owned_client() -> None:
+    """Close the shared client if this module created it, leaving injected ones.
+
+    Called at the end of a self-contained ``asyncio.run`` so the connection pool
+    is torn down inside the loop that owns it. A client a test injected is left
+    alone: closing it would break the mock transport the test is still using.
+    """
+    global _client, _client_loop, _client_owned
+    if _client is not None and _client_owned and not _client.is_closed:
+        await _client.aclose()
+        _client = None
+        _client_loop = None
+        _client_owned = False
 
 
 def set_http_client(client: httpx.AsyncClient | None) -> None:
-    """Inject a client (tests use this with ``respx``)."""
-    global _client
+    """Inject a client (tests use this with ``respx``).
+
+    The injected client belongs to the caller: it is never rebuilt on a loop
+    change and never closed by :func:`close_owned_client`.
+    """
+    global _client, _client_loop, _client_owned
     _client = client
+    _client_loop = None
+    _client_owned = False
 
 
 async def _read_capped(response: httpx.Response, max_bytes: int, url: str) -> bytes:
@@ -380,8 +439,6 @@ def _parse_retry_after(value: str | None) -> float | None:
 
 
 async def _sleep(delay: float) -> None:
-    import asyncio
-
     await asyncio.sleep(delay)
 
 

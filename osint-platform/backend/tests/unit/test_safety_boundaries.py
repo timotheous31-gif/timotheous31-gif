@@ -180,3 +180,100 @@ def test_no_email_address_is_ever_constructed_from_a_name_and_a_domain():
             if pattern.search(line) and not line.lstrip().startswith(("#", '"', "*", "'")):
                 offenders.append(f"{path}: {line.strip()[:80]}")
     assert not offenders, offenders
+
+
+def test_no_provider_adapter_targets_a_consumer_search_result_page():
+    """Search *APIs* are documented products; result pages are not to be parsed.
+
+    A vendor API on a domain containing "google" — google.serper.dev is one — is
+    a documented paid API and is allowed. What is forbidden is a request to the
+    consumer search UI, which is what scraping would look like.
+    """
+    pattern = re.compile(
+        r"https?://(?:www\.)?(?:google\.com|bing\.com|duckduckgo\.com|startpage\.com)/",
+        re.I,
+    )
+    offenders = []
+    for path in _sources():
+        for number, line in enumerate(path.read_text("utf-8").splitlines(), 1):
+            if pattern.search(line) and not line.lstrip().startswith(("#", '"', "'", "*")):
+                offenders.append(f"{path.name}:{number}: {line.strip()[:70]}")
+    assert not offenders, offenders
+
+
+def test_no_html_parser_is_applied_to_a_search_response():
+    """Search results are read from JSON APIs; no markup is ever parsed.
+
+    Scoped to the search path deliberately. ``http_meta`` does parse HTML — the
+    title and OpenGraph tags of a page the investigation is actually about — and
+    that is a different act from parsing a search engine's result page. What must
+    stay true is that nothing in the search path can do it.
+    """
+    banned = ("beautifulsoup", "bs4", "lxml.html", "html.parser", "pyquery", "selectolax")
+    search_path = (
+        BACKEND / "services" / "providers" / "search.py",
+        BACKEND / "services" / "search_ingest.py",
+        BACKEND / "services" / "recon.py",
+        BACKEND / "services" / "recon_import.py",
+        BACKEND / "collectors" / "search.py",
+    )
+    offenders = []
+    for path in search_path:
+        lowered = path.read_text("utf-8").lower()
+        for term in banned:
+            if f"import {term}" in lowered or f"from {term}" in lowered:
+                offenders.append(f"{path.name}: {term}")
+    assert not offenders, offenders
+
+
+def test_a_search_result_url_is_validated_before_it_is_stored():
+    """Provider output is third-party input, held to the pasted-URL standard."""
+    from app.services.search_ingest import public_url
+
+    for unsafe in (
+        "http://127.0.0.1/admin",
+        "http://localhost/admin",
+        "http://10.1.2.3/",
+        "http://192.168.0.1/",
+        "http://169.254.169.254/latest/meta-data/",
+        "https://user:pass@example.com/",
+        "javascript:alert(1)",
+        "file:///etc/passwd",
+        "",
+    ):
+        assert public_url(unsafe) is None, unsafe
+    assert public_url("https://example.org/team/person") == "https://example.org/team/person"
+
+
+def test_nothing_infers_a_nationality_from_a_place():
+    """Wikidata's citizenship claim is kept apart from anything comparable.
+
+    It was being read into ``candidate.locations``, where the anchor engine
+    compares a supplied city or country — which made a citizenship claim
+    matchable against a place. That is the nationality inference this platform
+    refuses, in the one place it would have been invisible.
+    """
+    from app.collectors.wikidata import (
+        CITIZENSHIP_INTERPRETATION,
+        CITIZENSHIP_PROPERTY,
+        LOCATION_PROPERTIES,
+    )
+
+    assert CITIZENSHIP_PROPERTY == "P27"
+    assert CITIZENSHIP_PROPERTY not in LOCATION_PROPERTIES
+    assert LOCATION_PROPERTIES == ()
+    lowered = CITIZENSHIP_INTERPRETATION.lower()
+    assert "not a location" in lowered
+    assert "infers a nationality" in lowered
+
+
+def test_a_citizenship_claim_never_reaches_the_anchor_comparison():
+    from app.collectors.person import PersonCandidate, PersonContext, anchor_matches
+
+    # A candidate carrying only a citizenship claim, and a supplied country.
+    candidate = PersonCandidate(
+        url="https://www.wikidata.org/wiki/Q1",
+        name="Example Person",
+        extra={"citizenship_claims": ["Pakistan"]},
+    )
+    assert anchor_matches(candidate, PersonContext(country="Pakistan")) == []

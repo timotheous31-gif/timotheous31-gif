@@ -52,6 +52,7 @@ from app.services.social_profiles import (
     DISCOVERY_HANDLE_CHECK,
     DISCOVERY_MANUAL_IMPORT,
     DISCOVERY_NAME_SEARCH,
+    DISCOVERY_PROVIDER_SEARCH,
     DISCOVERY_PUBLISHED_LINK,
     DISCOVERY_SUPPLIED_ANCHOR,
     record_profile,
@@ -63,6 +64,19 @@ log = get_logger(__name__)
 #: contact they expose is self-published or professional rather than a passing
 #: mention. Anything not listed stays UNVERIFIED_PUBLIC_REFERENCE.
 SELF_PUBLISHED_SOURCES = frozenset({"github_people", "github", "person_usernames"})
+
+#: Finding kinds promotion knows how to turn into structured evidence. A search
+#: result and a collector candidate are promoted identically, because the same
+#: URL means the same thing however it was found.
+PROMOTABLE_KINDS = frozenset(
+    {
+        FindingKind.PERSON_CANDIDATE,
+        FindingKind.SEARCH_RESULT,
+        FindingKind.IMAGE_EVIDENCE,
+        FindingKind.PUBLIC_DOCUMENT,
+        FindingKind.MANUAL_SEARCH_RESULT,
+    }
+)
 PROFESSIONAL_SOURCES = frozenset({"orcid", "openalex", "crossref", "wikidata"})
 
 #: Keys a collector may use for a public email it actually received. Read in
@@ -92,6 +106,8 @@ def discovery_method_for(data: dict[str, Any], source: str) -> str:
         return DISCOVERY_HANDLE_CHECK
     if source == "manual_search_recon":
         return DISCOVERY_MANUAL_IMPORT
+    if source == "provider_search":
+        return DISCOVERY_PROVIDER_SEARCH
     corroborated = data.get("corroborated_by")
     if isinstance(corroborated, list) and {"github_username", "username", "profile_url"} & set(
         corroborated
@@ -220,7 +236,11 @@ def promote_finding(
     investigation strengthens the record rather than multiplying it.
     """
     counts = {"profiles": 0, "images": 0, "contacts": 0}
-    if finding.kind is not FindingKind.PERSON_CANDIDATE:
+    # A provider search result that is profile-shaped is a person candidate by
+    # another route, and an indexed image is image evidence. Promoting the same
+    # kinds through the same function is the point: a result found automatically
+    # must produce exactly what the same URL produces when pasted by hand.
+    if finding.kind not in PROMOTABLE_KINDS:
         return counts
 
     data = finding.data or {}
@@ -248,6 +268,15 @@ def promote_finding(
         retrieved_at=moment,
         attributes=profile_attributes(data),
         discovery_method=discovery_method_for(data, source),
+        # What the source published about this profile. The finding was scored on
+        # it, so the profile must be too — otherwise the two disagree about the
+        # same evidence, which is the contradiction PR #9 set out to end.
+        observed_affiliations=[
+            value for value in (data.get("affiliations") or []) if isinstance(value, str)
+        ],
+        observed_locations=[
+            value for value in (data.get("locations") or []) if isinstance(value, str)
+        ],
         # A URL built from a supplied handle on a platform nobody checked is a
         # lead. Its handle must not score against the handle it was built from.
         handle_verified=data.get("access") != "reference_only",
