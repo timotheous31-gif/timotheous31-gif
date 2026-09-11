@@ -336,15 +336,15 @@ describe("import payload", () => {
 describe("name variants in the UI", () => {
   it("shows a shorter spelling as weaker than the exact one", () => {
     expect(variantTone("EXACT_NAME")).toBe("SUCCESS");
-    expect(variantTone("REDUCED_NAME_VARIANT")).toBe("SKIPPED");
+    expect(variantTone("TOKEN_REDUCED_VARIANT")).toBe("SKIPPED");
     expect(variantTone("PARTIAL_NAME_MATCH")).toBe("SKIPPED");
   });
 
   it("marks exactly the spellings that need corroborating", () => {
-    expect(needsCorroboration("REDUCED_NAME_VARIANT")).toBe(true);
+    expect(needsCorroboration("TOKEN_REDUCED_VARIANT")).toBe(true);
     expect(needsCorroboration("PARTIAL_NAME_MATCH")).toBe(true);
     expect(needsCorroboration("EXACT_NAME")).toBe(false);
-    expect(needsCorroboration("INITIAL_VARIANT")).toBe(false);
+    expect(needsCorroboration("INITIALIZED_VARIANT")).toBe(false);
     expect(needsCorroboration("EXTENDED_NAME_MATCH")).toBe(false);
   });
 });

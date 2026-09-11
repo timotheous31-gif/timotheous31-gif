@@ -43,7 +43,7 @@ from app.models.enums import Classification, FindingKind, TargetType
 from app.services.name_variants import (
     EXACT,
     PARTIAL,
-    REDUCED,
+    TOKEN_REDUCED,
     VARIANT_LABELS,
     classify_observed_name,
     confidence_rule_for,
@@ -62,6 +62,87 @@ def _fold(text: str) -> str:
 
 def _tokens(text: str) -> set[str]:
     return {token for token in _fold(text).split() if len(token) > 2}
+
+
+#: Words that name a *kind* of institution rather than a particular one.
+#:
+#: An affiliation match used to fire on any one shared word over two letters,
+#: which meant "University of Karachi" corroborated "University of Sindh" and
+#: "Government College University" corroborated "Government of Sindh" — on the
+#: word "university" and the word "government". That is the strongest signal in
+#: the rule set short of an exact identifier (0.50, floor 0.50), so a shared
+#: generic word was lifting an unrelated record from name-only to "possible".
+#: It is worst in exactly the sectors this platform is used on, where nearly
+#: every employer's name is built from these words.
+#:
+#: So a shared word only counts when it is not one of these. Two names that
+#: share nothing but institutional vocabulary share nothing.
+GENERIC_AFFILIATION_TERMS: frozenset[str] = frozenset(
+    {
+        "academy",
+        "agency",
+        "association",
+        "authority",
+        "board",
+        "bureau",
+        "center",
+        "centre",
+        "college",
+        "commission",
+        "committee",
+        "company",
+        "corporation",
+        "council",
+        "department",
+        "development",
+        "directorate",
+        "division",
+        "education",
+        "faculty",
+        "federal",
+        "foundation",
+        "global",
+        "government",
+        "group",
+        "higher",
+        "hospital",
+        "incorporated",
+        "initiative",
+        "institute",
+        "institution",
+        "international",
+        "laboratory",
+        "limited",
+        "ministry",
+        "national",
+        "network",
+        "office",
+        "organisation",
+        "organization",
+        "programme",
+        "project",
+        "public",
+        "regional",
+        "research",
+        "school",
+        "science",
+        "sciences",
+        "secretariat",
+        "service",
+        "services",
+        "society",
+        "studies",
+        "technologies",
+        "technology",
+        "trust",
+        "university",
+    }
+)
+
+
+def _distinctive(text: str) -> set[str]:
+    """The words in a name that identify *which* institution it is."""
+    return _tokens(text) - GENERIC_AFFILIATION_TERMS
 
 
 # ------------------------------------------------------------ normalisation
@@ -335,7 +416,7 @@ def _assess_name(candidate: PersonCandidate, subject: str, result: Assessment) -
     )
     if result.name_variant_reason:
         result.mismatch_reasons.append(result.name_variant_reason)
-    if result.name_variant_type in {REDUCED, PARTIAL}:
+    if result.name_variant_type in {TOKEN_REDUCED, PARTIAL}:
         result.mismatch_reasons.append(
             "A shorter or partial name is shared by more people than the full one, so "
             "this record needs independent corroboration before it means anything"
@@ -547,31 +628,50 @@ def _match_handle(candidate: PersonCandidate, context: PersonContext) -> str | N
 def _match_affiliation(
     candidate: PersonCandidate, context: PersonContext
 ) -> tuple[str, str] | None:
-    """Match on shared significant words rather than exact strings.
+    """Match on the words that say *which* institution, or on the whole name.
 
     "MIT" and "Massachusetts Institute of Technology" will not match, and that
     is the safer failure: a missed corroboration leaves a candidate at name-only
     confidence, whereas a false one would raise a stranger toward the subject.
+    Two names sharing only institutional vocabulary — "university", "government",
+    "ministry" — are likewise not a match; see
+    :data:`GENERIC_AFFILIATION_TERMS`.
     """
     for supplied in context.affiliations:
-        supplied_tokens = _tokens(supplied)
-        if not supplied_tokens:
+        folded_supplied = _fold(supplied)
+        if not folded_supplied:
             continue
         for observed in candidate.affiliations:
-            if supplied_tokens & _tokens(observed):
+            if not _fold(observed):
+                continue
+            if folded_supplied == _fold(observed):
+                return supplied, observed
+            if _distinctive(supplied) & _distinctive(observed):
                 return supplied, observed
     return None
 
 
 def _match_occupation(candidate: PersonCandidate, context: PersonContext) -> str | None:
+    """Match the supplied profession as a whole, not word by word.
+
+    A single shared word made "assistant professor" match "assistant manager".
+    Either the phrase appears in what the source publishes, or every word of it
+    does; one word in common is not a profession in common.
+    """
     if not context.occupation:
         return None
     wanted = _tokens(context.occupation)
     if not wanted:
         return None
+    phrase = _fold(context.occupation)
     haystack = [*candidate.extra.get("occupations", []), candidate.summary]
     for observed in haystack:
-        if isinstance(observed, str) and wanted & _tokens(observed):
+        if not isinstance(observed, str):
+            continue
+        folded = _fold(observed)
+        if phrase and phrase in folded:
+            return context.occupation
+        if wanted <= _tokens(observed):
             return context.occupation
     return None
 

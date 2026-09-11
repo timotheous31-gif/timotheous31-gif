@@ -29,7 +29,7 @@ from app.collectors.capabilities import search_platforms
 from app.collectors.person import PersonContext, normalize_handle
 from app.services.name_variants import (
     EXACT,
-    REDUCED,
+    TOKEN_REDUCED,
     VARIANT_LABELS,
     NameVariant,
     generate_variants,
@@ -785,7 +785,7 @@ def staged_plan(
     ]
     # The strongest reduced spelling also gets the platform sweep: that is the
     # spelling a public profile is most likely to be published under.
-    reduced = next((item for item in spellings[1:] if item.variant_type == REDUCED), None)
+    reduced = next((item for item in spellings[1:] if item.variant_type == TOKEN_REDUCED), None)
     if reduced is not None:
         targeted.extend(
             replace(query, name_variant=reduced.value, variant_type=reduced.variant_type)
@@ -858,7 +858,7 @@ def _discovered_queries(
     """
     if not anchors:
         return []
-    reduced = next((item for item in spellings[1:] if item.variant_type == REDUCED), None)
+    reduced = next((item for item in spellings[1:] if item.variant_type == TOKEN_REDUCED), None)
     targets = [(canonical, EXACT)]
     if reduced is not None:
         targets.append((reduced.value, reduced.variant_type))

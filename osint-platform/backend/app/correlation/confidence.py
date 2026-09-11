@@ -158,16 +158,16 @@ DEFAULT_RULES: dict[str, ConfidenceRule] = {
         ConfidenceRule(
             "name_variant_hyphenation",
             0.14,
-            "The name matches on its parts, punctuated differently (a hyphenated "
-            "surname). The same parts, so no weaker than the exact spelling by much — "
-            "and a name still identifies nobody",
+            "The name matches on its parts, spaced or punctuated differently. The same "
+            "parts, so no weaker than the exact spelling by much — and a name still "
+            "identifies nobody",
             ceiling=0.28,
         ),
         ConfidenceRule(
             "name_variant_initial",
             0.12,
-            "The name matches with a middle name shortened to an initial. An initial "
-            "carries less information than the name it replaces",
+            "The name matches with one part shortened to an initial. An initial carries "
+            "less information than the name part it replaces",
             ceiling=0.24,
         ),
         ConfidenceRule(

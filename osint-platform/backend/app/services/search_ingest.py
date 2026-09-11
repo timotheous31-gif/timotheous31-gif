@@ -33,6 +33,7 @@ path — the provider call and any image fetch go through ``app.core.http``.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -40,25 +41,22 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.collectors.person import PersonCandidate, PersonContext, anchor_matches
+from app.collectors.person import PersonCandidate, PersonContext, assess
 from app.collectors.social import classify_url
 from app.core.errors import ConfigurationError, SSRFError
 from app.core.logging import get_logger
 from app.core.ssrf import validate_url
-from app.correlation.anchors import ANCHOR_REASONS, ANCHOR_RULES
 from app.correlation.confidence import default_engine
 from app.models import Case, Finding, Target
 from app.models.enums import Classification, FindingKind, TargetType
 from app.services.evidence import EvidenceStore
 from app.services.name_variants import (
     NameVariant,
-    classify_observed_name,
-    confidence_rule_for,
     generate_variants,
 )
 from app.services.normalization import NormalizedTarget
 from app.services.providers.search import SearchProvider, SearchResult, get_search_provider
-from app.services.recon import ReconQuery, staged_plan
+from app.services.recon import FAMILY_IMAGE, ReconQuery, staged_plan
 
 log = get_logger(__name__)
 
@@ -97,6 +95,11 @@ class IngestReport:
     configured: bool
     reason: str = ""
     queries_run: int = 0
+    #: Of those, how many were image-shaped. Counted separately because the
+    #: report's image channel must not claim "searched, nothing returned" on the
+    #: strength of a provider merely being configured: that is an absence nobody
+    #: verified, which is the one thing the coverage model exists to prevent.
+    image_queries_run: int = 0
     results_seen: int = 0
     results_stored: int = 0
     duplicates: int = 0
@@ -114,6 +117,7 @@ class IngestReport:
             "configured": self.configured,
             "reason": self.reason or None,
             "queries_run": self.queries_run,
+            "image_queries_run": self.image_queries_run,
             "results_seen": self.results_seen,
             "results_stored": self.results_stored,
             "duplicates": self.duplicates,
@@ -209,6 +213,8 @@ async def search_target(
             continue
 
         report.queries_run += 1
+        if query.family == FAMILY_IMAGE:
+            report.image_queries_run += 1
         for result in results:
             report.results_seen += 1
             enriched = result.with_provenance(
@@ -276,53 +282,30 @@ def _ingest_one(
         )
     )
     if existing is not None:
-        # One page, many searches. The extra search is recorded as provenance and
-        # changes no score: a provider returning the same URL for a second query
-        # is the same source agreeing with itself.
+        # One page, many searches. The extra search is recorded as provenance, and
+        # it adds no agreement: a provider returning the same URL for a second
+        # query is the same source repeating itself.
+        #
+        # The *correlation* is nevertheless recomputed, because it is a pure
+        # function of the page's observed content and the anchors currently on the
+        # target — and those can change between runs. Without this, supplying an
+        # employer and re-running left a page scored as though the anchor had
+        # never been given, which is the stale-correlation defect PR #9 fixed on
+        # the profile side arriving here by another route.
         _record_extra_search(existing, result)
+        _refresh_correlation(existing, result, canonical, context, classified)
         seen[key] = existing
         session.flush()
         return "duplicate"
 
-    displayed_name = (result.title or "").strip()
-    candidate = PersonCandidate(
-        url=key,
-        # What the result *displays*, not what we searched for. Using the
-        # canonical name here would make every hit an exact name match.
-        name=displayed_name or result.search_variant or canonical,
-        summary=(result.snippet or "")[:500],
-        handles=[classified.handle] if classified and classified.handle else [],
-        affiliations=_anchors_in_text(result, context),
-        locations=_places_in_text(result, context),
-    )
-    variant_type, variant_reason = classify_observed_name(candidate.name, canonical)
-    matched = anchor_matches(candidate, context)
-
-    signals = [default_engine.signal(confidence_rule_for(variant_type))]
-    match_reasons: list[str] = []
-    if candidate.affiliations:
-        match_reasons.append(
-            f"The page's own text names {', '.join(candidate.affiliations)}, which you "
-            f"supplied as an affiliation — the anchor and the page agree independently"
-        )
-    corroborated: list[str] = []
-    for kind, detail in matched:
-        signals.append(default_engine.signal(ANCHOR_RULES[kind], detail=detail))
-        corroborated.append(kind)
-        match_reasons.append(ANCHOR_REASONS[kind].format(detail=detail))
-    score = default_engine.score(signals)
-
-    mismatch_reasons = [
-        "A public search returned this page; that a search engine ranked it says "
-        "nothing about whether it is about the subject",
-    ]
-    if variant_reason:
-        mismatch_reasons.append(variant_reason)
-    if not corroborated:
-        mismatch_reasons.append(
-            "Nothing beyond the name connects this page to the subject"
-            + ("" if context.is_empty() else " — none of the anchors you supplied appears in it")
-        )
+    candidate = _candidate_for(result, key, canonical, context, classified)
+    correlation = _correlate(candidate, canonical, context)
+    score = correlation.score
+    variant_type = correlation.variant_type
+    variant_reason = correlation.variant_reason
+    match_reasons = correlation.match_reasons
+    mismatch_reasons = correlation.mismatch_reasons
+    corroborated = correlation.corroborated_by
 
     kind = _finding_kind(classified, result)
     data: dict[str, Any] = {
@@ -343,6 +326,9 @@ def _ingest_one(
         "match_reasons": match_reasons,
         "mismatch_reasons": mismatch_reasons,
         "corroborated_by": corroborated,
+        # Anchors the page positively disagrees with. Never subtracted from the
+        # score — a conflict is for a human to rule the candidate out with.
+        "conflicts": correlation.conflicts,
         "identifiers": {},
         "affiliations": list(candidate.affiliations),
         "locations": list(candidate.locations),
@@ -389,8 +375,8 @@ def _ingest_one(
         data=data,
         collector=SEARCH_COLLECTOR,
         source_url=key,
-        confidence=score.score,
-        confidence_reasons=[*score.reasons, *mismatch_reasons],
+        confidence=score,
+        confidence_reasons=[*match_reasons, *mismatch_reasons],
         classification=Classification.PERSONAL,
         observed_at=moment,
         dedupe_key=_dedupe_key(target, key),
@@ -414,6 +400,140 @@ def _ingest_one(
     )
     seen[key] = finding
     return "stored"
+
+
+@dataclass(slots=True)
+class _Correlation:
+    """One scoring of one page against the target. Replaceable, never merged."""
+
+    score: float
+    variant_type: str
+    variant_reason: str
+    match_reasons: list[str]
+    mismatch_reasons: list[str]
+    corroborated_by: list[str]
+    conflicts: list[str]
+    affiliations: list[str]
+    locations: list[str]
+
+
+def _candidate_for(
+    result: SearchResult,
+    key: str,
+    canonical: str,
+    context: PersonContext,
+    classified: Any,
+    extra_affiliations: Sequence[str] = (),
+    extra_locations: Sequence[str] = (),
+) -> PersonCandidate:
+    """The candidate a result describes.
+
+    The name is what the result *displays*, not what was searched for: using the
+    canonical name here would make every hit an exact name match, which is the
+    opposite of what variant-aware scoring is for.
+
+    What a result can be seen to *say* about affiliations and places is limited
+    to the anchors it is checked against: this path reads a title and a snippet,
+    so it can confirm a supplied employer appears there and cannot extract an
+    employer nobody supplied. The ``extra_*`` arguments carry forward what
+    earlier snippets about the same page were seen to name, which is how a page
+    can still be found to disagree with an anchor the investigator has since
+    changed.
+    """
+    return PersonCandidate(
+        url=key,
+        name=(result.title or "").strip() or result.search_variant or canonical,
+        summary=(result.snippet or "")[:500],
+        handles=[classified.handle] if classified and classified.handle else [],
+        affiliations=list(dict.fromkeys([*_anchors_in_text(result, context), *extra_affiliations])),
+        locations=list(dict.fromkeys([*_places_in_text(result, context), *extra_locations])),
+    )
+
+
+def _correlate(candidate: PersonCandidate, canonical: str, context: PersonContext) -> _Correlation:
+    """Score a page against the subject, through the shared assessment.
+
+    Deliberately :func:`app.collectors.person.assess` rather than a local signal
+    set. A second implementation is how two paths come to disagree about the same
+    evidence, and it had already cost this codebase that bug twice — once on the
+    promoted profile, once on the provider finding. Using the shared one also
+    means a result inherits conflict detection for free: a page that states an
+    employer contradicting a supplied one now says so.
+    """
+    assessment = assess(candidate, canonical, context)
+    mismatch = [
+        "A public search returned this page; that a search engine ranked it says "
+        "nothing about whether it is about the subject",
+        *assessment.mismatch_reasons,
+    ]
+    match = list(assessment.match_reasons)
+    if candidate.affiliations:
+        match.insert(
+            0,
+            f"The page's own text names {', '.join(candidate.affiliations)}, which you "
+            f"supplied as an affiliation — the anchor and the page agree independently",
+        )
+    return _Correlation(
+        score=default_engine.score(assessment.signals).score,
+        variant_type=assessment.name_variant_type,
+        variant_reason=assessment.name_variant_reason,
+        match_reasons=match,
+        mismatch_reasons=mismatch,
+        corroborated_by=list(assessment.corroborated_by),
+        conflicts=list(assessment.conflicts),
+        affiliations=list(candidate.affiliations),
+        locations=list(candidate.locations),
+    )
+
+
+def _refresh_correlation(
+    finding: Finding,
+    result: SearchResult,
+    canonical: str,
+    context: PersonContext,
+    classified: Any,
+) -> None:
+    """Re-derive a stored page's correlation from the current anchors.
+
+    Observed *content* accumulates — every snippet was really seen, so an
+    affiliation read from an earlier one is not discarded by a later one that
+    omitted it. The *correlation* is replaced outright. Both halves match what
+    ``record_profile`` does, so the finding and its promoted profile cannot drift
+    apart again.
+    """
+    data = dict(finding.data or {})
+    candidate = _candidate_for(
+        result,
+        str(data.get("url") or ""),
+        canonical,
+        context,
+        classified,
+        _strings(data.get("affiliations")),
+        _strings(data.get("locations")),
+    )
+    correlation = _correlate(candidate, canonical, context)
+    data.update(
+        {
+            "name_variant_type": correlation.variant_type,
+            "name_variant_reason": correlation.variant_reason,
+            "match_reasons": correlation.match_reasons,
+            "mismatch_reasons": correlation.mismatch_reasons,
+            "corroborated_by": correlation.corroborated_by,
+            "conflicts": correlation.conflicts,
+            "affiliations": correlation.affiliations,
+            "locations": correlation.locations,
+        }
+    )
+    finding.data = data
+    finding.confidence = correlation.score
+    finding.confidence_reasons = [*correlation.match_reasons, *correlation.mismatch_reasons]
+
+
+def _strings(value: Any) -> list[str]:
+    """The string members of a stored JSON list, and nothing else."""
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
 
 
 def _result_text(result: SearchResult) -> str:

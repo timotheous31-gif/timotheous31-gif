@@ -41,7 +41,17 @@ class RateLimit:
 
 
 class AsyncTokenBucket:
-    """Async token bucket. ``acquire`` sleeps until a token is available."""
+    """Async token bucket. ``acquire`` sleeps until a token is available.
+
+    The lock is created lazily and rebuilt when the running event loop changes.
+    ``asyncio.Lock`` binds itself to the loop of the first *contended* acquire and
+    then refuses to be awaited from any other one, so a bucket shared across two
+    ``asyncio.run`` calls — which is what a module-level limiter is — raised
+    ``RuntimeError: ... is bound to a different event loop`` on the second run.
+    The token budget itself is wall-clock state and deliberately survives the
+    rebuild: only the loop-bound primitive is replaced, so a new loop does not
+    get to start with a full bucket.
+    """
 
     def __init__(self, rate_per_second: float, capacity: float | None = None) -> None:
         if rate_per_second <= 0:
@@ -50,7 +60,16 @@ class AsyncTokenBucket:
         self.capacity = capacity if capacity is not None else max(1.0, rate_per_second)
         self._tokens = self.capacity
         self._updated = time.monotonic()
-        self._lock = asyncio.Lock()
+        self._lock: asyncio.Lock | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def _bound_lock(self) -> asyncio.Lock:
+        """The lock for the running loop, rebuilt if the loop has changed."""
+        loop = asyncio.get_running_loop()
+        if self._lock is None or self._loop is not loop:
+            self._lock = asyncio.Lock()
+            self._loop = loop
+        return self._lock
 
     def _refill(self) -> None:
         now = time.monotonic()
@@ -62,8 +81,9 @@ class AsyncTokenBucket:
     async def acquire(self, tokens: float = 1.0) -> float:
         """Consume ``tokens``, waiting if necessary. Returns the wait in seconds."""
         waited = 0.0
+        lock = self._bound_lock()
         while True:
-            async with self._lock:
+            async with lock:
                 self._refill()
                 if self._tokens >= tokens:
                     self._tokens -= tokens
@@ -80,39 +100,62 @@ class AsyncTokenBucket:
 
 
 class ProviderLimiter:
-    """Registry of token buckets and semaphores, one pair per provider key."""
+    """Registry of token buckets and semaphores, one pair per provider key.
+
+    The registry is process-wide but its semaphores are loop-bound, so the
+    running loop is tracked and the semaphores are rebuilt when it changes. One
+    live loop at a time is the assumption the whole async stack makes here; the
+    cross-process budget is :class:`RedisRateLimiter`, not this.
+    """
 
     def __init__(self, default: RateLimit | None = None) -> None:
         self._default = default or RateLimit()
         self._buckets: dict[str, AsyncTokenBucket] = {}
         self._semaphores: dict[str, asyncio.Semaphore] = {}
         self._limits: dict[str, RateLimit] = {}
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     def register(self, provider: str, limit: RateLimit) -> None:
         """Declare (or replace) the limit for ``provider``."""
         self._limits[provider] = limit
         self._buckets[provider] = AsyncTokenBucket(limit.rate_per_second)
-        self._semaphores[provider] = asyncio.Semaphore(limit.concurrency)
+        self._semaphores.pop(provider, None)
 
     def limit_for(self, provider: str) -> RateLimit:
         return self._limits.get(provider, self._default)
 
-    def _ensure(self, provider: str) -> tuple[AsyncTokenBucket, asyncio.Semaphore]:
+    def _ensure_bucket(self, provider: str) -> AsyncTokenBucket:
         if provider not in self._buckets:
             self.register(provider, self._limits.get(provider, self._default))
-        return self._buckets[provider], self._semaphores[provider]
+        return self._buckets[provider]
+
+    def _ensure_semaphore(self, provider: str) -> asyncio.Semaphore:
+        """The concurrency slot for the running loop.
+
+        ``asyncio.Semaphore`` binds to the loop of its first contended acquire
+        and then refuses any other, so a registry reused across ``asyncio.run``
+        calls has to drop its semaphores when the loop changes. The previous loop
+        is gone by then, which is what makes discarding its in-flight count safe.
+        """
+        loop = asyncio.get_running_loop()
+        if self._loop is not loop:
+            self._semaphores.clear()
+            self._loop = loop
+        if provider not in self._semaphores:
+            limit = self._limits.get(provider, self._default)
+            self._semaphores[provider] = asyncio.Semaphore(limit.concurrency)
+        return self._semaphores[provider]
 
     async def acquire(self, provider: str) -> float:
-        bucket, _ = self._ensure(provider)
-        return await bucket.acquire()
+        return await self._ensure_bucket(provider).acquire()
 
     def slot(self, provider: str) -> asyncio.Semaphore:
-        _, semaphore = self._ensure(provider)
-        return semaphore
+        return self._ensure_semaphore(provider)
 
     def reset(self) -> None:
         self._buckets.clear()
         self._semaphores.clear()
+        self._loop = None
 
 
 @dataclass(frozen=True)

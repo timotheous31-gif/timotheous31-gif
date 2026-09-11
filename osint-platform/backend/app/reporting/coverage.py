@@ -190,13 +190,21 @@ def web_search_coverage(
     )
 
 
-def image_search_coverage(*, images: int, provider_configured: bool) -> CoverageItem:
+def image_search_coverage(*, images: int, image_queries_run: int) -> CoverageItem:
     """Public images, which are never searched by likeness.
 
     Image *search* here means finding pages that publish a picture next to a
     name. The platform looks up no picture by its content and compares no two
     pictures, so this channel is manual unless a provider returns image results
     of its own.
+
+    ``image_queries_run`` is the number of image-shaped queries a provider
+    actually answered, and only a number above zero earns
+    ``NO_MATCH_RETURNED``. A configured provider is not a search: this said
+    "no public image was returned for the generated image queries" whenever one
+    was configured, whether or not a single image query had been issued — an
+    absence claim nobody had verified, produced by the module written to stop
+    exactly that.
     """
     if images:
         return CoverageItem(
@@ -206,12 +214,15 @@ def image_search_coverage(*, images: int, provider_configured: bool) -> Coverage
             detail=f"{images} public image(s) recorded as page context.",
             findings=images,
         )
-    if provider_configured:
+    if image_queries_run > 0:
         return CoverageItem(
             source="public_images",
             display_name="Public images",
             state=CoverageState.NO_MATCH_RETURNED,
-            detail="No public image was returned for the generated image queries.",
+            detail=(
+                f"{image_queries_run} image query(ies) ran and returned no public image. "
+                "Searched by name only — never by the content of a picture."
+            ),
         )
     return CoverageItem(
         source="public_images",

@@ -279,7 +279,7 @@ async def test_a_reduced_name_result_stays_weak_without_corroboration(api_client
     finding = next(
         item for item in _findings(case_id) if item.data["url"].endswith("tabitha-example")
     )
-    assert finding.data["name_variant_type"] == "REDUCED_NAME_VARIANT"
+    assert finding.data["name_variant_type"] == "TOKEN_REDUCED_VARIANT"
     assert finding.confidence <= 0.20, "a shorter name alone is a lead, not a match"
     assert finding.data["corroborated_by"] == []
 
@@ -389,7 +389,7 @@ async def test_the_report_names_the_variant_that_found_a_profile(api_client, cas
     candidate = next(
         item for item in report["findings"] if "tabitha-example" in str(item["data"].get("url"))
     )
-    assert candidate["data"]["name_variant_type"] == "REDUCED_NAME_VARIANT"
+    assert candidate["data"]["name_variant_type"] == "TOKEN_REDUCED_VARIANT"
     assert candidate["data"]["searches"]
 
 
@@ -454,3 +454,108 @@ async def test_an_uncorroborated_profile_is_not_lifted_by_a_sibling_result(api_c
     assert ours["confidence"] > theirs["confidence"]
     assert theirs["corroborated_by"] == []
     assert theirs["confidence"] <= 0.20
+
+
+# ------------------------------------------- rescoring a page already stored
+
+
+def _set_context(target_id, context: dict) -> None:
+    """Change the anchors on a target, the way an investigator editing it does."""
+    from app.core.db import get_session_factory
+    from app.models import Target
+
+    with get_session_factory()() as session:
+        target = session.get(Target, _uuid.UUID(target_id))
+        assert target is not None
+        target.attributes = {**dict(target.attributes or {}), "context": context}
+        session.commit()
+
+
+async def test_a_rerun_with_a_new_anchor_rescores_a_page_already_stored(api_client, case_id):
+    """The stale-correlation defect, arriving by the provider-search route.
+
+    PR #9 fixed this on the promoted profile: a correlation is a pure function of
+    the page's content and the anchors currently on the target, so an older
+    answer is simply wrong once the anchors change. Ingestion's duplicate branch
+    recorded the extra search and returned, which left the finding scored as
+    though the employer had never been supplied — and ``promote_finding`` then
+    read that stale finding, so both halves agreed on the wrong number.
+    """
+    target_id = await _person(api_client, case_id)
+    await _ingest(case_id, target_id, FakeProvider({REDUCED: [LINKEDIN_RESULT]}))
+    first = _findings(case_id)[0]
+    assert first.data["corroborated_by"] == []
+    before = first.confidence
+
+    # The investigator now supplies the employer the snippet already named.
+    _set_context(target_id, {"organizations": [ORGANIZATION]})
+    await _ingest(case_id, target_id, FakeProvider({REDUCED: [LINKEDIN_RESULT]}))
+
+    findings = _findings(case_id)
+    assert len(findings) == 1, "a rerun must refresh the page, not store it twice"
+    after = findings[0]
+    assert after.confidence > before, "the supplied anchor must reach the stored finding"
+    assert after.data["corroborated_by"] == ["affiliation"]
+
+    profiles = (await api_client.get(f"/api/v1/cases/{case_id}/social-profiles")).json()
+    profile = next(item for item in profiles if "tabitha-example" in item["profile_url"])
+    assert profile["confidence"] == pytest.approx(
+        after.confidence
+    ), "the finding and its promoted profile must never contradict one another"
+    assert profile["corroborated_by"] == ["affiliation"]
+
+
+async def test_a_rerun_that_learns_nothing_new_leaves_the_score_alone(api_client, case_id):
+    """The other half: a refresh is not a reason for a number to drift."""
+    target_id = await _person(api_client, case_id, context={"organizations": [ORGANIZATION]})
+    await _ingest(case_id, target_id, FakeProvider({REDUCED: [LINKEDIN_RESULT]}))
+    first = _findings(case_id)[0].confidence
+    await _ingest(case_id, target_id, FakeProvider({REDUCED: [LINKEDIN_RESULT]}))
+    findings = _findings(case_id)
+    assert len(findings) == 1
+    assert findings[0].confidence == pytest.approx(first)
+
+
+async def test_a_page_disagreeing_with_the_current_employer_is_recorded_as_a_conflict(
+    api_client, case_id
+):
+    """Conflict detection is inherited, not reimplemented.
+
+    Ingestion used to assemble its own signal set, so ``_assess_conflicts`` — the
+    shared function that records where a source positively disagrees with an
+    anchor — never ran on this path. It now scores through
+    ``app.collectors.person.assess`` like every other source, and a page seen to
+    name one employer while the target carries another says so.
+
+    The two employer names share no distinctive word on purpose: names that do
+    share one are a *match*, not a conflict, which is what
+    ``GENERIC_AFFILIATION_TERMS`` exists to get right.
+    """
+    target_id = await _person(api_client, case_id, context={"organizations": [ORGANIZATION]})
+    await _ingest(case_id, target_id, FakeProvider({REDUCED: [LINKEDIN_RESULT]}))
+    assert _findings(case_id)[0].data["conflicts"] == []
+
+    _set_context(target_id, {"organizations": ["Riverbend Veterinary Clinic"]})
+    await _ingest(case_id, target_id, FakeProvider({REDUCED: [LINKEDIN_RESULT]}))
+    finding = _findings(case_id)[0]
+    assert finding.data["conflicts"] == ["affiliation"]
+    assert finding.data["corroborated_by"] == []
+    assert any(ORGANIZATION in reason for reason in finding.data["mismatch_reasons"])
+
+
+async def test_the_ingest_report_counts_the_image_queries_it_actually_ran(api_client, case_id):
+    """So the report's image channel can only claim an absence it verified.
+
+    The count matters because the query budget is finite: a staged plan whose
+    first twelve queries are all name and anchor work issues no image query at
+    all, and the report must then say the channel is unsearched rather than
+    empty.
+    """
+    target_id = await _person(api_client, case_id, context={"organizations": [ORGANIZATION]})
+    report = await _ingest(case_id, target_id, FakeProvider({REDUCED: [LINKEDIN_RESULT]}))
+    assert report.queries_run > 0
+    assert 0 < report.image_queries_run <= report.queries_run
+    assert report.to_dict()["image_queries_run"] == report.image_queries_run
+
+    unconfigured = await _ingest(case_id, target_id, FakeProvider(available=False))
+    assert unconfigured.image_queries_run == 0

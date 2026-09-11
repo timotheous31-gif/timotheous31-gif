@@ -212,9 +212,9 @@ export function variantTone(variantType: string): string | undefined {
   const tones: Record<string, string> = {
     EXACT_NAME: "SUCCESS",
     EXTENDED_NAME_MATCH: "SUCCESS",
-    HYPHENATION_VARIANT: "PARTIAL",
-    INITIAL_VARIANT: "PARTIAL",
-    REDUCED_NAME_VARIANT: "SKIPPED",
+    FORMATTING_VARIANT: "PARTIAL",
+    INITIALIZED_VARIANT: "PARTIAL",
+    TOKEN_REDUCED_VARIANT: "SKIPPED",
     PARTIAL_NAME_MATCH: "SKIPPED",
   };
   return tones[variantType];
@@ -222,7 +222,7 @@ export function variantTone(variantType: string): string | undefined {
 
 /** Whether a spelling is weak enough that a hit needs corroborating. */
 export function needsCorroboration(variantType: string): boolean {
-  return variantType === "REDUCED_NAME_VARIANT" || variantType === "PARTIAL_NAME_MATCH";
+  return variantType === "TOKEN_REDUCED_VARIANT" || variantType === "PARTIAL_NAME_MATCH";
 }
 
 /** Queries shown per stage before "Show all". A worklist, not a wall. */

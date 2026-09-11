@@ -1191,23 +1191,33 @@ def _coverage_items(
         )
 
     searched = {item.source for item in items}
-    ingest = _ingest_coverage(session, case_id)
+    recorded = _recorded_ingest(session, case_id)
+    ingest = _ingest_coverage(session, case_id, recorded)
     if ingest is not None:
         items.append(ingest)
-    images = len(_image_items(session, case_id))
     items.append(
         image_search_coverage(
-            images=images,
-            provider_configured=bool(
-                ingest and ingest.state is not CoverageState.PROVIDER_NOT_CONFIGURED
-            ),
+            images=len(_image_items(session, case_id)),
+            # What actually ran, not what was configured.
+            image_queries_run=int((recorded or {}).get("image_queries_run") or 0),
         )
     )
     items.extend(item for item in manual_only_platforms() if item.source not in searched)
     return items
 
 
-def _ingest_coverage(session: Session, case_id: uuid.UUID) -> CoverageItem | None:
+def _recorded_ingest(session: Session, case_id: uuid.UUID) -> dict[str, Any] | None:
+    """What the latest execution recorded about its search stage, if anything."""
+    latest = session.scalar(
+        select(Job).where(Job.case_id == case_id).order_by(Job.created_at.desc()).limit(1)
+    )
+    recorded = ((latest.result if latest else None) or {}).get("search_ingest")
+    return recorded if isinstance(recorded, dict) else None
+
+
+def _ingest_coverage(
+    session: Session, case_id: uuid.UUID, recorded: dict[str, Any] | None = None
+) -> CoverageItem | None:
     """The public-web channel, from what the last ingestion run recorded.
 
     Read off the job's stored result rather than re-deriving it: the report
@@ -1215,10 +1225,8 @@ def _ingest_coverage(session: Session, case_id: uuid.UUID) -> CoverageItem | Non
     """
     from app.services.providers.search import get_search_provider
 
-    latest = session.scalar(
-        select(Job).where(Job.case_id == case_id).order_by(Job.created_at.desc()).limit(1)
-    )
-    recorded = ((latest.result if latest else None) or {}).get("search_ingest")
+    if recorded is None:
+        recorded = _recorded_ingest(session, case_id)
     if isinstance(recorded, dict):
         return web_search_coverage(
             provider=str(recorded.get("provider", "unknown")),

@@ -213,7 +213,16 @@ def render_markdown(model: ReportModel, *, embed_images: bool = False) -> str:
         f"confidence is {model.confidence.get('mean_finding_confidence', 0):.2f}."
     )
     add("")
-    add("| Band | Range | Findings | Relationships |")
+    add(
+        "**These are correlation scores, not probabilities.** A score of 0.70 does not mean a "
+        "70% chance that the record is the subject, and the scores are not calibrated against "
+        "any measured outcome: each one is the combination of the named rules listed beside the "
+        "finding, and nothing more. The bands below are reading aids for that combination — "
+        "ranges of score, not ranges of likelihood — and no score on its own establishes "
+        "identity. Only an analyst decision does that."
+    )
+    add("")
+    add("| Band | Score range | Findings | Relationships |")
     add("| --- | --- | ---: | ---: |")
     for band, range_text in model.confidence.get("bands", {}).items():
         add(

@@ -277,3 +277,104 @@ def test_a_citizenship_claim_never_reaches_the_anchor_comparison():
         extra={"citizenship_claims": ["Pakistan"]},
     )
     assert anchor_matches(candidate, PersonContext(country="Pakistan")) == []
+
+
+# ---------------------------------------------------- what a match may rest on
+
+
+def test_two_institutions_sharing_only_generic_words_do_not_corroborate():
+    """The strongest non-identifier signal may not fire on "university".
+
+    ``context_affiliation_match`` scores 0.50 with a floor of 0.50 — it takes a
+    name-only candidate from 0.15 to 0.575 on its own. It used to fire on any one
+    shared word over two letters, so "University of Karachi" corroborated
+    "University of Sindh" and "Ministry of Education" corroborated "Ministry of
+    Health". In a sector where nearly every employer's name is assembled from
+    those words, that is a machine for promoting strangers.
+    """
+    from app.collectors.person import PersonCandidate, PersonContext, anchor_matches
+
+    def matched(supplied: str, observed: str) -> bool:
+        candidate = PersonCandidate(
+            url="https://example.org/person", name="Example Person", affiliations=[observed]
+        )
+        kinds = [
+            kind for kind, _ in anchor_matches(candidate, PersonContext(organizations=(supplied,)))
+        ]
+        return "affiliation" in kinds
+
+    for supplied, observed in (
+        ("University of Karachi", "University of Sindh"),
+        ("Government College University", "Government of Sindh"),
+        ("Ministry of Education", "Ministry of Health"),
+        ("National Institute of Technology", "National Institute of Health"),
+        ("Higher Education Commission", "Education Department"),
+    ):
+        assert not matched(supplied, observed), f"{supplied!r} must not corroborate {observed!r}"
+
+    # And the matches that must survive: a shared *distinctive* word, or the
+    # same name written with more or less of its address.
+    for supplied, observed in (
+        ("University of Sindh", "University of Sindh"),
+        ("University of Sindh", "University of Sindh, Jamshoro"),
+        ("Shah Abdul Latif University", "Shah Abdul Latif University Khairpur"),
+        ("Aga Khan University", "The Aga Khan University Hospital"),
+    ):
+        assert matched(supplied, observed), f"{supplied!r} must corroborate {observed!r}"
+
+
+def test_a_profession_must_match_as_a_phrase_not_one_shared_word():
+    from app.collectors.person import PersonCandidate, PersonContext, anchor_matches
+
+    def matched(occupation: str, summary: str) -> bool:
+        candidate = PersonCandidate(
+            url="https://example.org/person", name="Example Person", summary=summary
+        )
+        kinds = [
+            kind for kind, _ in anchor_matches(candidate, PersonContext(occupation=occupation))
+        ]
+        return "occupation" in kinds
+
+    assert not matched("assistant professor", "Assistant Manager at Example Bank")
+    assert matched("lecturer", "Lecturer in English")
+    assert matched("applied linguist", "Applied linguist and lecturer")
+
+
+def test_no_name_variant_claims_a_role_for_a_name_part():
+    """A three-part name is not reliably "first, middle, last".
+
+    "Tabitha Afzal Imdad" may carry a patronymic where a Western reading expects
+    a middle name, and nothing in this system learns which. So a variant kind,
+    its label, its explanation and its confidence rule all describe what happened
+    to a *token*, never what role that token plays in the person's name.
+    """
+    from app.correlation.confidence import default_engine
+    from app.services.name_variants import (
+        VARIANT_LABELS,
+        VARIANT_ORDER,
+        generate_variants,
+    )
+
+    forbidden = (
+        "middle name",
+        "first name",
+        "last name",
+        "surname",
+        "given name",
+        "family name",
+        "maiden name",
+    )
+    texts = [
+        *VARIANT_ORDER,
+        *VARIANT_LABELS.values(),
+        *[variant.reason for variant in generate_variants("Tabitha Afzal Imdad Khan")],
+        *[
+            rule.reason
+            for key, rule in default_engine.rules.items()
+            if key.startswith(("name_variant", "same_person_name"))
+        ],
+    ]
+    for text in texts:
+        lowered = text.lower()
+        for phrase in forbidden:
+            assert phrase not in lowered, f"{phrase!r} appears in {text!r}"

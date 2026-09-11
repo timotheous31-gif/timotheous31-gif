@@ -15,12 +15,12 @@ from app.correlation.confidence import default_engine
 from app.services.name_variants import (
     EXACT,
     EXTENDED,
-    HYPHENATION,
-    INITIAL,
+    FORMATTING,
+    INITIALIZED,
     MAX_PARTS_FOR_VARIANTS,
     MAX_VARIANTS,
     PARTIAL,
-    REDUCED,
+    TOKEN_REDUCED,
     VARIANT_NAME_WEIGHT,
     VARIANT_ORDER,
     classify_observed_name,
@@ -78,11 +78,11 @@ def test_the_canonical_name_is_the_first_variant_and_is_never_rewritten():
 
 def test_reduced_and_initial_variants_are_typed_correctly():
     kinds = _kinds(CANONICAL)
-    assert kinds["Tabitha Afzal"] == REDUCED
-    assert kinds["Tabitha Imdad"] == REDUCED
-    assert kinds["Tabitha A Imdad"] == INITIAL
-    assert kinds["Tabitha A. Imdad"] == INITIAL
-    assert kinds["Tabitha Afzal-Imdad"] == HYPHENATION
+    assert kinds["Tabitha Afzal"] == TOKEN_REDUCED
+    assert kinds["Tabitha Imdad"] == TOKEN_REDUCED
+    assert kinds["Tabitha A Imdad"] == INITIALIZED
+    assert kinds["Tabitha A. Imdad"] == INITIALIZED
+    assert kinds["Tabitha Afzal-Imdad"] == FORMATTING
 
 
 # -------------------------------------------------------------- edge cases
@@ -101,7 +101,7 @@ def test_a_single_token_name_yields_only_itself():
 def test_a_four_part_name_still_keeps_first_and_last():
     variants = generate_variants("Ana Maria Gomez Ruiz")
     for variant in variants[1:]:
-        if variant.variant_type is REDUCED:
+        if variant.variant_type is TOKEN_REDUCED:
             assert variant.value.startswith("Ana")
             assert variant.value.endswith("Ruiz")
 
@@ -121,7 +121,7 @@ def test_particles_are_never_dropped_as_if_they_were_names():
 
 def test_an_existing_hyphen_is_opened_out():
     variants = _kinds("Mary-Jane Watson Parker")
-    assert variants["Mary Jane Watson Parker"] == HYPHENATION
+    assert variants["Mary Jane Watson Parker"] == FORMATTING
 
 
 def test_whitespace_and_punctuation_are_normalised_not_searched():
@@ -166,7 +166,7 @@ def test_no_nonsensical_permutation_is_produced():
 
 def test_a_reduced_name_scores_below_an_exact_one():
     exact = default_engine.signal(confidence_rule_for(EXACT))
-    reduced = default_engine.signal(confidence_rule_for(REDUCED))
+    reduced = default_engine.signal(confidence_rule_for(TOKEN_REDUCED))
     assert reduced.score < exact.score
     assert reduced.ceiling < exact.ceiling
 
@@ -195,11 +195,11 @@ def test_no_name_rule_can_reach_a_merge_on_its_own():
     [
         ("Tabitha Afzal Imdad", EXACT),
         ("tabitha afzal imdad", EXACT),
-        ("Tabitha Afzal-Imdad", HYPHENATION),
-        ("Tabitha A. Imdad", INITIAL),
-        ("Tabitha A Imdad", INITIAL),
-        ("Tabitha Afzal", REDUCED),
-        ("Tabitha Imdad", REDUCED),
+        ("Tabitha Afzal-Imdad", FORMATTING),
+        ("Tabitha A. Imdad", INITIALIZED),
+        ("Tabitha A Imdad", INITIALIZED),
+        ("Tabitha Afzal", TOKEN_REDUCED),
+        ("Tabitha Imdad", TOKEN_REDUCED),
         ("Tabitha Afzal Imdad Khan", EXTENDED),
         ("Tabitha Khan", PARTIAL),
         ("Sarah Jones", PARTIAL),

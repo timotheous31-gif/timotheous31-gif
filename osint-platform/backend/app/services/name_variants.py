@@ -37,20 +37,35 @@ EXACT = "EXACT_NAME"
 #: use, and it is not weaker than the exact spelling: nothing searched for is
 #: missing, so it fires the same rule.
 EXTENDED = "EXTENDED_NAME_MATCH"
-HYPHENATION = "HYPHENATION_VARIANT"
-INITIAL = "INITIAL_VARIANT"
-REDUCED = "REDUCED_NAME_VARIANT"
+#: Deliberately structure-free names. A three-part name is not reliably
+#: "first, middle, last" — "Tabitha Afzal Imdad" may carry a patronymic where a
+#: Western reading expects a middle name — and this module never learns which.
+#: So a kind says what was done to the *tokens* ("one was shortened", "one was
+#: dropped", "the spacing changed") and never what role the token plays in the
+#: person's name. Calling a dropped token a middle name is a claim about the
+#: subject's culture that no source here made.
+FORMATTING = "FORMATTING_VARIANT"
+INITIALIZED = "INITIALIZED_VARIANT"
+# The linter reads "TOKEN" in this name as a credential; it is a name token.
+TOKEN_REDUCED = "TOKEN_REDUCED_VARIANT"  # noqa: S105
 PARTIAL = "PARTIAL_NAME_MATCH"
 
-VARIANT_ORDER: tuple[str, ...] = (EXACT, EXTENDED, HYPHENATION, INITIAL, REDUCED, PARTIAL)
+VARIANT_ORDER: tuple[str, ...] = (
+    EXACT,
+    EXTENDED,
+    FORMATTING,
+    INITIALIZED,
+    TOKEN_REDUCED,
+    PARTIAL,
+)
 
 #: What each kind means, for a report and for the investigator reading it.
 VARIANT_LABELS: dict[str, str] = {
     EXACT: "Exact name as supplied",
     EXTENDED: "A fuller name containing every part supplied",
-    HYPHENATION: "Same parts, joined with a hyphen",
-    INITIAL: "A middle name shortened to its initial",
-    REDUCED: "One name part dropped — a shorter form in public use",
+    FORMATTING: "The same name parts, spaced or punctuated differently",
+    INITIALIZED: "One name part shortened to its initial",
+    TOKEN_REDUCED: "One name part dropped — a shorter form in public use",
     PARTIAL: "Shares some name parts with the subject",
 }
 
@@ -60,9 +75,9 @@ VARIANT_LABELS: dict[str, str] = {
 VARIANT_NAME_WEIGHT: dict[str, float] = {
     EXACT: 1.0,
     EXTENDED: 1.0,
-    HYPHENATION: 0.9,
-    INITIAL: 0.8,
-    REDUCED: 0.5,
+    FORMATTING: 0.9,
+    INITIALIZED: 0.8,
+    TOKEN_REDUCED: 0.5,
     PARTIAL: 0.3,
 }
 
@@ -73,9 +88,9 @@ VARIANT_CONFIDENCE_RULES: dict[str, str] = {
     EXACT: "same_person_name",
     # Every searched part is present, so the same rule as an exact spelling.
     EXTENDED: "same_person_name",
-    HYPHENATION: "name_variant_hyphenation",
-    INITIAL: "name_variant_initial",
-    REDUCED: "name_variant_reduced",
+    FORMATTING: "name_variant_hyphenation",
+    INITIALIZED: "name_variant_initial",
+    TOKEN_REDUCED: "name_variant_reduced",
     PARTIAL: "name_variant_partial",
 }
 
@@ -258,35 +273,36 @@ def generate_variants(name: str) -> list[NameVariant]:
         variants.append(candidate)
 
     first, last = parts[0], parts[-1]
-    middles = parts[1:-1]
+    inner = parts[1:-1]
 
-    # --- INITIAL: a middle name shortened, the commonest published form.
-    for index, middle in enumerate(middles):
-        letter = _initial(middle)
+    # --- INITIALIZED: an inner token shortened, the commonest published form.
+    for index, part in enumerate(inner):
+        letter = _initial(part)
         if not letter:
             continue
         shortened = [*parts]
         shortened[index + 1] = letter
         add(
             " ".join(shortened),
-            INITIAL,
-            f"{middle!r} shortened to its initial — how a middle name is usually published.",
+            INITIALIZED,
+            f"{part!r} shortened to its initial — a form many sources publish.",
         )
         shortened[index + 1] = f"{letter}."
         add(
             " ".join(shortened),
-            INITIAL,
-            f"{middle!r} shortened to {letter}., the same form with a full stop.",
+            INITIALIZED,
+            f"{part!r} shortened to {letter}., the same form with a full stop.",
         )
 
-    # --- REDUCED: one part dropped. First and last are kept in every variant,
-    #     because a name without either is not a shorter form of this name.
-    for index, middle in enumerate(middles):
-        kept = [part for position, part in enumerate(parts[1:-1]) if position != index]
+    # --- TOKEN_REDUCED: one inner token dropped. The outermost tokens are kept
+    #     in every variant, because a name missing either is not a shorter form
+    #     of this name — which is a statement about tokens, not about roles.
+    for index, dropped in enumerate(inner):
+        kept = [token for position, token in enumerate(inner) if position != index]
         add(
             " ".join([first, *kept, last]),
-            REDUCED,
-            f"{middle!r} dropped — public sources often omit a middle name. A shorter "
+            TOKEN_REDUCED,
+            f"{dropped!r} dropped — public sources often publish a shorter form. A shorter "
             f"form is shared by more people, so a hit is a lead until something "
             f"independent corroborates it.",
         )
@@ -296,24 +312,24 @@ def generate_variants(name: str) -> list[NameVariant]:
     # a shorter form than a different name.
     if len(parts) == 3:
         add(
-            f"{first} {middles[0]}",
-            REDUCED,
-            f"{last!r} dropped, leaving {first} {middles[0]} — a form in common public "
+            f"{first} {inner[0]}",
+            TOKEN_REDUCED,
+            f"{last!r} dropped, leaving {first} {inner[0]} — a form in common public "
             f"use. A shorter form is shared by more people, so a hit is a lead until "
             f"something independent corroborates it.",
         )
 
-    # --- HYPHENATION: the last two parts joined, and an existing hyphen opened.
+    # --- FORMATTING: the last two tokens joined, and an existing hyphen opened.
     if len(parts) >= 3:
         add(
             f"{' '.join(parts[:-2])} {parts[-2]}-{last}".strip(),
-            HYPHENATION,
-            f"{parts[-2]} and {last} joined with a hyphen, as a double-barrelled surname.",
+            FORMATTING,
+            f"{parts[-2]} and {last} joined with a hyphen, a spelling some sources use.",
         )
     if "-" in canonical:
         add(
             canonical.replace("-", " "),
-            HYPHENATION,
+            FORMATTING,
             "An existing hyphen opened out into a space.",
         )
 
@@ -346,8 +362,8 @@ def classify_observed_name(observed: str, canonical: str) -> tuple[str, str]:
     if fold_name(observed_clean) == fold_name(canonical):
         if observed_clean.lower() == canonical.lower():
             return EXACT, f"The source spells the name exactly as supplied ({observed_clean!r})."
-        # Same parts, different punctuation — a hyphenated surname, usually.
-        return HYPHENATION, (
+        # The same tokens, punctuated differently — a hyphen or a space.
+        return FORMATTING, (
             f"The source writes {observed_clean!r}: the same name parts as {canonical!r}, "
             f"punctuated differently."
         )
@@ -366,7 +382,7 @@ def classify_observed_name(observed: str, canonical: str) -> tuple[str, str]:
             f"{canonical!r} plus {', '.join(extra)!r}. Nothing searched for is missing."
         )
     if observed_parts and observed_parts < canonical_parts:
-        return REDUCED, (
+        return TOKEN_REDUCED, (
             f"The source publishes {observed_clean!r}, a shorter form of {canonical!r}. "
             f"Shorter forms match more people, so this is a lead rather than a match."
         )

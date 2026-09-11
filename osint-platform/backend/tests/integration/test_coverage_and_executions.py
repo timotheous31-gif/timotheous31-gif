@@ -101,16 +101,34 @@ def test_a_provider_that_searched_and_found_nothing_is_an_absence():
 
 
 def test_image_coverage_is_manual_when_no_provider_is_configured():
-    item = image_search_coverage(images=0, provider_configured=False)
+    item = image_search_coverage(images=0, image_queries_run=0)
     assert item.state is CoverageState.MANUAL_REVIEW_AVAILABLE
     assert "never" in item.detail.lower()
+
+
+def test_image_coverage_is_manual_when_a_provider_ran_no_image_query():
+    """A configured provider is not a search.
+
+    This claimed "no public image was returned for the generated image queries"
+    whenever a provider was configured — whether or not one image query had been
+    issued. An unverified absence, produced by the module that exists to stop
+    unverified absences.
+    """
+    item = image_search_coverage(images=0, image_queries_run=0)
+    assert item.state is CoverageState.MANUAL_REVIEW_AVAILABLE
+    assert not item.supports_absence
+
+    ran = image_search_coverage(images=0, image_queries_run=3)
+    assert ran.state is CoverageState.NO_MATCH_RETURNED
+    assert ran.supports_absence
+    assert "3 image query" in ran.detail
 
 
 def test_gap_sentences_name_the_unsearched_channel():
     gaps = summarise_gaps(
         [
             web_search_coverage(provider="none", configured=False, queries_run=0, results_stored=0),
-            image_search_coverage(images=0, provider_configured=False),
+            image_search_coverage(images=0, image_queries_run=0),
         ]
     )
     assert any("public web was not searched" in line for line in gaps)
