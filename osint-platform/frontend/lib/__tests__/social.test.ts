@@ -4,7 +4,7 @@ import {
   DECISIONS,
   awaitingReview,
   canShowThumbnail,
-  confidencePercent,
+  correlationScore,
   decisionLabel,
   decisionTone,
   fetchStateLabel,
@@ -34,7 +34,7 @@ function profile(overrides: Partial<SocialProfileRecord> = {}): SocialProfileRec
     server_fetchable: false, fetch_note: "LinkedIn refuses anonymous requests.",
     collector: "manual_search_recon", evidence_class: "investigator_imported",
     confidence: 0.15, match_reasons: [], mismatch_reasons: [], corroborated_by: [],
-    retrieved_at: null, discovery_method: null, discovered_from: null, profile_facts: [], declared_name: null, searched_name: null,
+    retrieved_at: null, discovery_method: null, discovery_methods: [], discovered_from: null, discovered_from_all: [], profile_facts: [], declared_name: null, searched_name: null,
     name_relationship: null, detail_source_url: null, detail_note: null, decision: null,
     ...overrides,
   };
@@ -84,14 +84,17 @@ describe("confidence is presented separately from judgement", () => {
       },
     });
     // The decision says no; the computed score is still what the platform found.
-    expect(confidencePercent(rejected.confidence)).toBe("72%");
+    expect(correlationScore(rejected.confidence)).toBe("0.72");
     expect(decisionLabel(rejected.decision!.decision)).toBe("Rejected");
   });
 
-  it("rounds for display only", () => {
-    expect(confidencePercent(0)).toBe("0%");
-    expect(confidencePercent(0.155)).toBe("16%");
-    expect(confidencePercent(1)).toBe("100%");
+  it("shows a correlation score as a score, never as a percentage", () => {
+    // `0.54` rendered as `54%` states a likelihood nobody computed. Two records
+    // are never "72% the same person".
+    expect(correlationScore(0)).toBe("0.00");
+    expect(correlationScore(0.155)).toBe("0.15");
+    expect(correlationScore(1)).toBe("1.00");
+    expect(correlationScore(0.7)).not.toContain("%");
   });
 });
 

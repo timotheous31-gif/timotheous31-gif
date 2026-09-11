@@ -28,8 +28,23 @@ export function confidenceBand(score: number): MatchStrength {
   return "WEAK_ASSOCIATION";
 }
 
+/**
+ * What a band is called where a person reads it.
+ *
+ * The stored values still say `PROBABLE_MATCH` — renaming a column and an API
+ * contract is its own change — but "probable match" on a 0.70 invites reading the
+ * score as a probability, and it is not one. The vocabulary a reader sees says
+ * correlation, and identity stays an analyst decision.
+ */
+const CORRELATION_BANDS: Record<MatchStrength, string> = {
+  LIKELY_MATCH: "Strong correlation",
+  PROBABLE_MATCH: "Moderate correlation",
+  POSSIBLE_MATCH: "Weak correlation",
+  WEAK_ASSOCIATION: "Name-level only",
+};
+
 export function bandLabel(band: MatchStrength): string {
-  return band.replace(/_/g, " ").toLowerCase();
+  return CORRELATION_BANDS[band] ?? band.replace(/_/g, " ");
 }
 
 export function humanise(value: string): string {

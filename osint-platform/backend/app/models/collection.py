@@ -31,7 +31,13 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin, UUIDMixin
-from app.models.enums import Classification, FindingKind, RunStatus
+from app.models.enums import (
+    Classification,
+    FindingKind,
+    ObservationStage,
+    ObservationSubject,
+    RunStatus,
+)
 from app.models.types import GUID, JSONType
 
 if TYPE_CHECKING:
@@ -195,3 +201,91 @@ class Evidence(UUIDMixin, TimestampMixin, Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<Evidence {self.collector} {self.sha256[:12]}>"
+
+
+class ExecutionObservation(UUIDMixin, TimestampMixin, Base):
+    """Immutable record that one execution observed one object, in one state.
+
+    The auditability problem this closes: a case's findings, entities, profiles,
+    contacts, images and evidence are *canonical and mutable*. A finding is
+    deduplicated across the whole case, so a rerun returns the existing row and
+    its ``run_id`` keeps pointing at the first run that ever produced it. Asking
+    "what did execution X observe, and what report did execution X produce?" had
+    no answer, and a report generated for an old execution silently showed
+    whatever a later one had since discovered and rescored.
+
+    "Execution X saw object O" is a different fact from "object O exists in this
+    case", with a different cardinality — many executions, one object — so it gets
+    its own row rather than another column on the object. And because the *state*
+    an object was in matters as much as the fact it was seen, each row carries a
+    snapshot in ``state``: the score, the reasons, the payload as that execution
+    left them. An execution report renders from these snapshots, never from the
+    canonical row's current columns, which is precisely what makes a historical
+    report stable when a later execution changes the case.
+
+    Three rules hold these rows honest:
+
+    * **Append-only.** Nothing rewrites an observation after its execution ends.
+      One row per (execution, subject) — a rerun adds a row, it does not edit one.
+    * **No backfill.** Rows that predate this table are not invented into an
+      execution. A job with no observations is reported as having no ledger, not
+      as having found nothing.
+    * **Never authoritative for the present.** Current case state is still the
+      canonical tables. These rows say what *was*, not what is.
+    """
+
+    __tablename__ = "execution_observations"
+    __table_args__ = (
+        # One observation per execution per object. A rerun that sees the same
+        # page again updates that execution's single row for it rather than
+        # accumulating duplicates within one run.
+        UniqueConstraint(
+            "job_id", "subject_type", "subject_id", name="uq_observation_execution_subject"
+        ),
+        Index("ix_observations_case_subject", "case_id", "subject_type", "subject_id"),
+        Index("ix_observations_job_kind", "job_id", "subject_type"),
+    )
+
+    case_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("cases.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    #: The execution. Nullable because the engine can be driven without a tracked
+    #: job (the CLI, a direct call) and inventing one would be a lie; such rows are
+    #: excluded from every execution report, and the report says so.
+    job_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("jobs.id", ondelete="CASCADE"), default=None, index=True
+    )
+    #: The collector run within that execution, where one applies. Promotion and
+    #: correlation derive from findings rather than from a request, so they have
+    #: none.
+    run_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("collector_runs.id", ondelete="SET NULL"), default=None
+    )
+
+    stage: Mapped[ObservationStage] = mapped_column(
+        SAEnum(ObservationStage, name="observation_stage", native_enum=False, length=24),
+        nullable=False,
+    )
+    subject_type: Mapped[ObservationSubject] = mapped_column(
+        SAEnum(ObservationSubject, name="observation_subject", native_enum=False, length=30),
+        nullable=False,
+    )
+    #: Not a foreign key: the subject is one of seven case-scoped tables, exactly
+    #: as in ``analyst_decisions``. The case cascade provides the integrity.
+    subject_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False, index=True)
+
+    collector: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_url: Mapped[str | None] = mapped_column(String(2048), default=None)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    #: True when this execution is the one that created the canonical row. Gives
+    #: first-seen/last-seen execution semantics without two more columns on every
+    #: table: first-seen is the observation carrying this flag, last-seen is the
+    #: newest observation for the subject.
+    first_seen: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    #: The subject's state as this execution left it. The snapshot an execution
+    #: report renders from.
+    state: Mapped[dict] = mapped_column(JSONType, default=dict, nullable=False)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return f"<ExecutionObservation {self.stage} {self.subject_type}:{self.subject_id}>"

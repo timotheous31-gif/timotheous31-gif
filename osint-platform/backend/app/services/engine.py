@@ -38,17 +38,20 @@ from app.models import (
     Case,
     CaseStatus,
     CollectorRun,
+    Entity,
     Finding,
     Job,
+    Relationship,
     RunStatus,
     Target,
     TargetStatus,
     TargetType,
 )
-from app.models.enums import JobState
+from app.models.enums import JobState, ObservationStage, ObservationSubject
 from app.privacy.filter import PrivacyFilter
 from app.services.evidence import EvidenceStore
 from app.services.normalization import NormalizedTarget, normalize_target
+from app.services.observations import LEDGER_FLAG, ExecutionLedger, write_ledger
 from app.services.timeline import build_timeline
 
 log = get_logger(__name__)
@@ -95,8 +98,15 @@ class InvestigationResult:
     images: int = 0
     public_contacts: int = 0
     cancelled: bool = False
+    #: How many observation rows this execution wrote. Zero means the execution
+    #: observed nothing — distinguishable from a legacy execution, which has no
+    #: ledger flag on its job at all.
+    observations: int = 0
     errors: list[dict[str, str]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    #: Objects this execution touched, accumulated during the run and written once
+    #: at the end. Not serialised: it is working state, not a counter.
+    ledger: ExecutionLedger = field(default_factory=ExecutionLedger)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -118,6 +128,7 @@ class InvestigationResult:
             "images": self.images,
             "public_contacts": self.public_contacts,
             "cancelled": self.cancelled,
+            "observations": self.observations,
             "errors": self.errors,
             "notes": self.notes,
         }
@@ -166,6 +177,7 @@ class InvestigationEngine:
         try:
             targets = self._targets(session, case_id, options)
             result.targets = len(targets)
+            self._record_anchors(session, targets, job)
             if not targets:
                 result.notes.append("The case has no targets to investigate")
                 case.status = CaseStatus.COMPLETE
@@ -192,6 +204,7 @@ class InvestigationEngine:
             self._correlate(session, case_id, result)
             self._report(options, 0.95, "Correlating entities")
             self._build_timeline(session, case_id, result)
+            self._record_observations(session, case_id, result, job)
             self._report(options, 1.0, "Investigation complete")
 
             case.status = CaseStatus.PAUSED if result.cancelled else CaseStatus.COMPLETE
@@ -357,6 +370,18 @@ class InvestigationEngine:
         )
         if existing is not None:
             result.findings_duplicate += 1
+            # Observed again by *this* execution, even though the canonical row
+            # was created by an earlier one. Recording that is the whole point:
+            # overwriting `run_id` would throw away which execution first saw it,
+            # and leaving it alone would make this execution look blind.
+            result.ledger.touch(
+                ObservationSubject.FINDING,
+                existing.id,
+                stage=ObservationStage.COLLECTION,
+                collector=run.collector,
+                run_id=run.id,
+                source_url=existing.source_url,
+            )
             return existing
 
         outcome = self.privacy.filter_finding(draft.data, declared=draft.classification)
@@ -383,6 +408,15 @@ class InvestigationEngine:
         session.add(finding)
         session.flush()
         result.findings_created += 1
+        result.ledger.touch(
+            ObservationSubject.FINDING,
+            finding.id,
+            stage=ObservationStage.COLLECTION,
+            collector=run.collector,
+            run_id=run.id,
+            source_url=finding.source_url,
+            first_seen=True,
+        )
         return finding
 
     def _persist_evidence(
@@ -418,6 +452,14 @@ class InvestigationEngine:
             return
         if stored.created:
             result.evidence_stored += 1
+        result.ledger.touch(
+            ObservationSubject.EVIDENCE,
+            stored.evidence.id,
+            stage=ObservationStage.COLLECTION,
+            collector=collector,
+            source_url=payload.source_url,
+            first_seen=stored.created,
+        )
 
     def _correlate(
         self, session: Session, case_id: uuid.UUID, result: InvestigationResult
@@ -456,7 +498,46 @@ class InvestigationEngine:
             result.notes.extend(item.reason for item in corroboration.corroborations)
 
         self._promote(session, case_id, result)
+        self._observe_graph(session, case_id, result)
         return summary
+
+    def _observe_graph(
+        self, session: Session, case_id: uuid.UUID, result: InvestigationResult
+    ) -> None:
+        """Snapshot the entities and relationships this execution resolved.
+
+        After corroboration, deliberately: the corroboration pass rescores
+        entities, and an execution report must show the score the execution
+        finished with rather than the one it held halfway through.
+
+        Scoped to the case rather than to a diff, because resolution is a
+        whole-case operation: every entity and edge in the case is re-derived from
+        every finding on every run, so this execution genuinely did observe all of
+        them. That is a different claim from "this execution found them", which is
+        what ``first_seen`` carries.
+        """
+        try:
+            for entity in session.scalars(select(Entity).where(Entity.case_id == case_id)):
+                result.ledger.touch(
+                    ObservationSubject.ENTITY,
+                    entity.id,
+                    stage=ObservationStage.CORRELATION,
+                    collector="correlation",
+                )
+            for edge in session.scalars(
+                select(Relationship).where(Relationship.case_id == case_id)
+            ):
+                result.ledger.touch(
+                    ObservationSubject.RELATIONSHIP,
+                    edge.id,
+                    stage=ObservationStage.CORRELATION,
+                    collector=edge.collector,
+                )
+        except Exception as exc:  # pragma: no cover - defensive, like the stages above
+            result.errors.append(
+                {"stage": "observations", "error_type": type(exc).__name__, "error": str(exc)[:500]}
+            )
+            log.exception("investigation.graph_observation_failed", case_id=str(case_id))
 
     def _search(
         self,
@@ -471,16 +552,56 @@ class InvestigationEngine:
         able to say "the public web was not searched because no provider is
         configured", and it can only say that if the attempt leaves a trace.
         """
+        from app.services.search_ingest import SEARCH_COLLECTOR
+
         ingest: dict[str, Any] | None = None
         try:
             for target in session.scalars(
                 select(Target).where(Target.case_id == case_id, Target.type == TargetType.PERSON)
             ):
+                # A run row for the search stage, so automatically ingested
+                # results cannot exist outside execution accounting. Without it
+                # the stage was recorded only on the job's JSON result: invisible
+                # to the runs table, and its findings carried no run at all.
+                run = self._search_run(session, case_id=case_id, target=target, job=job)
                 report = asyncio.run(
                     self._search_one(session, case_id=case_id, target_id=target.id)
                 )
                 ingest = report.to_dict()
                 result.search_results += report.results_stored
+                self._close_search_run(session, run, report)
+                for finding_id in report.findings:
+                    finding = session.get(Finding, finding_id)
+                    if finding is None:
+                        continue
+                    if finding.run_id is None:
+                        # Only when it has none: a finding first produced by a
+                        # collector keeps the run that produced it.
+                        finding.run_id = run.id
+                    new = finding.id in set(report.new_findings)
+                    result.ledger.touch(
+                        ObservationSubject.FINDING,
+                        finding.id,
+                        stage=ObservationStage.SEARCH,
+                        collector=SEARCH_COLLECTOR,
+                        run_id=run.id,
+                        source_url=finding.source_url,
+                        first_seen=new,
+                    )
+                    # The artefacts the ingest stored for it. Without these an
+                    # execution report cites no evidence, which for a forensic
+                    # report is the one thing it must always be able to do.
+                    for artefact in finding.evidence or []:
+                        result.ledger.touch(
+                            ObservationSubject.EVIDENCE,
+                            artefact.id,
+                            stage=ObservationStage.SEARCH,
+                            collector=SEARCH_COLLECTOR,
+                            run_id=run.id,
+                            source_url=artefact.source_url,
+                            first_seen=new,
+                        )
+                session.flush()
                 if not report.configured:
                     # One unconfigured provider is the same answer for every
                     # target; saying it once is enough.
@@ -495,6 +616,59 @@ class InvestigationEngine:
             # than re-deriving it from whatever the settings say at render time.
             job.result = {**dict(job.result or {}), "search_ingest": ingest}
             session.flush()
+
+    def _search_run(
+        self, session: Session, *, case_id: uuid.UUID, target: Target, job: Job | None
+    ) -> CollectorRun:
+        """The run row for this execution's search stage."""
+        from app.services.search_ingest import SEARCH_COLLECTOR, SEARCH_SOURCE_LABEL
+
+        run = CollectorRun(
+            case_id=case_id,
+            target_id=target.id,
+            job_id=job.id if job is not None else None,
+            collector=SEARCH_COLLECTOR,
+            collector_version="1.0.0",
+            source_attribution=SEARCH_SOURCE_LABEL,
+            status=RunStatus.PENDING,
+            started_at=datetime.now(UTC),
+        )
+        session.add(run)
+        session.flush()
+        return run
+
+    def _close_search_run(self, session: Session, run: CollectorRun, report: Any) -> None:
+        """Finish the search run with the status the ingest actually earned.
+
+        An unconfigured provider is SKIPPED, not FAILED: nothing broke, a channel
+        was switched off. Queries that ran and returned nothing are a SUCCESS with
+        no findings, which the coverage table reads as a real absence for this
+        source only.
+        """
+        run.finished_at = datetime.now(UTC)
+        run.stats = {
+            "queries_run": report.queries_run,
+            "image_queries_run": report.image_queries_run,
+            "results_seen": report.results_seen,
+            "results_stored": report.results_stored,
+            "duplicates": report.duplicates,
+            "rejected_urls": report.rejected_urls,
+            "findings": len(report.findings),
+        }
+        if not report.configured:
+            run.status = RunStatus.SKIPPED
+            run.error_message = report.reason or "No search provider is configured"
+        elif report.failures and not report.queries_run:
+            run.status = RunStatus.FAILED
+            first = report.failures[0]
+            run.error_type = str(first.get("error_type") or "ProviderError")
+            run.error_message = str(first.get("error") or "")[:2000]
+        elif report.failures:
+            run.status = RunStatus.PARTIAL
+            run.error_message = f"{len(report.failures)} query(ies) failed"
+        else:
+            run.status = RunStatus.SUCCESS
+        session.flush()
 
     async def _search_one(self, session: Session, *, case_id: uuid.UUID, target_id: uuid.UUID):
         from app.services.search_ingest import search_target
@@ -514,8 +688,13 @@ class InvestigationEngine:
         Wrapped like the stages above — promotion is presentation of data
         already collected and stored, so a failure here must not lose the run.
         """
-        from app.services.promotion import candidate_for_finding, promote_finding
+        from app.services.promotion import (
+            PromotionTrace,
+            candidate_for_finding,
+            promote_finding,
+        )
 
+        trace = PromotionTrace()
         try:
             from app.services.promotion import PROMOTABLE_KINDS
 
@@ -540,11 +719,27 @@ class InvestigationEngine:
                     finding=finding,
                     target=targets.get(finding.target_id) if finding.target_id else None,
                     candidate_entity_id=candidate.id if candidate else None,
+                    touched=trace,
                 )
                 result.social_profiles += counts["profiles"]
                 result.images += counts["images"]
                 result.public_contacts += counts["contacts"]
             session.flush()
+            # Every derived object this execution created or refreshed, so an
+            # execution report can show the profiles, contacts and images *this*
+            # run surfaced rather than everything the case has ever held.
+            for subject_type, ids in (
+                (ObservationSubject.SOCIAL_PROFILE, trace.profiles),
+                (ObservationSubject.PUBLIC_CONTACT, trace.contacts),
+                (ObservationSubject.IMAGE_EVIDENCE, trace.images),
+            ):
+                for subject_id in ids:
+                    result.ledger.touch(
+                        subject_type,
+                        subject_id,
+                        stage=ObservationStage.PROMOTION,
+                        collector="promotion",
+                    )
         except Exception as exc:  # pragma: no cover - defensive, like the stages above
             result.errors.append(
                 {
@@ -582,6 +777,65 @@ class InvestigationEngine:
             )
         finally:
             await http.close_owned_client()
+
+    def _record_anchors(self, session: Session, targets: list[Target], job: Job | None) -> None:
+        """Snapshot the anchors in force as this execution starts.
+
+        An execution report has to be able to say what the investigator had
+        supplied *at the time*, because that is what its correlation rests on. The
+        anchors live on the target, which is mutable — supplying a username before
+        a rerun is the whole point — so reading them at render time would show a
+        later run's anchors beside an earlier run's scores.
+        """
+        if job is None:
+            return
+        anchors = {
+            str(target.id): {
+                "display_name": (target.attributes or {}).get("display_name"),
+                "normalized_value": target.normalized_value,
+                "type": str(target.type),
+                "context": dict((target.attributes or {}).get("context") or {}),
+            }
+            for target in targets
+        }
+        job.result = {**dict(job.result or {}), "anchors": anchors}
+        session.flush()
+
+    def _record_observations(
+        self,
+        session: Session,
+        case_id: uuid.UUID,
+        result: InvestigationResult,
+        job: Job | None,
+    ) -> None:
+        """Write this execution's observation ledger, once, at the end.
+
+        Last, so every snapshot is of the state the execution actually left — a
+        profile promoted in one stage and rescored by corroboration in another has
+        one truthful snapshot rather than two that disagree.
+
+        Wrapped like every other stage: a failure here loses the ledger for this
+        execution, which the report can say honestly, and must not lose the run.
+        """
+        try:
+            written = write_ledger(
+                session,
+                case_id=case_id,
+                job_id=job.id if job is not None else None,
+                ledger=result.ledger,
+            )
+        except Exception as exc:  # pragma: no cover - defensive, like the stages above
+            result.errors.append(
+                {"stage": "observations", "error_type": type(exc).__name__, "error": str(exc)[:500]}
+            )
+            log.exception("investigation.observations_failed", case_id=str(case_id))
+            return
+        result.observations = written
+        if job is not None:
+            # The flag, not the row count, is what tells a legacy execution (no
+            # ledger was ever written) from one that genuinely observed nothing.
+            job.result = {**dict(job.result or {}), LEDGER_FLAG: True}
+            session.flush()
 
     def _build_timeline(
         self, session: Session, case_id: uuid.UUID, result: InvestigationResult

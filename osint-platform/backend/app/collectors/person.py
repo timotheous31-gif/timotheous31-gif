@@ -64,85 +64,76 @@ def _tokens(text: str) -> set[str]:
     return {token for token in _fold(text).split() if len(token) > 2}
 
 
-#: Words that name a *kind* of institution rather than a particular one.
-#:
-#: An affiliation match used to fire on any one shared word over two letters,
-#: which meant "University of Karachi" corroborated "University of Sindh" and
-#: "Government College University" corroborated "Government of Sindh" — on the
-#: word "university" and the word "government". That is the strongest signal in
-#: the rule set short of an exact identifier (0.50, floor 0.50), so a shared
-#: generic word was lifting an unrelated record from name-only to "possible".
-#: It is worst in exactly the sectors this platform is used on, where nearly
-#: every employer's name is built from these words.
-#:
-#: So a shared word only counts when it is not one of these. Two names that
-#: share nothing but institutional vocabulary share nothing.
-GENERIC_AFFILIATION_TERMS: frozenset[str] = frozenset(
+#: Words that carry no identity of their own inside an organisation name.
+#: Dropped before comparison so "Institute of Example Research" and "Example
+#: Research Institute" are recognised as one name written two ways.
+ORG_STRUCTURE_WORDS: frozenset[str] = frozenset(
     {
-        "academy",
-        "agency",
-        "association",
-        "authority",
-        "board",
-        "bureau",
-        "center",
-        "centre",
-        "college",
-        "commission",
-        "committee",
-        "company",
-        "corporation",
-        "council",
-        "department",
-        "development",
-        "directorate",
-        "division",
-        "education",
-        "faculty",
-        "federal",
-        "foundation",
-        "global",
-        "government",
-        "group",
-        "higher",
-        "hospital",
-        "incorporated",
-        "initiative",
-        "institute",
-        "institution",
-        "international",
-        "laboratory",
-        "limited",
-        "ministry",
-        "national",
-        "network",
-        "office",
-        "organisation",
-        "organization",
-        "programme",
-        "project",
-        "public",
-        "regional",
-        "research",
-        "school",
-        "science",
-        "sciences",
-        "secretariat",
-        "service",
-        "services",
-        "society",
-        "studies",
-        "technologies",
-        "technology",
-        "trust",
-        "university",
+        "a",
+        "an",
+        "and",
+        "at",
+        "de",
+        "del",
+        "des",
+        "du",
+        "el",
+        "for",
+        "in",
+        "la",
+        "of",
+        "the",
     }
 )
 
+#: Characters that introduce an address, a campus or a parenthetical qualifier.
+#: Everything from the first one is dropped: "University of Sindh, Jamshoro" and
+#: "University of Sindh" are the same employer written with and without where it
+#: is.
+ORG_QUALIFIER_MARKS: tuple[str, ...] = (",", "(", " - ", " — ", ";", "|")
 
-def _distinctive(text: str) -> set[str]:
-    """The words in a name that identify *which* institution it is."""
-    return _tokens(text) - GENERIC_AFFILIATION_TERMS
+#: Identifier kinds that name an organisation outright. An agreement on one of
+#: these is an agreement about the same registered body, not about its name.
+ORG_IDENTIFIER_KEYS: tuple[str, ...] = ("ror", "grid", "wikidata", "isni", "lei")
+
+
+def normalize_organisation(name: str) -> frozenset[str]:
+    """The identity-bearing words of an organisation name, order-insensitive.
+
+    Deliberately strict, because the rule built on it is the strongest signal in
+    the set short of an exact identifier. Two names match only when this returns
+    the same set for both — never on a shared word, however distinctive.
+
+    An earlier version matched on any single shared word over two characters, so
+    "University of Karachi" corroborated "University of Sindh" on the word
+    "university". Tightening that to "one shared *distinctive* word" fixed the
+    generic collisions and left the specific ones: "Aga Khan University" still
+    corroborated "Aga Khan Foundation", and "University of Sindh" still
+    corroborated "Sindh Agriculture University". Those are different
+    organisations, and a rule worth 0.50 with a floor of 0.50 may not guess.
+    """
+    text = (name or "").strip()
+    if not text:
+        return frozenset()
+    lowered = text.lower()
+    for mark in ORG_QUALIFIER_MARKS:
+        index = lowered.find(mark)
+        if index > 0:
+            lowered = lowered[:index]
+    tokens = _fold(lowered).split()
+    return frozenset(token for token in tokens if token and token not in ORG_STRUCTURE_WORDS)
+
+
+def organisation_ids(values: Any) -> frozenset[str]:
+    """Explicit organisation identifiers, when a source publishes any."""
+    if not isinstance(values, dict):
+        return frozenset()
+    found = set()
+    for key in ORG_IDENTIFIER_KEYS:
+        value = values.get(key)
+        if isinstance(value, str) and value.strip():
+            found.add(f"{key}:{value.strip().lower()}")
+    return frozenset(found)
 
 
 # ------------------------------------------------------------ normalisation
@@ -628,25 +619,29 @@ def _match_handle(candidate: PersonCandidate, context: PersonContext) -> str | N
 def _match_affiliation(
     candidate: PersonCandidate, context: PersonContext
 ) -> tuple[str, str] | None:
-    """Match on the words that say *which* institution, or on the whole name.
+    """Match a whole organisation name, or an explicit organisation identifier.
 
-    "MIT" and "Massachusetts Institute of Technology" will not match, and that
-    is the safer failure: a missed corroboration leaves a candidate at name-only
-    confidence, whereas a false one would raise a stranger toward the subject.
-    Two names sharing only institutional vocabulary — "university", "government",
-    "ministry" — are likewise not a match; see
-    :data:`GENERIC_AFFILIATION_TERMS`.
+    Two names match when :func:`normalize_organisation` returns the same word set
+    for both — so an address or campus suffix, a different word order, and "the"
+    are tolerated, and nothing else is. "MIT" and "Massachusetts Institute of
+    Technology" do not match, and neither do "Aga Khan University" and "Aga Khan
+    Foundation". Both are missed corroborations, which leave a candidate at
+    name-only confidence; the alternative is a false one, which moves a stranger
+    toward the subject and does it invisibly.
     """
+    supplied_org_ids = organisation_ids(context.raw.get("organization_ids"))
+    observed_org_ids = organisation_ids(candidate.extra.get("organization_ids"))
+    shared_ids = supplied_org_ids & observed_org_ids
+    if shared_ids:
+        identifier = sorted(shared_ids)[0]
+        return identifier, identifier
+
     for supplied in context.affiliations:
-        folded_supplied = _fold(supplied)
-        if not folded_supplied:
+        supplied_tokens = normalize_organisation(supplied)
+        if not supplied_tokens:
             continue
         for observed in candidate.affiliations:
-            if not _fold(observed):
-                continue
-            if folded_supplied == _fold(observed):
-                return supplied, observed
-            if _distinctive(supplied) & _distinctive(observed):
+            if normalize_organisation(observed) == supplied_tokens:
                 return supplied, observed
     return None
 
@@ -677,12 +672,18 @@ def _match_occupation(candidate: PersonCandidate, context: PersonContext) -> str
 
 
 def _match_place(candidate: PersonCandidate, context: PersonContext) -> str | None:
+    """Match a place on whole words, not on substrings.
+
+    Substring containment made "Sindh" match "Sindhudurg" — two places 1,500km
+    apart. Coarse is fine here (the anchors are a city or a country) but wrong is
+    not, so the supplied place's words must all appear as words.
+    """
     for place in context.places:
-        folded = _fold(place)
-        if not folded:
+        wanted = {token for token in _fold(place).split() if token}
+        if not wanted:
             continue
         for observed in candidate.locations:
-            if folded in _fold(observed) or _fold(observed) in folded:
+            if wanted <= {token for token in _fold(observed).split() if token}:
                 return place
     return None
 

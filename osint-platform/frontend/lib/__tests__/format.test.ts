@@ -28,7 +28,15 @@ describe("confidenceBand", () => {
   });
 
   it("renders a readable label", () => {
-    expect(bandLabel("LIKELY_MATCH")).toBe("likely match");
+    expect(bandLabel("LIKELY_MATCH")).toBe("Strong correlation");
+    expect(bandLabel("PROBABLE_MATCH")).toBe("Moderate correlation");
+    expect(bandLabel("POSSIBLE_MATCH")).toBe("Weak correlation");
+    expect(bandLabel("WEAK_ASSOCIATION")).toBe("Name-level only");
+    // No band may read as a probability claim.
+    for (const band of ["LIKELY_MATCH", "PROBABLE_MATCH", "POSSIBLE_MATCH", "WEAK_ASSOCIATION"] as const) {
+      expect(bandLabel(band).toLowerCase()).not.toContain("probable");
+      expect(bandLabel(band).toLowerCase()).not.toContain("likely");
+    }
   });
 });
 

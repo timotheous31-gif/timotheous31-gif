@@ -131,9 +131,33 @@ class SocialProfile(UUIDMixin, TimestampMixin, Base):
         return (self.attributes or {}).get("discovery_method")
 
     @property
+    def discovery_methods(self) -> list[str]:
+        """*Every* route this profile has been found by, strongest first.
+
+        A profile can be published on the subject's own page and also returned by
+        a search provider. Both are true and they are not equally informative, so
+        both are kept and ``discovery_method`` reports the strongest rather than
+        the most recent.
+        """
+        routes = (self.attributes or {}).get("discovery_methods")
+        if isinstance(routes, list):
+            return [value for value in routes if isinstance(value, str)]
+        single = self.discovery_method
+        return [single] if single else []
+
+    @property
     def discovered_from(self) -> str | None:
         """The public page that published this link, when one did."""
         return (self.attributes or {}).get("discovered_from")
+
+    @property
+    def discovered_from_all(self) -> list[str]:
+        """Every public page that published a link to this profile."""
+        origins = (self.attributes or {}).get("discovered_from_all")
+        if isinstance(origins, list):
+            return [value for value in origins if isinstance(value, str)]
+        single = self.discovered_from
+        return [single] if single else []
 
     @property
     def detail_source_url(self) -> str | None:

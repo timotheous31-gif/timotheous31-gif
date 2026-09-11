@@ -220,3 +220,36 @@ class ReportFormat(StrEnum):
     HTML = "html"
     MARKDOWN = "md"
     JSON = "json"
+
+
+class ObservationStage(StrEnum):
+    """Which part of an execution recorded an observation.
+
+    A report that can only say "this execution saw this finding" is weaker than
+    one that can say *how*: a collector retrieved it, a search provider returned
+    it, promotion derived it, correlation resolved it, or an investigator imported
+    it outside any execution.
+    """
+
+    COLLECTION = "COLLECTION"
+    SEARCH = "SEARCH"
+    PROMOTION = "PROMOTION"
+    CORRELATION = "CORRELATION"
+    IMPORT = "IMPORT"
+
+
+class ObservationSubject(StrEnum):
+    """What kind of object an observation is about.
+
+    Polymorphic like :class:`DecisionSubject`, and for the same reason: the
+    subject is one of several case-scoped tables, and a column per table would be
+    a second way to say the same thing.
+    """
+
+    FINDING = "FINDING"
+    EVIDENCE = "EVIDENCE"
+    ENTITY = "ENTITY"
+    RELATIONSHIP = "RELATIONSHIP"
+    SOCIAL_PROFILE = "SOCIAL_PROFILE"
+    PUBLIC_CONTACT = "PUBLIC_CONTACT"
+    IMAGE_EVIDENCE = "IMAGE_EVIDENCE"

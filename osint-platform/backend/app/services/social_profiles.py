@@ -62,6 +62,69 @@ DISCOVERY_LABELS: dict[str, str] = {
 }
 
 
+#: How informative each route is about *whose* profile this is, strongest first.
+#:
+#: A profile can legitimately be found more than once — the subject's own GitHub
+#: README links to it and a search provider also returns it — and the two are not
+#: equally informative. ``discovery_method`` used to be last-write-wins, so a
+#: published link followed by a provider search reported only the provider
+#: search: the weaker of the two, for the same profile. The primary method is now
+#: the strongest route observed, and every route is kept.
+DISCOVERY_STRENGTH: tuple[str, ...] = (
+    DISCOVERY_SUPPLIED_ANCHOR,
+    DISCOVERY_PUBLISHED_LINK,
+    DISCOVERY_API_RECORD,
+    DISCOVERY_HANDLE_CHECK,
+    DISCOVERY_MANUAL_IMPORT,
+    DISCOVERY_PROVIDER_SEARCH,
+    DISCOVERY_NAME_SEARCH,
+)
+
+
+def _discovery_rank(method: str) -> int:
+    """Position in :data:`DISCOVERY_STRENGTH`; unknown routes sort last."""
+    try:
+        return DISCOVERY_STRENGTH.index(method)
+    except ValueError:
+        return len(DISCOVERY_STRENGTH)
+
+
+def merge_discovery_methods(stored: object, method: str | None) -> list[str]:
+    """Every route this profile has been found by, strongest first.
+
+    Order is by informativeness, not by when each was seen: the list is read by a
+    person deciding how much a profile is worth, and "the subject published this
+    link" is the first thing they should see even if a search engine found it
+    again afterwards.
+    """
+    routes = [
+        value
+        for value in (stored if isinstance(stored, list) else [])
+        if isinstance(value, str) and value
+    ]
+    if method and method not in routes:
+        routes.append(method)
+    return sorted(dict.fromkeys(routes), key=_discovery_rank)
+
+
+def primary_discovery_method(methods: list[str]) -> str | None:
+    """The strongest route, which is what a single-valued field should say."""
+    return methods[0] if methods else None
+
+
+def discovery_route_reasons(methods: list[str]) -> list[str]:
+    """One sentence per route, so a second route is visible but not a second vote.
+
+    Deliberately reasons and not signals. Finding the same page twice by two
+    routes is still one page: it adds provenance, never agreement.
+    """
+    return [
+        f"Discovery route: {DISCOVERY_LABELS[method]}."
+        for method in methods
+        if method in DISCOVERY_LABELS
+    ]
+
+
 def published_link_reason(origin: str) -> str:
     """The sentence recorded when one public page links to another.
 
@@ -252,9 +315,22 @@ def record_profile(
     stored = dict((existing.attributes if existing is not None else None) or {})
     merged_attributes = {**stored, **(attributes or {})}
     if linked_from:
+        origins = [
+            value
+            for value in (stored.get("discovered_from_all") or [])
+            if isinstance(value, str) and value
+        ]
+        if linked_from not in origins:
+            origins.append(linked_from)
         merged_attributes["discovered_from"] = linked_from
-    if discovery_method:
-        merged_attributes["discovery_method"] = discovery_method
+        # Every page that published a link to this profile, not just the last.
+        merged_attributes["discovered_from_all"] = origins
+    routes = merge_discovery_methods(stored.get("discovery_methods"), discovery_method)
+    if routes:
+        merged_attributes["discovery_methods"] = routes
+        # Single-valued for every existing reader, but now the *strongest* route
+        # rather than whichever write happened last.
+        merged_attributes["discovery_method"] = primary_discovery_method(routes)
 
     confidence, match_reasons, mismatch_reasons, corroborated = assess_profile(
         classified,
@@ -265,9 +341,12 @@ def record_profile(
         observed_affiliations=observed_affiliations,
         observed_locations=observed_locations,
     )
-    origin = merged_attributes.get("discovered_from")
-    if isinstance(origin, str) and origin:
-        match_reasons.append(published_link_reason(origin))
+    for origin in merged_attributes.get("discovered_from_all") or []:
+        if isinstance(origin, str) and origin:
+            match_reasons.append(published_link_reason(origin))
+    # One line per route. Regenerated from provenance on every refresh, like the
+    # published-link reason, so a route cannot linger after it stops being true.
+    match_reasons.extend(discovery_route_reasons(routes))
 
     if existing is not None:
         # The correlation is *replaced*, not merged. It is a pure function of

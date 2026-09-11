@@ -404,7 +404,10 @@ export interface SocialProfileRecord {
   retrieved_at: string | null;
   /** How the profile entered the case, and the page that published the link. */
   discovery_method: string | null;
+  /** Every route this profile was found by, strongest first. */
+  discovery_methods: string[];
   discovered_from: string | null;
+  discovered_from_all: string[];
   /** Explicit statements read from the profile page, each with its own line. */
   profile_facts: ProfileFact[];
   /** The name the source declares, beside the name that was searched. */

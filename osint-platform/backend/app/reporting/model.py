@@ -41,7 +41,7 @@ from app.models import (
     Target,
     TimelineEvent,
 )
-from app.models.enums import Classification, RunStatus, TargetType
+from app.models.enums import Classification, JobState, RunStatus, TargetType
 from app.privacy.filter import PrivacyFilter
 from app.reporting.coverage import (
     CoverageItem,
@@ -52,7 +52,9 @@ from app.reporting.coverage import (
     summarise_gaps,
     web_search_coverage,
 )
-from app.services.timeline import timeline_summary
+from app.services.observations import LEDGER_FLAG, ExecutionSnapshot, execution_snapshot
+from app.services.search_ingest import SEARCH_COLLECTOR
+from app.services.timeline import events_for_findings, timeline_summary
 
 log = get_logger(__name__)
 
@@ -104,6 +106,12 @@ class FindingItem:
     withheld: bool
     observed_at: datetime | None
     evidence: list[EvidenceRef] = field(default_factory=list)
+    #: Execution reports only. True when the scoped execution is the one that
+    #: first observed this finding; False when it was carried over from an earlier
+    #: one. ``None`` in a case report, where the question does not arise.
+    first_observed_here: bool | None = None
+    #: Which stage of the scoped execution observed it.
+    observed_by_stage: str | None = None
 
     @property
     def strength(self) -> str:
@@ -120,6 +128,8 @@ class FindingItem:
             "source_url": self.source_url,
             "confidence": round(self.confidence, 3),
             "confidence_strength": self.strength,
+            "first_observed_here": self.first_observed_here,
+            "observed_by_stage": self.observed_by_stage,
             "confidence_reasons": self.confidence_reasons,
             "classification": self.classification,
             "redacted": self.redacted,
@@ -234,7 +244,11 @@ class SocialProfileItem:
     #: How the profile entered the case, from a closed vocabulary, and the
     #: public page that published the link when one did.
     discovery_method: str | None = None
+    #: Every route the profile was found by, strongest first. More than one is
+    #: provenance, never a second vote: the same page found twice is one page.
+    discovery_methods: list[str] = field(default_factory=list)
     discovered_from: str | None = None
+    discovered_from_all: list[str] = field(default_factory=list)
     #: What the account states about itself on its own profile page, each entry
     #: carrying the line it was read from. Explicit statements only.
     profile_facts: list[dict[str, Any]] = field(default_factory=list)
@@ -270,7 +284,9 @@ class SocialProfileItem:
             "candidate_id": self.candidate_id,
             "retrieved_at": self.retrieved_at.isoformat() if self.retrieved_at else None,
             "discovery_method": self.discovery_method,
+            "discovery_methods": self.discovery_methods,
             "discovered_from": self.discovered_from,
+            "discovered_from_all": self.discovered_from_all,
             "profile_facts": self.profile_facts,
             "declared_name": self.declared_name,
             "searched_name": self.searched_name,
@@ -494,6 +510,24 @@ class ExecutionSummary:
     findings: int = 0
     #: Every run the case has ever recorded. Kept, never conflated.
     historical_runs: int = 0
+    #: "case" (current state) or "execution" (one execution's observations). A
+    #: reader must never have to work out which report they are holding.
+    scope: str = "case"
+    #: The execution an ``execution``-scoped report describes.
+    scoped_job_id: str | None = None
+    #: How many observations that execution recorded.
+    observations: int = 0
+    #: True when a ledger exists for the scoped execution. False has two causes
+    #: and they are not the same: the execution observed nothing, or it ran before
+    #: observations were recorded at all. ``ledger_state`` says which.
+    ledger_recorded: bool = True
+    ledger_state: str = "recorded"
+    #: The sentence a report prints when the ledger is missing or empty.
+    ledger_note: str | None = None
+    #: The anchors the investigator had supplied when this execution started, per
+    #: target. Snapshotted because the target is mutable: reading it at render time
+    #: would put a later run's anchors beside an earlier run's scores.
+    anchors: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -512,9 +546,103 @@ class ExecutionSummary:
                 "failed": self.failed,
                 "skipped": self.skipped,
                 "findings": self.findings,
+                "observations": self.observations,
             },
             "historical_collector_runs": self.historical_runs,
+            "scope": self.scope,
+            "scoped_job_id": self.scoped_job_id,
+            "anchors": self.anchors,
+            "ledger": {
+                "recorded": self.ledger_recorded,
+                "state": self.ledger_state,
+                "note": self.ledger_note,
+                "observations": self.observations,
+            },
         }
+
+
+@dataclass(slots=True)
+class SourceAgreementItem:
+    """Two sources publishing the same identifier, and what that is worth.
+
+    The report has to be able to print the difference between "two indexes
+    contain the same identifier" and "two independent sources corroborate this
+    identifier", because only the second is evidence and only the second moved a
+    score. Keeping them in one list with an explicit ``independence`` is how a
+    reader sees both without having to know which key to look under.
+    """
+
+    identifier: str
+    value: str
+    sources: list[str]
+    independence: str
+    label: str
+    reason: str
+    scoring_effect: str
+    candidate_name: str | None = None
+
+    @property
+    def corroborates(self) -> bool:
+        return self.independence == "INDEPENDENT"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "identifier": self.identifier,
+            "value": self.value,
+            "sources": self.sources,
+            "independence": self.independence,
+            "label": self.label,
+            "reason": self.reason,
+            "scoring_effect": self.scoring_effect,
+            "candidate_name": self.candidate_name,
+            "corroborates": self.corroborates,
+        }
+
+
+@dataclass(slots=True)
+class CitizenshipClaimItem:
+    """A citizenship a source states, recorded as that source's claim.
+
+    Separated from everything comparable on purpose. Citizenship is a legal
+    status; a location is where something is. Reading one as the other is how an
+    anchor comparison came to match a supplied country against a citizenship
+    claim, which is the nationality inference this platform refuses. So the claim
+    is shown with the source that made it, the limits of what it means, and no
+    path to the scoring engine at all.
+    """
+
+    country: str
+    source: str
+    source_label: str
+    source_url: str | None
+    candidate_name: str | None
+    interpretation: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "country": self.country,
+            "source": self.source,
+            "source_label": self.source_label,
+            "source_url": self.source_url,
+            "candidate_name": self.candidate_name,
+            "interpretation": self.interpretation,
+            # Stated on the item itself, so no renderer can show the claim
+            # without the limit travelling beside it.
+            "infers_nationality": False,
+            "is_location": False,
+            "is_residence": False,
+            "corroborates_location_anchor": False,
+        }
+
+
+#: What a source-claimed citizenship is not. One sentence, used everywhere the
+#: claim is shown, because the claim is worthless without it.
+CITIZENSHIP_CAVEAT = (
+    "This is what the named source states, recorded as that source's claim. It is "
+    "not inferred from a name, a language, an employer, a school or an appearance; "
+    "it is not a residence; it is not a current location; and it does not "
+    "corroborate any country or city you supplied as an anchor."
+)
 
 
 @dataclass(slots=True)
@@ -548,6 +676,11 @@ class ReportModel:
     #: was found" from being read as "there is nothing to find".
     coverage: list[CoverageItem] = field(default_factory=list)
     coverage_gaps: list[str] = field(default_factory=list)
+    #: Citizenships sources explicitly state. Displayed, attributed, and wired to
+    #: nothing — see :class:`CitizenshipClaimItem`.
+    citizenship_claims: list[CitizenshipClaimItem] = field(default_factory=list)
+    #: Identifier agreements between sources, corroborating or not.
+    source_agreements: list[SourceAgreementItem] = field(default_factory=list)
     execution: ExecutionSummary = field(default_factory=lambda: ExecutionSummary())
     graph: dict[str, Any] = field(default_factory=dict)
     confidence: dict[str, Any] = field(default_factory=dict)
@@ -587,6 +720,8 @@ class ReportModel:
             "sources": [item.to_dict() for item in self.sources],
             "coverage": [item.to_dict() for item in self.coverage],
             "coverage_gaps": self.coverage_gaps,
+            "citizenship_claims": [item.to_dict() for item in self.citizenship_claims],
+            "source_agreements": [item.to_dict() for item in self.source_agreements],
             "execution": self.execution.to_dict(),
             "graph": self.graph,
             "methodology": self.methodology,
@@ -601,12 +736,26 @@ def _decision_lookup(session: Session, case_id: uuid.UUID) -> dict[str, AnalystD
     return {str(row.subject_id): row for row in rows}
 
 
-def _social_profile_items(session: Session, case_id: uuid.UUID) -> list[SocialProfileItem]:
+def _social_profile_items(
+    session: Session, case_id: uuid.UUID, rows: list[Any] | None = None
+) -> list[SocialProfileItem]:
+    """Profile items from the case, or from rows a caller already has.
+
+    ``rows`` is how an execution report renders: the rows are rehydrated
+    snapshots of what that execution observed, and they go through *this* builder
+    rather than a second one, so the two report modes cannot drift apart.
+    """
     decisions = _decision_lookup(session, case_id)
-    rows = session.scalars(
-        select(SocialProfile)
-        .where(SocialProfile.case_id == case_id)
-        .order_by(SocialProfile.confidence.desc())
+    rows = (
+        rows
+        if rows is not None
+        else list(
+            session.scalars(
+                select(SocialProfile)
+                .where(SocialProfile.case_id == case_id)
+                .order_by(SocialProfile.confidence.desc())
+            )
+        )
     )
     items = []
     for row in rows:
@@ -631,6 +780,8 @@ def _social_profile_items(session: Session, case_id: uuid.UUID) -> list[SocialPr
                 candidate_id=str(row.candidate_entity_id) if row.candidate_entity_id else None,
                 retrieved_at=row.retrieved_at,
                 discovery_method=row.discovery_method,
+                discovery_methods=list(row.discovery_methods),
+                discovered_from_all=list(row.discovered_from_all),
                 discovered_from=row.discovered_from,
                 profile_facts=row.profile_facts,
                 declared_name=row.declared_name,
@@ -645,13 +796,30 @@ def _social_profile_items(session: Session, case_id: uuid.UUID) -> list[SocialPr
     return items
 
 
-def _image_items(session: Session, case_id: uuid.UUID) -> list[ImageItem]:
+def _image_items(
+    session: Session,
+    case_id: uuid.UUID,
+    rows: list[Any] | None = None,
+    candidate_rows: list[Any] | None = None,
+    profile_rows: list[Any] | None = None,
+) -> list[ImageItem]:
+    """Image items, labelled with the candidate and profile they are filed under.
+
+    ``candidate_rows`` and ``profile_rows`` exist because an image card prints the
+    candidate's *score*. Reading that from the live entity would put a later
+    execution's number on a historical image, so an execution report passes its
+    own snapshots in.
+    """
     decisions = _decision_lookup(session, case_id)
-    rows = list(
-        session.scalars(
-            select(ImageEvidence)
-            .where(ImageEvidence.case_id == case_id)
-            .order_by(ImageEvidence.created_at.desc())
+    rows = (
+        list(rows)
+        if rows is not None
+        else list(
+            session.scalars(
+                select(ImageEvidence)
+                .where(ImageEvidence.case_id == case_id)
+                .order_by(ImageEvidence.created_at.desc())
+            )
         )
     )
     # Resolved once rather than per row: an image is filed against a profile and
@@ -659,13 +827,19 @@ def _image_items(session: Session, case_id: uuid.UUID) -> list[ImageItem]:
     # looking for both.
     profiles = {
         profile.id: profile
-        for profile in session.scalars(
-            select(SocialProfile).where(SocialProfile.case_id == case_id)
+        for profile in (
+            profile_rows
+            if profile_rows is not None
+            else session.scalars(select(SocialProfile).where(SocialProfile.case_id == case_id))
         )
     }
     candidates = {
         entity.id: entity
-        for entity in session.scalars(select(Entity).where(Entity.case_id == case_id))
+        for entity in (
+            candidate_rows
+            if candidate_rows is not None
+            else session.scalars(select(Entity).where(Entity.case_id == case_id))
+        )
     }
     items = []
     for row in rows:
@@ -711,12 +885,14 @@ def _image_items(session: Session, case_id: uuid.UUID) -> list[ImageItem]:
     return items
 
 
-def _public_contact_items(session: Session, case_id: uuid.UUID) -> list[PublicContactItem]:
+def _public_contact_items(
+    session: Session, case_id: uuid.UUID, rows: list[Any] | None = None
+) -> list[PublicContactItem]:
     from app.services.promotion import contacts_for_case
 
     decisions = _decision_lookup(session, case_id)
     items = []
-    for row in contacts_for_case(session, case_id):
+    for row in rows if rows is not None else contacts_for_case(session, case_id):
         decision = decisions.get(str(row.id))
         items.append(
             PublicContactItem(
@@ -816,54 +992,109 @@ def build_report(
     max_classification: Classification = Classification.PERSONAL,
     min_confidence: float = 0.0,
     privacy: PrivacyFilter | None = None,
+    execution: uuid.UUID | None = None,
 ) -> ReportModel:
     """Gather a case into a :class:`ReportModel`.
+
+    Two modes, and the difference between them is the point:
+
+    * **Case report** (``execution=None``) — the current state of the case. What
+      is known *now*, including everything every execution has contributed.
+    * **Execution report** (``execution=<job id>``) — what one execution observed,
+      rendered from that execution's immutable observation snapshots. A later
+      execution rescoring a page, adding evidence or finding a new candidate
+      cannot reach backwards into it.
+
+    Both are kept because they answer different questions and a reader needs to
+    know which one they are holding; the model says so in ``execution.scope``.
 
     Args:
         max_classification: content above this level is withheld from the
             report, so it can be circulated more widely than the case database.
         min_confidence: findings below this confidence are omitted.
+        execution: a job id, to report that execution rather than the case.
     """
     case = session.get(Case, case_id)
     if case is None:
         raise NotFoundError(f"Case {case_id} does not exist")
 
     privacy = privacy or PrivacyFilter()
-    findings = list(
-        session.scalars(
-            select(Finding)
-            .where(Finding.case_id == case_id, Finding.confidence >= min_confidence)
-            .order_by(Finding.confidence.desc(), Finding.created_at)
+    observed = execution_snapshot(session, case_id, execution) if execution is not None else None
+    if observed is not None:
+        findings = [item for item in observed.findings if float(item.confidence) >= min_confidence]
+        findings.sort(key=lambda item: (-float(item.confidence), item.title))
+        entities = sorted(observed.entities, key=lambda item: -float(item.confidence))
+        relationships = sorted(observed.relationships, key=lambda item: -float(item.confidence))
+        evidence_rows = sorted(
+            observed.evidence, key=lambda item: item.retrieved_at or datetime.now(UTC)
         )
-    )
-    entities = list(
-        session.scalars(
-            select(Entity).where(Entity.case_id == case_id).order_by(Entity.confidence.desc())
+        # An execution's timeline is projected from the findings *this* execution
+        # observed, in the state it observed them. Rendering the stored events
+        # instead leaked a later run's score into an earlier run's report: a
+        # timeline event tracks the canonical finding, and the canonical finding
+        # is what a rerun rescores. The stored row supplies only the stable id.
+        stored_event_ids = {
+            str(event.finding_id): event.id
+            for event in session.scalars(
+                select(TimelineEvent).where(TimelineEvent.case_id == case_id)
+            )
+            if event.finding_id is not None
+        }
+        events = []
+        for event in events_for_findings(case_id, findings):
+            event.id = stored_event_ids.get(str(event.finding_id), event.id)
+            events.append(event)
+        events.sort(key=lambda item: item.occurred_at)
+        runs = list(
+            session.scalars(
+                select(CollectorRun).where(
+                    CollectorRun.case_id == case_id, CollectorRun.job_id == execution
+                )
+            )
         )
-    )
-    relationships = list(
-        session.scalars(
-            select(Relationship)
-            .where(Relationship.case_id == case_id)
-            .order_by(Relationship.confidence.desc())
+    else:
+        findings = list(
+            session.scalars(
+                select(Finding)
+                .where(Finding.case_id == case_id, Finding.confidence >= min_confidence)
+                .order_by(Finding.confidence.desc(), Finding.created_at)
+            )
         )
-    )
-    events = list(
-        session.scalars(
-            select(TimelineEvent)
-            .where(TimelineEvent.case_id == case_id)
-            .order_by(TimelineEvent.occurred_at)
+        entities = list(
+            session.scalars(
+                select(Entity).where(Entity.case_id == case_id).order_by(Entity.confidence.desc())
+            )
         )
-    )
-    evidence_rows = list(
-        session.scalars(
-            select(Evidence).where(Evidence.case_id == case_id).order_by(Evidence.retrieved_at)
+        relationships = list(
+            session.scalars(
+                select(Relationship)
+                .where(Relationship.case_id == case_id)
+                .order_by(Relationship.confidence.desc())
+            )
         )
-    )
-    runs = list(session.scalars(select(CollectorRun).where(CollectorRun.case_id == case_id)))
+        events = list(
+            session.scalars(
+                select(TimelineEvent)
+                .where(TimelineEvent.case_id == case_id)
+                .order_by(TimelineEvent.occurred_at)
+            )
+        )
+        evidence_rows = list(
+            session.scalars(
+                select(Evidence).where(Evidence.case_id == case_id).order_by(Evidence.retrieved_at)
+            )
+        )
+        runs = list(session.scalars(select(CollectorRun).where(CollectorRun.case_id == case_id)))
     targets = list(session.scalars(select(Target).where(Target.case_id == case_id)))
 
     finding_items = [_finding_item(finding, privacy, max_classification) for finding in findings]
+    if observed is not None:
+        # First-seen / last-seen execution semantics, where a reader can use them:
+        # a finding carried over from an earlier run is evidence this execution saw
+        # again, not evidence it found.
+        for item in finding_items:
+            item.first_observed_here = item.id in observed.first_seen
+            item.observed_by_stage = observed.stages.get(item.id)
     graph = build_graph(entities, relationships)
 
     model = ReportModel(
@@ -893,13 +1124,47 @@ def build_report(
         relationships=[_relationship_item(edge) for edge in relationships],
         timeline=[_timeline_item(event) for event in events],
         evidence=[_evidence_ref(row) for row in evidence_rows],
-        social_profiles=_social_profile_items(session, case_id),
-        public_contacts=_public_contact_items(session, case_id),
-        images=_image_items(session, case_id),
+        social_profiles=_social_profile_items(
+            session, case_id, observed.profiles if observed else None
+        ),
+        public_contacts=_public_contact_items(
+            session, case_id, observed.contacts if observed else None
+        ),
+        images=_image_items(
+            session,
+            case_id,
+            observed.images if observed else None,
+            candidate_rows=entities if observed else None,
+            profile_rows=observed.profiles if observed else None,
+        ),
+        # Analyst decisions are deliberately *current* in both modes. A decision
+        # is a standing human judgement about an object, not an observation of it,
+        # and a reviewer reading a historical execution still needs to know what
+        # the analyst has since concluded. It is shown beside the automated score,
+        # never merged into it.
         analyst_decisions=_decision_items(session, case_id),
         sources=_sources(runs, findings),
-        coverage=_coverage_items(session, case_id, runs, findings),
-        execution=_execution_summary(session, case_id, runs, findings),
+        coverage=_coverage_items(
+            session,
+            case_id,
+            runs,
+            findings,
+            execution=execution,
+            images=(
+                _image_items(
+                    session,
+                    case_id,
+                    observed.images,
+                    candidate_rows=entities,
+                    profile_rows=observed.profiles,
+                )
+                if observed
+                else None
+            ),
+        ),
+        execution=_execution_summary(
+            session, case_id, runs, findings, execution=execution, observed=observed
+        ),
         graph=graph_summary(graph),
         methodology=list(METHODOLOGY),
         limitations=list(LIMITATIONS),
@@ -922,8 +1187,13 @@ def build_report(
         "collector_runs": len(runs),
         "investigation_executions": model.execution.executions,
         "latest_execution_collectors": model.execution.collectors_attempted,
+        # Only meaningful in an execution report; zero in a case report, where the
+        # question "how many observations" does not apply.
+        "observations": model.execution.observations,
     }
     model.coverage_gaps = summarise_gaps(model.coverage)
+    model.citizenship_claims = _citizenship_claims(findings)
+    model.source_agreements = _source_agreements(entities)
     model.confidence = _confidence_summary(finding_items, relationships)
     model.confidence["timeline"] = timeline_summary(events)
     if any(target.type is TargetType.PERSON for target in targets):
@@ -1068,11 +1338,39 @@ def _sources(runs: list[CollectorRun], findings: list[Finding]) -> list[SourceIt
     return items
 
 
+#: What a report says when an execution has no observation ledger. Two different
+#: facts, worded as two different sentences, because conflating them is the thing
+#: the ledger exists to stop.
+LEDGER_NOTES: dict[str, str] = {
+    "legacy": (
+        "This execution ran before observations were recorded, so no ledger exists for "
+        "it. Nothing below is a statement about what it found or did not find — the "
+        "record of what it observed was never kept. Use the case report for current "
+        "state, or re-run the investigation to produce an execution that can be "
+        "reproduced."
+    ),
+    "empty": (
+        "This execution recorded a ledger and observed nothing in it. That is a real "
+        "result for this execution — no source it ran returned anything it had not "
+        "already stored — and it is not a statement that nothing exists to find."
+    ),
+    "incomplete": (
+        "This execution did not finish, so no observation ledger was written for it and it "
+        "cannot be reproduced. Whatever it had collected before it stopped is in the case "
+        "report; nothing below is a statement about what it found."
+    ),
+    "recorded": "",
+}
+
+
 def _execution_summary(
     session: Session,
     case_id: uuid.UUID,
     runs: list[CollectorRun],
     findings: list[Finding],
+    *,
+    execution: uuid.UUID | None = None,
+    observed: ExecutionSnapshot | None = None,
 ) -> ExecutionSummary:
     """Split the latest execution from the case's history.
 
@@ -1081,12 +1379,64 @@ def _execution_summary(
     do?". Runs with no job (a direct engine call, no queue) are grouped as one
     unattributed execution rather than being dropped: they happened.
     """
-    summary = ExecutionSummary(historical_runs=len(runs))
+    all_runs = (
+        runs
+        if execution is None
+        else list(session.scalars(select(CollectorRun).where(CollectorRun.case_id == case_id)))
+    )
+    summary = ExecutionSummary(historical_runs=len(all_runs))
     jobs = list(
         session.scalars(select(Job).where(Job.case_id == case_id).order_by(Job.created_at.desc()))
     )
-    unattributed = [run for run in runs if run.job_id is None]
+    unattributed = [run for run in all_runs if run.job_id is None]
     summary.executions = len(jobs) + (1 if unattributed else 0)
+
+    if execution is not None:
+        # A report *about* one execution, not about the latest one.
+        job = session.get(Job, execution)
+        if job is None or job.case_id != case_id:
+            raise NotFoundError(f"Execution {execution} does not belong to case {case_id}")
+        summary.scope = "execution"
+        summary.scoped_job_id = str(execution)
+        summary.latest_job_id = str(execution)
+        summary.latest_state = str(job.state)
+        summary.latest_started_at = job.started_at
+        summary.latest_finished_at = job.finished_at
+        summary.observations = observed.observation_count if observed else 0
+        recorded = bool((job.result or {}).get(LEDGER_FLAG))
+        summary.ledger_recorded = bool(observed and observed.recorded)
+        if summary.ledger_recorded:
+            summary.ledger_state = "recorded"
+        elif recorded:
+            summary.ledger_state = "empty"
+        elif job.state in {
+            JobState.FAILED,
+            JobState.CANCELLED,
+            JobState.QUEUED,
+            JobState.RUNNING,
+        }:
+            # An execution that never finished has no ledger for a reason that is
+            # about the execution, not about the ledger's age. Saying "legacy"
+            # here would be a different, and wrong, explanation.
+            summary.ledger_state = "incomplete"
+        else:
+            summary.ledger_state = "legacy"
+        summary.ledger_note = LEDGER_NOTES[summary.ledger_state] or None
+        stored_anchors = (job.result or {}).get("anchors")
+        summary.anchors = stored_anchors if isinstance(stored_anchors, dict) else {}
+        collectors = {run.collector for run in runs}
+        summary.collectors_attempted = len(collectors)
+        summary.successful = sum(
+            1 for run in runs if run.status in {RunStatus.SUCCESS, RunStatus.PARTIAL}
+        )
+        summary.skipped = sum(1 for run in runs if run.status is RunStatus.SKIPPED)
+        summary.failed = sum(
+            1 for run in runs if run.status in {RunStatus.FAILED, RunStatus.TIMEOUT}
+        )
+        # In this mode the number is exact, because the ledger names the findings.
+        summary.findings = len(findings)
+        return summary
+
     if not runs:
         return summary
 
@@ -1146,14 +1496,18 @@ def _coverage_items(
     case_id: uuid.UUID,
     runs: list[CollectorRun],
     findings: list[Finding],
+    *,
+    execution: uuid.UUID | None = None,
+    images: list[Any] | None = None,
 ) -> list[CoverageItem]:
     """What each source family can honestly be said to have contributed.
 
-    Read from the *latest* execution's runs. A collector that succeeded three
-    reruns ago and was skipped today is skipped today, and a report describing
-    the current investigation must say so.
+    Read from the *latest* execution's runs — or, for an execution report, from
+    that execution's own runs. A collector that succeeded three reruns ago and was
+    skipped today is skipped today, and a report describing one execution must
+    describe the sources *that* execution used.
     """
-    current = _latest_runs(session, case_id, runs)
+    current = runs if execution is not None else _latest_runs(session, case_id, runs)
     per_collector: dict[str, int] = {}
     for finding in findings:
         per_collector[finding.collector] = per_collector.get(finding.collector, 0) + 1
@@ -1161,6 +1515,12 @@ def _coverage_items(
     items: list[CoverageItem] = []
     by_collector: dict[str, list[CollectorRun]] = {}
     for run in current:
+        # The search stage has a run row so that no ingested result sits outside
+        # execution accounting, but it already has a richer coverage item of its
+        # own ("Public web search", with its query and provider counts). Listing
+        # it here as well would describe one channel twice.
+        if run.collector == SEARCH_COLLECTOR:
+            continue
         by_collector.setdefault(run.collector, []).append(run)
 
     for collector, collector_runs in sorted(by_collector.items()):
@@ -1191,13 +1551,17 @@ def _coverage_items(
         )
 
     searched = {item.source for item in items}
-    recorded = _recorded_ingest(session, case_id)
-    ingest = _ingest_coverage(session, case_id, recorded)
+    recorded = _recorded_ingest(session, case_id, execution=execution)
+    ingest = _ingest_coverage(session, case_id, recorded, execution=execution)
     if ingest is not None:
         items.append(ingest)
     items.append(
         image_search_coverage(
-            images=len(_image_items(session, case_id)),
+            # The execution's own images when one is scoped. Counting the case's
+            # would let a later run's image flip an earlier execution's image
+            # channel from "not searched" to "found", which is the silent
+            # inclusion this mode exists to prevent.
+            images=len(images if images is not None else _image_items(session, case_id)),
             # What actually ran, not what was configured.
             image_queries_run=int((recorded or {}).get("image_queries_run") or 0),
         )
@@ -1206,17 +1570,140 @@ def _coverage_items(
     return items
 
 
-def _recorded_ingest(session: Session, case_id: uuid.UUID) -> dict[str, Any] | None:
-    """What the latest execution recorded about its search stage, if anything."""
-    latest = session.scalar(
-        select(Job).where(Job.case_id == case_id).order_by(Job.created_at.desc()).limit(1)
+def _source_agreements(entities: list[Any]) -> list[SourceAgreementItem]:
+    """Identifier agreements recorded on candidates, of both kinds.
+
+    Read off the entities rather than recomputed, so the report shows the ruling
+    the corroboration pass actually applied — including in an execution report,
+    where the entity is a snapshot of how that execution left it.
+    """
+    from app.correlation.lineage import STATUS_EFFECT, STATUS_LABELS, Independence
+
+    items: list[SourceAgreementItem] = []
+    seen: set[tuple[str, str, str]] = set()
+    for entity in entities:
+        attributes = entity.attributes or {}
+        name = attributes.get("candidate_name") or entity.display_name
+        for entry in attributes.get("shared_identifiers") or []:
+            if not isinstance(entry, dict):
+                continue
+            identifier = str(entry.get("identifier") or "")
+            value = str(entry.get("value") or "")
+            independence = str(entry.get("independence") or "UNKNOWN")
+            key = (identifier, value, independence)
+            if not identifier or key in seen:
+                continue
+            seen.add(key)
+            items.append(
+                SourceAgreementItem(
+                    identifier=identifier,
+                    value=value,
+                    sources=[str(item) for item in (entry.get("sources") or [])],
+                    independence=independence,
+                    label=str(entry.get("label") or ""),
+                    reason=str(entry.get("reason") or ""),
+                    scoring_effect=STATUS_EFFECT.get(
+                        (
+                            Independence(independence)
+                            if independence in Independence.__members__
+                            else Independence.UNKNOWN
+                        ),
+                        "",
+                    ),
+                    candidate_name=str(name) if name else None,
+                )
+            )
+        sources = [str(item) for item in (attributes.get("corroborating_sources") or [])]
+        for reason in attributes.get("corroboration_reasons") or []:
+            key = ("corroboration", str(reason), "INDEPENDENT")
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(
+                SourceAgreementItem(
+                    identifier="",
+                    value="",
+                    sources=sources,
+                    independence=str(Independence.INDEPENDENT),
+                    label=STATUS_LABELS[Independence.INDEPENDENT],
+                    reason=str(reason),
+                    scoring_effect=STATUS_EFFECT[Independence.INDEPENDENT],
+                    candidate_name=str(name) if name else None,
+                )
+            )
+    # Corroborations first: the reader should meet the evidence before the leads.
+    return sorted(items, key=lambda item: (not item.corroborates, item.identifier, item.value))
+
+
+def _citizenship_claims(findings: list[Finding]) -> list[CitizenshipClaimItem]:
+    """Citizenships sources stated, read off the findings that carry them.
+
+    Previously these reached the report only inside a finding's raw JSON, which
+    is collected-and-invisible: a worse outcome than either showing the claim
+    with its attribution or not collecting it. Shown, now, with the source named
+    and the caveat attached — and still wired to nothing that scores.
+    """
+    claims: list[CitizenshipClaimItem] = []
+    seen: set[tuple[str, str]] = set()
+    for finding in findings:
+        data = finding.data or {}
+        values = data.get("citizenship_claims")
+        if not isinstance(values, list):
+            continue
+        source = str(data.get("source") or finding.collector)
+        for value in values:
+            country = str(value).strip()
+            key = (country.lower(), source)
+            if not country or key in seen:
+                continue
+            seen.add(key)
+            claims.append(
+                CitizenshipClaimItem(
+                    country=country,
+                    source=source,
+                    source_label=str(data.get("source_label") or source),
+                    source_url=str(data.get("url") or finding.source_url or "") or None,
+                    candidate_name=str(data.get("candidate_name") or "") or None,
+                    # The source's own interpretation sentence when it supplied
+                    # one, and the shared caveat in every case.
+                    interpretation=" ".join(
+                        part
+                        for part in (
+                            str(data.get("citizenship_interpretation") or "").strip(),
+                            CITIZENSHIP_CAVEAT,
+                        )
+                        if part
+                    ),
+                )
+            )
+    return sorted(claims, key=lambda item: (item.country.lower(), item.source))
+
+
+def _recorded_ingest(
+    session: Session, case_id: uuid.UUID, *, execution: uuid.UUID | None = None
+) -> dict[str, Any] | None:
+    """What one execution recorded about its search stage, if anything.
+
+    The latest execution by default; the named one for an execution report, so a
+    historical report cannot inherit a later run's search coverage.
+    """
+    job = (
+        session.get(Job, execution)
+        if execution is not None
+        else session.scalar(
+            select(Job).where(Job.case_id == case_id).order_by(Job.created_at.desc()).limit(1)
+        )
     )
-    recorded = ((latest.result if latest else None) or {}).get("search_ingest")
+    recorded = ((job.result if job else None) or {}).get("search_ingest")
     return recorded if isinstance(recorded, dict) else None
 
 
 def _ingest_coverage(
-    session: Session, case_id: uuid.UUID, recorded: dict[str, Any] | None = None
+    session: Session,
+    case_id: uuid.UUID,
+    recorded: dict[str, Any] | None = None,
+    *,
+    execution: uuid.UUID | None = None,
 ) -> CoverageItem | None:
     """The public-web channel, from what the last ingestion run recorded.
 
@@ -1226,7 +1713,7 @@ def _ingest_coverage(
     from app.services.providers.search import get_search_provider
 
     if recorded is None:
-        recorded = _recorded_ingest(session, case_id)
+        recorded = _recorded_ingest(session, case_id, execution=execution)
     if isinstance(recorded, dict):
         return web_search_coverage(
             provider=str(recorded.get("provider", "unknown")),

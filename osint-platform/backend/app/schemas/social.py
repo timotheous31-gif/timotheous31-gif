@@ -59,7 +59,10 @@ class SocialProfileRead(BaseModel):
     #: when one did. A reader weighs "you supplied this handle" differently
     #: from "a name search returned it".
     discovery_method: str | None = None
+    #: Every route, strongest first. ``discovery_method`` is this list's head.
+    discovery_methods: list[str] = []
     discovered_from: str | None = None
+    discovered_from_all: list[str] = []
     #: What the account states about itself on its own profile page. Explicit
     #: statements only, each carrying the line it was read from.
     profile_facts: list[dict] = []

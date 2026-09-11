@@ -105,7 +105,12 @@ class IngestReport:
     duplicates: int = 0
     rejected_urls: int = 0
     failures: list[dict[str, str]] = field(default_factory=list)
+    #: Every finding this run saw, stored or already present. What promotion works
+    #: from, because a page re-seen with new anchors has to be rescored.
     findings: list[uuid.UUID] = field(default_factory=list)
+    #: Only the ones this run *created*. Separate because "observed" and "first
+    #: observed" are different facts, and the execution ledger records both.
+    new_findings: list[uuid.UUID] = field(default_factory=list)
 
     @property
     def searched(self) -> bool:
@@ -124,6 +129,7 @@ class IngestReport:
             "rejected_urls": self.rejected_urls,
             "failures": list(self.failures),
             "findings": [str(item) for item in self.findings],
+            "new_findings": [str(item) for item in self.new_findings],
         }
 
 
@@ -234,6 +240,7 @@ async def search_target(
                 result=enriched,
                 seen=seen,
                 moment=moment,
+                report=report,
             )
             if outcome == "stored":
                 report.results_stored += 1
@@ -266,6 +273,7 @@ def _ingest_one(
     result: SearchResult,
     seen: dict[str, Finding],
     moment: datetime,
+    report: IngestReport,
 ) -> str:
     """Store one result. Returns ``stored`` | ``duplicate`` | ``rejected``."""
     url = public_url(result.url)
@@ -399,6 +407,7 @@ def _ingest_one(
         finding=finding,
     )
     seen[key] = finding
+    report.new_findings.append(finding.id)
     return "stored"
 
 

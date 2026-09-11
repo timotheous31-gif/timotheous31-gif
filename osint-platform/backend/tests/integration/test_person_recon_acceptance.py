@@ -273,29 +273,45 @@ def test_the_whole_person_workflow_runs_at_zero_cost(db_session, person_case, ze
 
 
 @respx.mock
-def test_independent_sources_agreeing_on_an_orcid_is_recorded_as_corroboration(
+def test_orcid_and_openalex_agreeing_on_an_orcid_is_a_shared_identifier_not_corroboration(
     db_session, person_case, zero_cost
 ):
-    """ORCID and OpenAlex are independently operated, so agreement counts."""
+    """OpenAlex takes ORCID iDs *from* ORCID, so their agreement is one value.
+
+    This test asserted the opposite until the lineage model existed, and the
+    assertion was wrong: two different hostnames are not two parties. The
+    agreement is still recorded — an investigator wants to see it — but it is
+    recorded as a shared identifier, with the reason it does not corroborate, and
+    it moves no score.
+    """
     _mock_free_sources()
     result = InvestigationEngine().run(db_session, person_case.id)
 
-    assert result.corroborations >= 1
-    corroborated = [
+    assert result.corroborations == 0, "dependent lineage must not corroborate"
+    candidates = [
         entity
         for entity in db_session.scalars(
             select(Entity).where(
                 Entity.case_id == person_case.id, Entity.type == EntityType.PERSONA
             )
         )
-        if (entity.attributes or {}).get("corroborating_sources")
+        if str(entity.canonical_value).startswith("person-candidate:")
     ]
-    assert corroborated
-    sources = set(corroborated[0].attributes["corroborating_sources"])
-    assert {"orcid", "openalex"} <= sources
-    assert any(
-        "independently publish" in reason
-        for reason in corroborated[0].attributes["corroboration_reasons"]
-    )
-    # Even corroborated, it stays below the merge threshold.
-    assert all(entity.confidence < AUTO_MERGE_THRESHOLD for entity in corroborated)
+    assert candidates
+
+    shared = [
+        entry
+        for entity in candidates
+        for entry in ((entity.attributes or {}).get("shared_identifiers") or [])
+    ]
+    assert shared, "the agreement must still be visible to the investigator"
+    agreement = next(entry for entry in shared if entry["identifier"] == "orcid")
+    assert set(agreement["sources"]) == {"openalex", "orcid"}
+    assert agreement["independence"] == "DEPENDENT"
+    assert "takes ORCID values from orcid" in agreement["reason"]
+
+    # And nothing was strengthened: no entity carries a corroboration record.
+    for entity in candidates:
+        assert not (entity.attributes or {}).get("corroborating_sources")
+        assert not (entity.attributes or {}).get("corroboration_reasons")
+        assert entity.confidence < AUTO_MERGE_THRESHOLD

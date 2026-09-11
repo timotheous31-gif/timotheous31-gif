@@ -119,7 +119,11 @@ def test_only_person_applicable_collectors_are_scheduled(db_session, person_case
     runs = db_session.scalars(
         select(CollectorRun).where(CollectorRun.case_id == person_case.id)
     ).all()
-    assert {run.collector for run in runs} == {"stub_person_search"}
+    # `provider_search` is the search stage's own run row. It exists so that no
+    # automatically ingested result can sit outside execution accounting, and it
+    # is not a planned collector: it appears for every PERSON target whatever the
+    # registry holds.
+    assert {run.collector for run in runs} == {"stub_person_search", "provider_search"}
     assert result.collectors_failed == 0
 
 
@@ -165,11 +169,22 @@ def test_an_unconfigured_collector_is_recorded_as_skipped_with_its_reason(
 
     result = InvestigationEngine().run(db_session, person_case.id)
 
-    runs = db_session.scalars(
-        select(CollectorRun).where(CollectorRun.case_id == person_case.id)
-    ).all()
-    assert len(runs) == 1
-    assert runs[0].status is RunStatus.SKIPPED
-    assert "SEARCH_PROVIDER" in (runs[0].error_message or "")
+    runs = {
+        run.collector: run
+        for run in db_session.scalars(
+            select(CollectorRun).where(CollectorRun.case_id == person_case.id)
+        )
+    }
+    collector_run = runs["stub_unconfigured_search"]
+    assert collector_run.status is RunStatus.SKIPPED
+    assert "SEARCH_PROVIDER" in (collector_run.error_message or "")
     assert result.collectors_skipped == 1
     assert result.collectors_failed == 0
+
+    # And the search stage records itself as skipped for the same kind of reason:
+    # nothing broke, a channel is switched off. An unconfigured provider that left
+    # no trace is how a report came to read as "nothing was found".
+    search_run = runs["provider_search"]
+    assert search_run.status is RunStatus.SKIPPED
+    assert "provider is configured" in (search_run.error_message or "")
+    assert search_run.stats["queries_run"] == 0

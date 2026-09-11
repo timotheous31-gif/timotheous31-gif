@@ -282,15 +282,18 @@ def test_a_citizenship_claim_never_reaches_the_anchor_comparison():
 # ---------------------------------------------------- what a match may rest on
 
 
-def test_two_institutions_sharing_only_generic_words_do_not_corroborate():
-    """The strongest non-identifier signal may not fire on "university".
+def test_an_affiliation_match_needs_the_whole_organisation_name():
+    """The strongest non-identifier signal may not fire on a shared word.
 
     ``context_affiliation_match`` scores 0.50 with a floor of 0.50 — it takes a
-    name-only candidate from 0.15 to 0.575 on its own. It used to fire on any one
-    shared word over two letters, so "University of Karachi" corroborated
-    "University of Sindh" and "Ministry of Education" corroborated "Ministry of
-    Health". In a sector where nearly every employer's name is assembled from
-    those words, that is a machine for promoting strangers.
+    name-only candidate from 0.1500 to 0.5750 on its own. It fired first on any
+    shared word over two characters ("University of Karachi" corroborating
+    "University of Sindh"), then on any shared *distinctive* word, which still
+    let "Aga Khan University" corroborate "Aga Khan Foundation" and "University
+    of Sindh" corroborate "Sindh Agriculture University". Those are different
+    organisations. A rule this strong matches a whole name or nothing.
+
+    The rows below are the specification. A behaviour change has to change a row.
     """
     from app.collectors.person import PersonCandidate, PersonContext, anchor_matches
 
@@ -303,24 +306,57 @@ def test_two_institutions_sharing_only_generic_words_do_not_corroborate():
         ]
         return "affiliation" in kinds
 
-    for supplied, observed in (
+    must_not_match = (
+        # Generic collisions.
         ("University of Karachi", "University of Sindh"),
         ("Government College University", "Government of Sindh"),
         ("Ministry of Education", "Ministry of Health"),
         ("National Institute of Technology", "National Institute of Health"),
         ("Higher Education Commission", "Education Department"),
-    ):
+        # Specific collisions — the ones a distinctive-word rule still allowed.
+        ("Aga Khan University", "Aga Khan Foundation"),
+        ("University of Sindh", "Sindh Agriculture University"),
+        ("Shah Abdul Latif University", "Shah Abdul Latif Medical Institute"),
+        # Related but separate bodies, and a campus that is named.
+        ("Aga Khan University", "The Aga Khan University Hospital"),
+        ("Shah Abdul Latif University", "Shah Abdul Latif University Khairpur"),
+        # An abbreviation is not resolved. Documented, deliberate false negative.
+        ("MIT", "Massachusetts Institute of Technology"),
+    )
+    for supplied, observed in must_not_match:
         assert not matched(supplied, observed), f"{supplied!r} must not corroborate {observed!r}"
 
-    # And the matches that must survive: a shared *distinctive* word, or the
-    # same name written with more or less of its address.
-    for supplied, observed in (
+    must_match = (
         ("University of Sindh", "University of Sindh"),
+        # An address, a campus or a parenthetical qualifier is dropped.
         ("University of Sindh", "University of Sindh, Jamshoro"),
-        ("Shah Abdul Latif University", "Shah Abdul Latif University Khairpur"),
-        ("Aga Khan University", "The Aga Khan University Hospital"),
-    ):
+        ("Ministry of Education", "Ministry of Education (Islamabad)"),
+        ("Higher Education Commission", "Higher Education Commission - Sindh"),
+        # Word order and "the" and "of" carry no identity.
+        ("University of Sindh", "Sindh University"),
+        ("Example Research Institute", "Institute of Example Research"),
+        ("Aga Khan University", "The Aga Khan University"),
+    )
+    for supplied, observed in must_match:
         assert matched(supplied, observed), f"{supplied!r} must corroborate {observed!r}"
+
+
+def test_an_explicit_organisation_identifier_matches_where_a_name_cannot():
+    """A registered identifier is an agreement about the body, not its spelling."""
+    from app.collectors.person import PersonCandidate, PersonContext, anchor_matches
+
+    candidate = PersonCandidate(
+        url="https://example.org/person",
+        name="Example Person",
+        affiliations=["Massachusetts Institute of Technology"],
+        extra={"organization_ids": {"ror": "https://ror.org/042nb2s40"}},
+    )
+    context = PersonContext(
+        organizations=("MIT",),
+        raw={"organization_ids": {"ror": "https://ror.org/042nb2s40"}},
+    )
+    kinds = [kind for kind, _ in anchor_matches(candidate, context)]
+    assert "affiliation" in kinds
 
 
 def test_a_profession_must_match_as_a_phrase_not_one_shared_word():

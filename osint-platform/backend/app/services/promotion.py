@@ -26,6 +26,7 @@ Two rules govern every function below:
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -143,6 +144,20 @@ def _first(data: dict[str, Any], keys: tuple[str, ...]) -> str:
     return ""
 
 
+@dataclass(slots=True)
+class PromotionTrace:
+    """Rows one promotion pass created or refreshed.
+
+    Collected so the execution that ran the promotion can record having observed
+    them. Sets, not counts: an execution report needs to name the objects, and a
+    profile refreshed twice in one pass is still one object.
+    """
+
+    profiles: set[uuid.UUID] = field(default_factory=set)
+    images: set[uuid.UUID] = field(default_factory=set)
+    contacts: set[uuid.UUID] = field(default_factory=set)
+
+
 def record_contact(
     session: Session,
     *,
@@ -228,14 +243,20 @@ def promote_finding(
     finding: Finding,
     target: Target | None,
     candidate_entity_id: uuid.UUID | None = None,
+    touched: PromotionTrace | None = None,
 ) -> dict[str, int]:
     """Promote one persisted PERSON_CANDIDATE finding into structured evidence.
 
     Returns counters so a run can report what it surfaced. Every promotion is
     idempotent: the underlying services deduplicate, so re-running an
     investigation strengthens the record rather than multiplying it.
+
+    ``touched`` collects the rows this promotion created or refreshed, so the
+    execution that ran it can record having observed them. Optional, because the
+    API and the tests promote outside any execution.
     """
     counts = {"profiles": 0, "images": 0, "contacts": 0}
+    trace = touched if touched is not None else PromotionTrace()
     # A provider search result that is profile-shaped is a person candidate by
     # another route, and an indexed image is image evidence. Promoting the same
     # kinds through the same function is the point: a result found automatically
@@ -283,13 +304,14 @@ def promote_finding(
     )
     if profile is not None:
         counts["profiles"] += 1
+        trace.profiles.add(profile.id)
 
     # 2. A profile picture the source published. Recorded by reference: the
     #    collector did not download these bytes, and claiming a hash for bytes
     #    nobody read would be a fabricated guarantee. A later fetch upgrades it.
     image_url = _first(data, IMAGE_KEYS)
     if image_url:
-        record_image(
+        recorded_image = record_image(
             session,
             case_id=case_id,
             image_url=image_url,
@@ -318,11 +340,12 @@ def promote_finding(
             retrieved_at=moment,
         )
         counts["images"] += 1
+        trace.images.add(recorded_image.id)
 
     # 3. Contacts the source *published*. Nothing is derived.
     email = _first(data, EMAIL_KEYS)
     if email and "@" in email:
-        record_contact(
+        recorded_email = record_contact(
             session,
             case_id=case_id,
             contact_type=ContactType.EMAIL,
@@ -345,6 +368,8 @@ def promote_finding(
             retrieved_at=moment,
         )
         counts["contacts"] += 1
+        if recorded_email is not None:
+            trace.contacts.add(recorded_email.id)
 
     website = _first(data, WEBSITE_KEYS)
     if website and website.startswith(("http://", "https://")):
@@ -352,7 +377,7 @@ def promote_finding(
         # A personal site is a website; a link to a social account is a profile
         # and belongs in the profile list, not the contact list.
         if classified is None or not classified.is_social:
-            record_contact(
+            recorded_site = record_contact(
                 session,
                 case_id=case_id,
                 contact_type=ContactType.WEBSITE,
@@ -371,6 +396,8 @@ def promote_finding(
                 retrieved_at=moment,
             )
             counts["contacts"] += 1
+            if recorded_site is not None:
+                trace.contacts.add(recorded_site.id)
         else:
             promoted = record_profile(
                 session,
@@ -387,6 +414,7 @@ def promote_finding(
             )
             if promoted is not None:
                 counts["profiles"] += 1
+                trace.profiles.add(promoted.id)
 
     # 4. Links the record's own owner published elsewhere on it. Same rule as
     #    the README below: provenance, never proof.
@@ -419,6 +447,7 @@ def promote_finding(
         candidate_entity_id=candidate_entity_id,
         moment=moment,
         counts=counts,
+        trace=trace,
     )
     return counts
 
@@ -565,6 +594,7 @@ def _promote_readme(
     candidate_entity_id: uuid.UUID | None,
     moment: datetime,
     counts: dict[str, int],
+    trace: PromotionTrace,
 ) -> None:
     """Promote what an account published on its own profile page.
 
@@ -612,6 +642,7 @@ def _promote_readme(
         )
         if recorded is not None:
             counts["contacts"] += 1
+            trace.contacts.add(recorded.id)
 
     for link in data.get("readme_links") or []:
         if not isinstance(link, str) or not link.startswith(("http://", "https://")):
@@ -633,6 +664,7 @@ def _promote_readme(
             )
             if promoted is not None:
                 counts["profiles"] += 1
+                trace.profiles.add(promoted.id)
             continue
         recorded = record_contact(
             session,
@@ -654,11 +686,12 @@ def _promote_readme(
         )
         if recorded is not None:
             counts["contacts"] += 1
+            trace.contacts.add(recorded.id)
 
     for image_url in data.get("readme_images") or []:
         if not isinstance(image_url, str) or not image_url.startswith(("http://", "https://")):
             continue
-        record_image(
+        readme_image = record_image(
             session,
             case_id=case_id,
             image_url=image_url,
@@ -688,6 +721,7 @@ def _promote_readme(
             retrieved_at=moment,
         )
         counts["images"] += 1
+        trace.images.add(readme_image.id)
 
 
 def contacts_for_case(

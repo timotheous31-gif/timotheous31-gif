@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Query, Response
 
 from app.api.deps import CaseId, DbSession
@@ -35,12 +37,25 @@ def get_report(
             "opened. The image card always carries the URL and full provenance."
         ),
     ),
+    execution: uuid.UUID | None = Query(
+        default=None,
+        description=(
+            "A job id. Renders that execution's report — what it observed, from its own "
+            "immutable observation records — instead of the current state of the case. A "
+            "later execution cannot change it: evidence and scores discovered afterwards "
+            "are absent by construction. Omit for the current case report."
+        ),
+    ),
 ) -> Response:
-    """Render the case as a report.
+    """Render the case as a report, or one execution of it.
 
     Every claim in the output links to the evidence that supports it. The
     export privacy policy defaults to withholding anything above PERSONAL, so a
     report can be circulated more widely than the case database itself.
+
+    With ``execution`` set the report is forensically scoped: it renders the
+    observation snapshots that execution recorded, which makes a historical report
+    stable across later reruns.
     """
     from app.reporting import render_report
 
@@ -51,5 +66,6 @@ def get_report(
         max_classification=max_classification,
         min_confidence=min_confidence,
         embed_images=embed_images,
+        execution=execution,
     )
     return Response(content=body, media_type=MEDIA_TYPES[report_format])

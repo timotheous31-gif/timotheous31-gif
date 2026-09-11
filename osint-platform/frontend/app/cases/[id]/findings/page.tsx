@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/primitives";
 import { useAsync } from "@/hooks/useApi";
 import { api } from "@/lib/api";
-import { confidenceBand, formatConfidence, formatDate, humanise } from "@/lib/format";
+import { bandLabel, confidenceBand, formatConfidence, formatDate, humanise } from "@/lib/format";
 import type { Classification, Finding } from "@/types/api";
 
 const CLASSIFICATIONS: Classification[] = ["PUBLIC", "PERSONAL", "SENSITIVE", "RESTRICTED"];
@@ -112,7 +112,7 @@ function FindingCard({ finding }: { finding: Finding }) {
       <div className="flex flex-wrap items-start justify-between gap-2">
         <h3 className="text-sm font-medium">{finding.title}</h3>
         <div className="flex flex-wrap items-center gap-1.5">
-          <Badge tone={band} title={`Confidence ${formatConfidence(finding.confidence)}`}>
+          <Badge tone={band} title={`${bandLabel(band)} — correlation score ${formatConfidence(finding.confidence)}, not a probability`}>
             {formatConfidence(finding.confidence)}
           </Badge>
           <Badge tone={finding.classification}>{finding.classification}</Badge>
