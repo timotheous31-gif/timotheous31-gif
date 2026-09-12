@@ -845,8 +845,20 @@ def _handle_person_candidate(finding: Any, result: ExtractionResult) -> None:
                 "url_kind": data.get("url_kind"),
                 "handle": data.get("handle"),
                 "identifiers": data.get("identifiers") or {},
+                # What the source says about where its identifiers came from,
+                # per identifier kind. Carried onto the node because the
+                # corroboration pass rules on independence from here, and a
+                # claim's own provenance outranks any general assumption about
+                # the source that served it.
+                "claim_lineage": data.get("claim_lineage") or {},
                 "affiliations": data.get("affiliations") or [],
                 "locations": data.get("locations") or [],
+                # A citizenship a source *states*, carried so the UI can show it
+                # attributed instead of leaving it buried in raw JSON. It is not
+                # a location and it reaches no comparison: the anchor engine
+                # reads `locations`, and this is deliberately not in it.
+                "citizenship_claims": data.get("citizenship_claims") or [],
+                "citizenship_interpretation": data.get("citizenship_interpretation"),
                 # Both sides of the judgement travel with the node: an
                 # investigator ruling a candidate out needs the reasons against
                 # it as much as the reasons for it.

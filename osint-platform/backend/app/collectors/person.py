@@ -40,6 +40,14 @@ from app.core.errors import CollectorUnavailable
 from app.correlation.anchors import ANCHOR_REASONS, ANCHOR_RULES
 from app.correlation.confidence import ConfidenceSignal, default_engine
 from app.models.enums import Classification, FindingKind, TargetType
+from app.services.name_variants import (
+    EXACT,
+    PARTIAL,
+    TOKEN_REDUCED,
+    VARIANT_LABELS,
+    classify_observed_name,
+    confidence_rule_for,
+)
 from app.services.normalization import NormalizedTarget
 
 #: Candidates kept per source. A name search is a starting point for a human,
@@ -54,6 +62,78 @@ def _fold(text: str) -> str:
 
 def _tokens(text: str) -> set[str]:
     return {token for token in _fold(text).split() if len(token) > 2}
+
+
+#: Words that carry no identity of their own inside an organisation name.
+#: Dropped before comparison so "Institute of Example Research" and "Example
+#: Research Institute" are recognised as one name written two ways.
+ORG_STRUCTURE_WORDS: frozenset[str] = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "at",
+        "de",
+        "del",
+        "des",
+        "du",
+        "el",
+        "for",
+        "in",
+        "la",
+        "of",
+        "the",
+    }
+)
+
+#: Characters that introduce an address, a campus or a parenthetical qualifier.
+#: Everything from the first one is dropped: "University of Sindh, Jamshoro" and
+#: "University of Sindh" are the same employer written with and without where it
+#: is.
+ORG_QUALIFIER_MARKS: tuple[str, ...] = (",", "(", " - ", " — ", ";", "|")
+
+#: Identifier kinds that name an organisation outright. An agreement on one of
+#: these is an agreement about the same registered body, not about its name.
+ORG_IDENTIFIER_KEYS: tuple[str, ...] = ("ror", "grid", "wikidata", "isni", "lei")
+
+
+def normalize_organisation(name: str) -> frozenset[str]:
+    """The identity-bearing words of an organisation name, order-insensitive.
+
+    Deliberately strict, because the rule built on it is the strongest signal in
+    the set short of an exact identifier. Two names match only when this returns
+    the same set for both — never on a shared word, however distinctive.
+
+    An earlier version matched on any single shared word over two characters, so
+    "University of Karachi" corroborated "University of Sindh" on the word
+    "university". Tightening that to "one shared *distinctive* word" fixed the
+    generic collisions and left the specific ones: "Aga Khan University" still
+    corroborated "Aga Khan Foundation", and "University of Sindh" still
+    corroborated "Sindh Agriculture University". Those are different
+    organisations, and a rule worth 0.50 with a floor of 0.50 may not guess.
+    """
+    text = (name or "").strip()
+    if not text:
+        return frozenset()
+    lowered = text.lower()
+    for mark in ORG_QUALIFIER_MARKS:
+        index = lowered.find(mark)
+        if index > 0:
+            lowered = lowered[:index]
+    tokens = _fold(lowered).split()
+    return frozenset(token for token in tokens if token and token not in ORG_STRUCTURE_WORDS)
+
+
+def organisation_ids(values: Any) -> frozenset[str]:
+    """Explicit organisation identifiers, when a source publishes any."""
+    if not isinstance(values, dict):
+        return frozenset()
+    found = set()
+    for key in ORG_IDENTIFIER_KEYS:
+        value = values.get(key)
+        if isinstance(value, str) and value.strip():
+            found.add(f"{key}:{value.strip().lower()}")
+    return frozenset(found)
 
 
 # ------------------------------------------------------------ normalisation
@@ -260,18 +340,30 @@ class Assessment:
     #: Anchor kinds the source contradicts. A conflict never subtracts score —
     #: it is surfaced so a human can rule the candidate out themselves.
     conflicts: list[str] = field(default_factory=list)
+    #: How the source's spelling of the name relates to the canonical one, and
+    #: why. A discovery signal; never an identity claim.
+    name_variant_type: str = EXACT
+    name_variant_reason: str = ""
 
 
 def assess(candidate: PersonCandidate, subject: str, context: PersonContext) -> Assessment:
     """Score one candidate against the subject and the supplied anchors.
 
-    The name always contributes ``same_person_name``, capped low enough that it
-    can never on its own suggest a match. Everything above that comes from
-    anchors the investigator supplied independently of the search, and each
-    anchor kind fires exactly one named rule with its own ceiling — so no
-    quantity of weak agreements can substitute for one strong one.
+    The name always contributes a name rule, capped low enough that it can never
+    on its own suggest a match — and *which* rule depends on how the source's
+    spelling relates to the canonical name. A record published under a shorter
+    form of the name fires a weaker rule than one published under the full
+    spelling, because a shorter name is shared by more people. Everything above
+    that comes from anchors the investigator supplied independently of the
+    search, and each anchor kind fires exactly one named rule with its own
+    ceiling — so no quantity of weak agreements can substitute for one strong one.
     """
-    result = Assessment(signals=[default_engine.signal("same_person_name")])
+    variant_type, variant_reason = classify_observed_name(candidate.name, subject)
+    result = Assessment(
+        signals=[default_engine.signal(confidence_rule_for(variant_type))],
+        name_variant_type=variant_type,
+        name_variant_reason=variant_reason,
+    )
     _assess_name(candidate, subject, result)
 
     for kind, detail in _anchor_matches(candidate, context):
@@ -298,17 +390,27 @@ def assess(candidate: PersonCandidate, subject: str, context: PersonContext) -> 
 
 
 def _assess_name(candidate: PersonCandidate, subject: str, result: Assessment) -> None:
-    if _fold(candidate.name) == _fold(subject):
+    """Explain the name relationship the variant engine already classified."""
+    if result.name_variant_type == EXACT:
         result.match_reasons.append(
             f"The source spells the name exactly as searched: {candidate.name!r}"
         )
-    else:
-        result.match_reasons.append(
-            f"The source names {candidate.name!r}, a variant of the searched name"
-        )
+        return
+
+    result.match_reasons.append(
+        f"{VARIANT_LABELS.get(result.name_variant_type, 'A name variant')}: "
+        f"the source names {candidate.name!r}"
+    )
+    result.mismatch_reasons.append(
+        f"The spelling differs from the searched name ({subject!r}), "
+        f"which may mean a different person"
+    )
+    if result.name_variant_reason:
+        result.mismatch_reasons.append(result.name_variant_reason)
+    if result.name_variant_type in {TOKEN_REDUCED, PARTIAL}:
         result.mismatch_reasons.append(
-            f"The spelling differs from the searched name ({subject!r}), "
-            f"which may mean a different person"
+            "A shorter or partial name is shared by more people than the full one, so "
+            "this record needs independent corroboration before it means anything"
         )
 
 
@@ -517,42 +619,71 @@ def _match_handle(candidate: PersonCandidate, context: PersonContext) -> str | N
 def _match_affiliation(
     candidate: PersonCandidate, context: PersonContext
 ) -> tuple[str, str] | None:
-    """Match on shared significant words rather than exact strings.
+    """Match a whole organisation name, or an explicit organisation identifier.
 
-    "MIT" and "Massachusetts Institute of Technology" will not match, and that
-    is the safer failure: a missed corroboration leaves a candidate at name-only
-    confidence, whereas a false one would raise a stranger toward the subject.
+    Two names match when :func:`normalize_organisation` returns the same word set
+    for both — so an address or campus suffix, a different word order, and "the"
+    are tolerated, and nothing else is. "MIT" and "Massachusetts Institute of
+    Technology" do not match, and neither do "Aga Khan University" and "Aga Khan
+    Foundation". Both are missed corroborations, which leave a candidate at
+    name-only confidence; the alternative is a false one, which moves a stranger
+    toward the subject and does it invisibly.
     """
+    supplied_org_ids = organisation_ids(context.raw.get("organization_ids"))
+    observed_org_ids = organisation_ids(candidate.extra.get("organization_ids"))
+    shared_ids = supplied_org_ids & observed_org_ids
+    if shared_ids:
+        identifier = sorted(shared_ids)[0]
+        return identifier, identifier
+
     for supplied in context.affiliations:
-        supplied_tokens = _tokens(supplied)
+        supplied_tokens = normalize_organisation(supplied)
         if not supplied_tokens:
             continue
         for observed in candidate.affiliations:
-            if supplied_tokens & _tokens(observed):
+            if normalize_organisation(observed) == supplied_tokens:
                 return supplied, observed
     return None
 
 
 def _match_occupation(candidate: PersonCandidate, context: PersonContext) -> str | None:
+    """Match the supplied profession as a whole, not word by word.
+
+    A single shared word made "assistant professor" match "assistant manager".
+    Either the phrase appears in what the source publishes, or every word of it
+    does; one word in common is not a profession in common.
+    """
     if not context.occupation:
         return None
     wanted = _tokens(context.occupation)
     if not wanted:
         return None
+    phrase = _fold(context.occupation)
     haystack = [*candidate.extra.get("occupations", []), candidate.summary]
     for observed in haystack:
-        if isinstance(observed, str) and wanted & _tokens(observed):
+        if not isinstance(observed, str):
+            continue
+        folded = _fold(observed)
+        if phrase and phrase in folded:
+            return context.occupation
+        if wanted <= _tokens(observed):
             return context.occupation
     return None
 
 
 def _match_place(candidate: PersonCandidate, context: PersonContext) -> str | None:
+    """Match a place on whole words, not on substrings.
+
+    Substring containment made "Sindh" match "Sindhudurg" — two places 1,500km
+    apart. Coarse is fine here (the anchors are a city or a country) but wrong is
+    not, so the supplied place's words must all appear as words.
+    """
     for place in context.places:
-        folded = _fold(place)
-        if not folded:
+        wanted = {token for token in _fold(place).split() if token}
+        if not wanted:
             continue
         for observed in candidate.locations:
-            if folded in _fold(observed) or _fold(observed) in folded:
+            if wanted <= {token for token in _fold(observed).split() if token}:
                 return place
     return None
 
@@ -668,6 +799,12 @@ class PersonSourceCollector(BaseCollector):
                 "match_reasons": assessment.match_reasons,
                 "mismatch_reasons": assessment.mismatch_reasons,
                 "corroborated_by": assessment.corroborated_by,
+                # How this source's spelling relates to the canonical name, and
+                # why. Recorded, never applied: the target keeps the name the
+                # investigator supplied.
+                "name_variant_type": assessment.name_variant_type,
+                "name_variant_reason": assessment.name_variant_reason,
+                "canonical_target": subject_name,
                 **candidate.extra,
             },
             source_url=candidate.url,

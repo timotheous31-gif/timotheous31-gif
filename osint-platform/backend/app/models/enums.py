@@ -205,6 +205,10 @@ class FindingKind(StrEnum):
     #: A publicly indexed image and the page it appears on. Context evidence,
     #: never biometric identification.
     IMAGE_EVIDENCE = "IMAGE_EVIDENCE"
+    #: A public document — a PDF, a programme, a report — that names the subject.
+    #: Separate from SEARCH_RESULT because a document is citable in a way a web
+    #: page is not, and a report groups the two differently.
+    PUBLIC_DOCUMENT = "PUBLIC_DOCUMENT"
     EMAIL_DOMAIN = "EMAIL_DOMAIN"
     EXPOSURE_SUMMARY = "EXPOSURE_SUMMARY"
     POTENTIAL_SECRET_EXPOSURE = "POTENTIAL_SECRET_EXPOSURE"  # noqa: S105 - a category name
@@ -216,3 +220,36 @@ class ReportFormat(StrEnum):
     HTML = "html"
     MARKDOWN = "md"
     JSON = "json"
+
+
+class ObservationStage(StrEnum):
+    """Which part of an execution recorded an observation.
+
+    A report that can only say "this execution saw this finding" is weaker than
+    one that can say *how*: a collector retrieved it, a search provider returned
+    it, promotion derived it, correlation resolved it, or an investigator imported
+    it outside any execution.
+    """
+
+    COLLECTION = "COLLECTION"
+    SEARCH = "SEARCH"
+    PROMOTION = "PROMOTION"
+    CORRELATION = "CORRELATION"
+    IMPORT = "IMPORT"
+
+
+class ObservationSubject(StrEnum):
+    """What kind of object an observation is about.
+
+    Polymorphic like :class:`DecisionSubject`, and for the same reason: the
+    subject is one of several case-scoped tables, and a column per table would be
+    a second way to say the same thing.
+    """
+
+    FINDING = "FINDING"
+    EVIDENCE = "EVIDENCE"
+    ENTITY = "ENTITY"
+    RELATIONSHIP = "RELATIONSHIP"
+    SOCIAL_PROFILE = "SOCIAL_PROFILE"
+    PUBLIC_CONTACT = "PUBLIC_CONTACT"
+    IMAGE_EVIDENCE = "IMAGE_EVIDENCE"

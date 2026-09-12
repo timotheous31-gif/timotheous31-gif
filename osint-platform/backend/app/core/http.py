@@ -12,6 +12,7 @@ Centralising networking means the safety controls cannot be bypassed:
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -33,7 +34,30 @@ from app.core.ssrf import validate_url
 log = get_logger(__name__)
 
 _limiter = ProviderLimiter()
-_client: httpx.AsyncClient | None = None
+#: One client per event loop, because a client belongs to exactly one loop.
+#:
+#: ``httpx.AsyncClient`` binds its connection pool to the loop that created it,
+#: and ``AsyncClient.is_closed`` only tracks an explicit ``aclose()`` — not
+#: whether that loop is still alive. The engine runs each target under its own
+#: ``asyncio.run``, so a single global client handed the second run a keep-alive
+#: connection belonging to a loop that had already been closed, and the next
+#: request on it raised ``RuntimeError: Event loop is closed``. Intermittent by
+#: nature: it needed a connection the previous loop had actually kept alive,
+#: which is why it showed up on Crossref and not on every source.
+#:
+#: Keying by loop rather than rebuilding one global is deliberate. The API serves
+#: async endpoints on its own loop while ``POST /cases/{id}/run`` executes inline
+#: in a worker thread when no Celery worker is consuming the queue — the default
+#: zero-cost setup. With one global, those two loops take the client from each
+#: other on every request: no connection is ever pooled, every displaced pool
+#: leaks unclosed, and the engine's own teardown could ``aclose()`` a pool
+#: belonging to the API's loop. A dict means each loop keeps its own pool and
+#: closes only its own.
+_clients: dict[asyncio.AbstractEventLoop, httpx.AsyncClient] = {}
+#: Set when a caller injected a client (tests do, with respx). An injected client
+#: serves every loop, is never rebuilt, and is the caller's to close — closing it
+#: here would silently disconnect their mock transport.
+_injected: httpx.AsyncClient | None = None
 
 
 @dataclass(slots=True)
@@ -100,16 +124,46 @@ def register_provider(provider: str, limit: RateLimit) -> None:
     _limiter.register(provider, limit)
 
 
+def _drop_dead_clients() -> None:
+    """Forget clients whose loop has been closed.
+
+    Their pools cannot be closed from here — ``aclose()`` would schedule work on
+    a loop that is gone — so the reference is dropped and the transport left to
+    the garbage collector. Reaching this state means a caller skipped
+    :func:`close_owned_client`; it is the backstop, not the plan.
+    """
+    dead = [loop for loop in _clients if loop.is_closed()]
+    for loop in dead:
+        _clients.pop(loop, None)
+    if dead:
+        log.warning(
+            "http.client_loop_ended",
+            count=len(dead),
+            reason=(
+                "a client outlived its event loop and was discarded unclosed; "
+                "call close_owned_client() before the loop ends"
+            ),
+        )
+
+
 async def get_http_client() -> httpx.AsyncClient:
-    """Return the shared ``httpx`` client.
+    """Return the ``httpx`` client belonging to the running event loop.
 
     Redirects are disabled at the transport level: this module follows them
     manually so each hop can be re-validated by the SSRF guard.
+
+    An injected client (see :func:`set_http_client`) wins outright. Otherwise the
+    client is per-loop: a second loop gets its own pool rather than inheriting
+    one bound to a loop it does not control.
     """
-    global _client
-    if _client is None or _client.is_closed:
+    if _injected is not None:
+        return _injected
+    loop = asyncio.get_running_loop()
+    _drop_dead_clients()
+    client = _clients.get(loop)
+    if client is None or client.is_closed:
         settings = get_settings()
-        _client = httpx.AsyncClient(
+        client = httpx.AsyncClient(
             follow_redirects=False,
             timeout=httpx.Timeout(settings.http_timeout_seconds),
             limits=httpx.Limits(
@@ -118,21 +172,52 @@ async def get_http_client() -> httpx.AsyncClient:
             ),
             headers={"User-Agent": settings.http_user_agent},
         )
-    return _client
+        _clients[loop] = client
+    return client
 
 
 async def close_http_client() -> None:
-    """Close the shared client (application shutdown)."""
-    global _client
-    if _client is not None and not _client.is_closed:
-        await _client.aclose()
-    _client = None
+    """Close every client this module owns (application shutdown).
+
+    Only the running loop's pool can actually be closed from here; any other
+    loop's is dropped, with the same reasoning as :func:`_drop_dead_clients`. At
+    shutdown the other loops are the finished ``asyncio.run`` calls of inline
+    jobs, which closed their own pools on the way out.
+    """
+    global _injected
+    loop = asyncio.get_running_loop()
+    mine = _clients.pop(loop, None)
+    if mine is not None and not mine.is_closed:
+        await mine.aclose()
+    _clients.clear()
+    _injected = None
+
+
+async def close_owned_client() -> None:
+    """Close this loop's client, leaving an injected one alone.
+
+    Called at the end of a self-contained ``asyncio.run`` so the connection pool
+    is torn down inside the loop that owns it — and *only* that one, so a job
+    running in a worker thread cannot close the pool the API's loop is using. A
+    client a test injected is left alone: closing it would break the mock
+    transport the test is still using.
+    """
+    if _injected is not None:
+        return
+    client = _clients.pop(asyncio.get_running_loop(), None)
+    if client is not None and not client.is_closed:
+        await client.aclose()
 
 
 def set_http_client(client: httpx.AsyncClient | None) -> None:
-    """Inject a client (tests use this with ``respx``)."""
-    global _client
-    _client = client
+    """Inject a client (tests use this with ``respx``).
+
+    The injected client belongs to the caller: it serves every loop, is never
+    rebuilt, and is never closed by :func:`close_owned_client`. Passing ``None``
+    removes the override and restores per-loop clients.
+    """
+    global _injected
+    _injected = client
 
 
 async def _read_capped(response: httpx.Response, max_bytes: int, url: str) -> bytes:
@@ -380,8 +465,6 @@ def _parse_retry_after(value: str | None) -> float | None:
 
 
 async def _sleep(delay: float) -> None:
-    import asyncio
-
     await asyncio.sleep(delay)
 
 

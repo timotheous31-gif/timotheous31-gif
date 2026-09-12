@@ -35,8 +35,13 @@ def render_report(
     max_classification: Classification = Classification.PERSONAL,
     min_confidence: float = 0.0,
     embed_images: bool = False,
+    execution: uuid.UUID | None = None,
 ) -> str:
     """Build and render a case report in ``report_format``.
+
+    ``execution`` selects the execution report: one execution's observations,
+    rendered from its own immutable records, so a later run cannot change it.
+    Omitted, the report describes the current state of the case.
 
     ``embed_images`` reaches the Markdown renderer only. See
     :func:`app.reporting.renderers._render_images` for why embedding remote
@@ -50,6 +55,7 @@ def render_report(
         case_id,
         max_classification=max_classification,
         min_confidence=min_confidence,
+        execution=execution,
     )
     if renderer is render_markdown:
         return render_markdown(model, embed_images=embed_images)

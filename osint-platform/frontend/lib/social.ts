@@ -52,8 +52,16 @@ export function decisionTone(decision: AnalystDecisionValue | null | undefined):
 }
 
 /** Automated confidence as a percentage, for display only. */
-export function confidencePercent(confidence: number): string {
-  return `${Math.round(confidence * 100)}%`;
+/**
+ * A correlation score, shown as a score.
+ *
+ * This rendered `0.54` as `54%`, which is the one reading the platform must not
+ * invite: the number is the combination of named rules, uncalibrated against any
+ * measured outcome, so a percentage states a likelihood nobody computed. Two
+ * records are never "70% the same person".
+ */
+export function correlationScore(confidence: number): string {
+  return confidence.toFixed(2);
 }
 
 /** What a fetch state means, in words an investigator can act on. */

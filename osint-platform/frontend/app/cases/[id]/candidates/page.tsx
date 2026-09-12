@@ -128,7 +128,34 @@ export default function CandidatesPage() {
                       corroborated: {kind}
                     </Badge>
                   ))}
+                  {/*
+                    An identifier another index also carries, where independence
+                    could not be established. A separate badge from
+                    "corroborated" on purpose: one raised the score and the other
+                    deliberately did not.
+                  */}
+                  {candidate.sharedIdentifiers.map((shared) => (
+                    <Badge
+                      key={`${shared.identifier}:${shared.value}`}
+                      tone="PARTIAL"
+                      title={shared.reason}
+                    >
+                      shared {shared.identifier} · {shared.independence.toLowerCase()} lineage ·
+                      no score effect
+                    </Badge>
+                  ))}
                 </div>
+
+                {candidate.citizenshipClaims.length > 0 ? (
+                  <p className="text-xs text-muted">
+                    <span className="font-medium text-fg">Source-claimed citizenship:</span>{" "}
+                    {candidate.citizenshipClaims.join(", ")}{" "}
+                    <span>
+                      — stated by {candidate.sourceLabel}. Not inferred, not a residence, not a
+                      current location, and it corroborates no country or city you supplied.
+                    </span>
+                  </p>
+                ) : null}
 
                 {candidate.url ? (
                   <a

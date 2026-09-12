@@ -446,7 +446,7 @@ async def test_the_report_shows_the_profile_without_raw_json(api_client, case_id
     assert "Government of Sindh" in markdown
     assert "Public geographic association: Pakistan" in markdown
     assert "e.person@example.edu" in markdown
-    assert "Automated confidence:" in markdown
+    assert "Correlation score:" in markdown
     assert "Analyst decision:" in markdown
 
 

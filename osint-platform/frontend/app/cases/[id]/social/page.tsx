@@ -23,7 +23,7 @@ import {
   discoveryTone,
   classificationLabel,
   classificationTone,
-  confidencePercent,
+  correlationScore,
   contactHref,
   contactsByType,
   fetchStateLabel,
@@ -136,7 +136,7 @@ function CandidateCard({
         }
       />
       <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 pb-3">
-        <Badge tone="PARTIAL">Automated confidence {confidencePercent(group.confidence)}</Badge>
+        <Badge tone="PARTIAL">Correlation score {correlationScore(group.confidence)}</Badge>
         {group.entity_id ? (
           <AnalystDecisionControl
             caseId={caseId}
@@ -258,7 +258,7 @@ function ContactRow({
         ) : (
           <span className="text-sm">{contact.value}</span>
         )}
-        <Badge tone="PARTIAL">Automated {confidencePercent(contact.confidence)}</Badge>
+        <Badge tone="PARTIAL">Correlation {correlationScore(contact.confidence)}</Badge>
         <AnalystDecisionControl
           caseId={caseId}
           subjectType="CONTACT"
@@ -322,10 +322,24 @@ function ProfileRow({
       <div className="flex flex-wrap items-center gap-2">
         <Badge>{profile.platform_label}</Badge>
         {profile.handle ? <Mono>{profile.handle}</Mono> : null}
-        <Badge tone="PARTIAL">Automated {confidencePercent(profile.confidence)}</Badge>
+        <Badge tone="PARTIAL">Correlation {correlationScore(profile.confidence)}</Badge>
         <Badge tone={discoveryTone(profile.discovery_method)}>
           {discoveryLabel(profile.discovery_method)}
         </Badge>
+        {/*
+          Every other route this profile was found by. Provenance, not a second
+          vote: the same page found twice is one page, and the score says so.
+        */}
+        {(profile.discovery_methods ?? [])
+          .filter((route) => route !== profile.discovery_method)
+          .map((route) => (
+            <Badge
+              key={route}
+              title="An additional way this profile was found. It adds provenance, not corroboration."
+            >
+              also: {discoveryLabel(route)}
+            </Badge>
+          ))}
         <AnalystDecisionControl
           caseId={caseId}
           subjectType="SOCIAL_PROFILE"

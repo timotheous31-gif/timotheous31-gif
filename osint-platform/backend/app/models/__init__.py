@@ -8,7 +8,13 @@ from __future__ import annotations
 
 from app.models.base import Base, TimestampMixin, UUIDMixin, utcnow
 from app.models.case import Case
-from app.models.collection import CollectorRun, Evidence, Finding, finding_evidence
+from app.models.collection import (
+    CollectorRun,
+    Evidence,
+    ExecutionObservation,
+    Finding,
+    finding_evidence,
+)
 from app.models.entity import Entity, Relationship, entity_sources, relationship_evidence
 from app.models.enums import (
     AnalystDecision,
@@ -22,6 +28,8 @@ from app.models.enums import (
     ImageFetchState,
     JobState,
     MatchStrength,
+    ObservationStage,
+    ObservationSubject,
     ProfileAccess,
     RelationshipType,
     ReportFormat,
@@ -54,6 +62,7 @@ __all__ = [
     "Entity",
     "EntityType",
     "Evidence",
+    "ExecutionObservation",
     "Finding",
     "FindingKind",
     "ImageEvidence",
@@ -61,6 +70,8 @@ __all__ = [
     "Job",
     "JobState",
     "MatchStrength",
+    "ObservationStage",
+    "ObservationSubject",
     "ProfileAccess",
     "PublicContact",
     "Relationship",

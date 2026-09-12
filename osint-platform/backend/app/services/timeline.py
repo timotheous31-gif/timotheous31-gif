@@ -38,23 +38,57 @@ TIMELINE_KINDS: dict[FindingKind, str] = {
 def build_timeline(session: Session, case_id: uuid.UUID) -> list[TimelineEvent]:
     """Rebuild the case timeline from its findings.
 
-    Existing events are replaced so a re-run cannot accumulate duplicates.
+    Updated in place rather than deleted and recreated. A timeline event *is* a
+    projection of one finding, so re-running must not give it a new identity:
+    delete-and-recreate changed every event's id on every run, which made a
+    historical execution report differ from itself between renders for no reason
+    anyone could point at. Events whose finding is gone are removed, so a rerun
+    still cannot accumulate duplicates.
     """
     findings = list(
         session.scalars(
             select(Finding).where(Finding.case_id == case_id, Finding.observed_at.is_not(None))
         )
     )
-    existing = list(session.scalars(select(TimelineEvent).where(TimelineEvent.case_id == case_id)))
-    for event in existing:
-        session.delete(event)
-    session.flush()
+    existing = {
+        event.finding_id: event
+        for event in session.scalars(select(TimelineEvent).where(TimelineEvent.case_id == case_id))
+        if event.finding_id is not None
+    }
 
-    events = _events_for(case_id, findings)
-    session.add_all(events)
+    events: list[TimelineEvent] = []
+    for draft in _events_for(case_id, findings):
+        current = existing.pop(draft.finding_id, None) if draft.finding_id is not None else None
+        if current is None:
+            session.add(draft)
+            events.append(draft)
+            continue
+        current.occurred_at = draft.occurred_at
+        current.kind = draft.kind
+        current.title = draft.title
+        current.description = draft.description
+        current.collector = draft.collector
+        current.source_url = draft.source_url
+        current.confidence = draft.confidence
+        current.attributes = draft.attributes
+        events.append(current)
+    # Anything left over described a finding that no longer exists.
+    for orphan in existing.values():
+        session.delete(orphan)
     session.flush()
     log.info("timeline.built", case_id=str(case_id), events=len(events))
     return sorted(events, key=lambda event: event.occurred_at)
+
+
+def events_for_findings(case_id: uuid.UUID, findings: Iterable[Finding]) -> list[TimelineEvent]:
+    """Timeline events projected from findings, without touching the database.
+
+    Public because an execution report needs the projection of the findings *as
+    that execution observed them*: the stored events track the canonical findings,
+    which a later execution rescores, so rendering them would leak a later run's
+    score into an earlier run's report through the timeline.
+    """
+    return _events_for(case_id, findings)
 
 
 def _events_for(case_id: uuid.UUID, findings: Iterable[Finding]) -> list[TimelineEvent]:

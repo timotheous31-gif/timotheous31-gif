@@ -12,7 +12,9 @@ from typing import Any
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from app.reporting.coverage import STATE_MEANINGS
 from app.reporting.model import ReportModel
+from app.services.social_profiles import DISCOVERY_LABELS
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -61,6 +63,26 @@ def render_markdown(model: ReportModel, *, embed_images: bool = False) -> str:
         f"generated {model.generated_at:%Y-%m-%d %H:%M UTC} by osint-platform "
         f"{model.platform_version}"
     )
+    # Which of the two reports this is, first, before any number. A reader must
+    # never have to work out whether they are holding current case state or one
+    # execution's observations.
+    add("")
+    if model.execution.scope == "execution":
+        add(
+            f"**Scope: execution `{model.execution.scoped_job_id}`.** Everything below is what "
+            f"that execution observed, rendered from its own immutable observation records. A "
+            f"later execution cannot change it: evidence, scores and candidates discovered "
+            f"afterwards are not here, by construction."
+        )
+        if model.execution.ledger_note:
+            add("")
+            add(f"> {model.execution.ledger_note}")
+    else:
+        add(
+            "**Scope: current case state.** Everything below is what the case knows now, across "
+            "every execution it has had. For what one execution observed, generate the report "
+            "for that execution."
+        )
     if model.case_description:
         add("")
         add(model.case_description)
@@ -99,6 +121,24 @@ def render_markdown(model: ReportModel, *, embed_images: bool = False) -> str:
     add("")
     add("## Targets")
     add("")
+    if model.execution.scope == "execution" and model.execution.anchors:
+        add(
+            "Anchors as supplied when this execution started. Every correlation below rests "
+            "on these and on nothing supplied later."
+        )
+        add("")
+        add("| Target | Anchors in force |")
+        add("| --- | --- |")
+        for anchor in model.execution.anchors.values():
+            context = anchor.get("context") or {}
+            described = (
+                ", ".join(
+                    _anchor_phrase(key, value) for key, value in sorted(context.items()) if value
+                )
+                or "none"
+            )
+            add(f"| `{anchor.get('normalized_value') or '—'}` | {described} |")
+        add("")
     if model.targets:
         add("| Type | Normalised value | Original input | Status |")
         add("| --- | --- | --- | --- |")
@@ -119,10 +159,24 @@ def render_markdown(model: ReportModel, *, embed_images: bool = False) -> str:
             add("")
             observed = f" · observed {finding.observed_at:%Y-%m-%d}" if finding.observed_at else ""
             add(
-                f"**{finding.strength.replace('_', ' ')}** ({finding.confidence:.2f}) · "
+                f"**{correlation_band(finding.strength)}** "
+                f"(correlation score {finding.confidence:.2f}) · "
                 f"{finding.classification} · `{finding.kind}` · collector "
                 f"`{finding.collector}`{observed}"
             )
+            if finding.first_observed_here is not None:
+                seen = (
+                    "First observed in this execution"
+                    if finding.first_observed_here
+                    else "Carried over: an earlier execution observed this first"
+                )
+                stage = (
+                    f" · observed by the {finding.observed_by_stage.lower()} stage"
+                    if (finding.observed_by_stage)
+                    else ""
+                )
+                add("")
+                add(f"*{seen}{stage}.*")
             if finding.summary:
                 add("")
                 add(finding.summary)
@@ -200,6 +254,8 @@ def render_markdown(model: ReportModel, *, embed_images: bool = False) -> str:
         "no facial recognition, no biometric analysis and no image comparison of any kind."
     )
     _render_profiles(add, model)
+    _render_source_agreements(add, model)
+    _render_citizenship(add, model)
     _render_contacts(add, model)
     _render_images(add, model, embed_images=embed_images)
 
@@ -212,11 +268,20 @@ def render_markdown(model: ReportModel, *, embed_images: bool = False) -> str:
         f"confidence is {model.confidence.get('mean_finding_confidence', 0):.2f}."
     )
     add("")
-    add("| Band | Range | Findings | Relationships |")
+    add(
+        "**These are correlation scores, not probabilities.** A score of 0.70 does not mean a "
+        "70% chance that the record is the subject, and the scores are not calibrated against "
+        "any measured outcome: each one is the combination of the named rules listed beside the "
+        "finding, and nothing more. The bands below are reading aids for that combination — "
+        "ranges of score, not ranges of likelihood — and no score on its own establishes "
+        "identity. Only an analyst decision does that."
+    )
+    add("")
+    add("| Correlation band | Score range | Findings | Relationships |")
     add("| --- | --- | ---: | ---: |")
     for band, range_text in model.confidence.get("bands", {}).items():
         add(
-            f"| {band.replace('_', ' ')} | {range_text} | "
+            f"| {correlation_band(band)} | {range_text} | "
             f"{model.confidence['finding_bands'][band]} | "
             f"{model.confidence['relationship_bands'][band]} |"
         )
@@ -254,6 +319,56 @@ def render_markdown(model: ReportModel, *, embed_images: bool = False) -> str:
             )
     else:
         add("No evidence was stored.")
+
+    add("")
+    add("## Source coverage")
+    add("")
+    add(
+        "What was searched, what was not, and why. A source that was never searched says "
+        "nothing about the subject, and is not the same as a source that searched and "
+        "found nothing — only the second is evidence of absence, and only for what that "
+        "source indexes."
+    )
+    add("")
+    if model.coverage:
+        add("| Source | State | What that means | Findings |")
+        add("| --- | --- | --- | ---: |")
+        for item in model.coverage:
+            meaning = STATE_MEANINGS.get(item.state, "")
+            detail = f" {item.detail}" if item.detail else ""
+            add(
+                f"| {item.display_name} | `{item.state}` | {meaning}{detail} | "
+                f"{item.findings or '—'} |"
+            )
+    else:
+        add("No source ran in this investigation.")
+    if model.coverage_gaps:
+        add("")
+        add("**Gaps a reader must weigh:**")
+        for line in model.coverage_gaps:
+            add(f"- {line}")
+
+    add("")
+    add("## Investigation executions")
+    add("")
+    execution = model.execution
+    add(
+        f"This case has been investigated {execution.executions} time(s). The figures below "
+        f"describe the latest execution; the full run history is kept and counted separately, "
+        f"so a rerun never makes an investigation look broader than it was."
+    )
+    add("")
+    add("| Metric | Value |")
+    add("| --- | ---: |")
+    add(f"| Investigation executions | {execution.executions} |")
+    add(f"| Latest execution — collectors attempted | {execution.collectors_attempted} |")
+    add(f"| Latest execution — successful | {execution.successful} |")
+    add(f"| Latest execution — failed | {execution.failed} |")
+    add(f"| Latest execution — skipped | {execution.skipped} |")
+    add(f"| Historical collector runs (all executions) | {execution.historical_runs} |")
+    if execution.latest_state:
+        add("")
+        add(f"Latest execution state: `{execution.latest_state}`.")
 
     add("")
     add("## Sources")
@@ -299,14 +414,121 @@ def render_markdown(model: ReportModel, *, embed_images: bool = False) -> str:
 #: Mirrors ``app.services.social_profiles.DISCOVERY_LABELS``. A reader weighs
 #: "you supplied this account" very differently from "a name search returned
 #: it", so the method is printed rather than left implicit in the collector name.
+def _anchor_phrase(key: str, value: Any) -> str:
+    """One anchor, as the investigator supplied it."""
+    listed = ", ".join(str(item) for item in value) if isinstance(value, list) else str(value)
+    return f"{key.replace('_', ' ')}: {listed}"
+
+
+def _mid_sentence(label: str) -> str:
+    return (label[0].lower() + label[1:]) if label else label
+
+
+#: Derived from the service's own vocabulary rather than restated here. The two
+#: had already drifted: `provider_search` was missing, so a profile found by the
+#: configured provider printed the raw key in the report.
 _DISCOVERY_LABELS: dict[str, str] = {
-    "supplied_anchor": "supplied by the investigator as a known account",
-    "handle_check": "public existence check for a supplied handle",
-    "name_search": "returned by a public search for the name",
-    "published_link": "linked from another public page the subject controls",
-    "manual_import": "imported by the investigator from a public search result",
-    "api_record": "read from a public API record",
+    key: _mid_sentence(label) for key, label in DISCOVERY_LABELS.items()
 }
+
+
+#: How a stored band is *named* to a reader. The stored values still say
+#: "PROBABLE_MATCH", because renaming a column and an API contract belongs in its
+#: own change — but a 0.70 labelled "probable match" invites exactly the reading
+#: this platform must not invite. A correlation score is not a probability, so the
+#: vocabulary a person reads says correlation.
+CORRELATION_BANDS: dict[str, str] = {
+    "LIKELY_MATCH": "Strong correlation",
+    "PROBABLE_MATCH": "Moderate correlation",
+    "POSSIBLE_MATCH": "Weak correlation",
+    "WEAK_ASSOCIATION": "Name-level only",
+}
+
+
+def correlation_band(strength: str) -> str:
+    """The reader-facing name for a stored match-strength band."""
+    return CORRELATION_BANDS.get(str(strength), str(strength).replace("_", " ").title())
+
+
+def _render_source_agreements(add: Any, model: ReportModel) -> None:
+    """Identifier agreements, with the two kinds never printed as one.
+
+    "Two indexes contain the same ORCID iD" and "two independent sources
+    corroborate this ORCID iD" look identical in a list of sources and mean
+    entirely different things. Only the second raised a score, so only the second
+    is labelled corroboration, and each row carries what it did to the score.
+    """
+    if not model.source_agreements:
+        return
+    corroborating = [item for item in model.source_agreements if item.corroborates]
+    leads = [item for item in model.source_agreements if not item.corroborates]
+
+    add("")
+    add("## Identifier agreement between sources")
+    add("")
+    add(
+        "Two sources publishing the same identifier is evidence only when neither could "
+        "have taken it from the other. Where that is established, the agreement raises "
+        "confidence through a named rule. Where it is not — including where the platform "
+        "simply cannot establish it — the agreement is recorded as a lead to verify and "
+        "changes no score. Unknown independence is not independence."
+    )
+    if corroborating:
+        add("")
+        add("**Independently corroborated**")
+        add("")
+        for item in corroborating:
+            add(f"- {item.reason}")
+    if leads:
+        add("")
+        add("**Same identifier in more than one index — not corroboration**")
+        add("")
+        add("| Identifier | Value | Indexes | Independence | Effect on score |")
+        add("| --- | --- | --- | --- | --- |")
+        for item in leads:
+            add(
+                f"| {item.identifier.upper() or '—'} | `{item.value or '—'}` | "
+                f"{', '.join(item.sources) or '—'} | {item.independence.title()} | "
+                f"None |"
+            )
+        add("")
+        for item in leads:
+            add(f"- {item.reason}")
+    add("")
+
+
+def _render_citizenship(add: Any, model: ReportModel) -> None:
+    """Citizenships sources state, attributed and fenced off from everything.
+
+    A section of its own rather than a line inside a candidate, because the point
+    is that the claim belongs to the source and connects to nothing: it is not a
+    location, it corroborates no anchor, and no part of this platform infers it.
+    """
+    if not model.citizenship_claims:
+        return
+    add("")
+    add("## Source-claimed citizenship")
+    add("")
+    add(
+        "Recorded because a public source states it, shown with the source that states "
+        "it, and used for nothing. The platform infers nationality or citizenship from "
+        "nothing at all — not a name, not a language, not an employer, not a school, not "
+        "a place and not a photograph — and a claim here raises no score and corroborates "
+        "no country or city supplied as an anchor."
+    )
+    add("")
+    add("| Source-claimed citizenship | Stated by | About | Source |")
+    add("| --- | --- | --- | --- |")
+    for claim in model.citizenship_claims:
+        url = f"<{claim.source_url}>" if claim.source_url else "—"
+        add(
+            f"| {claim.country} | {claim.source_label} | "
+            f"{claim.candidate_name or '—'} | {url} |"
+        )
+    add("")
+    for claim in model.citizenship_claims[:1]:
+        add(f"> {claim.interpretation}")
+    add("")
 
 
 def _render_profiles(add: Any, model: ReportModel) -> None:
@@ -329,11 +551,20 @@ def _render_profiles(add: Any, model: ReportModel) -> None:
         add("")
         add(f"<{profile.profile_url}>")
         add("")
-        if profile.discovery_method:
-            method = _DISCOVERY_LABELS.get(profile.discovery_method, profile.discovery_method)
-            add(f"- How it was found: {method}")
-        if profile.discovered_from:
-            add(f"- Linked from: {profile.discovered_from}")
+        routes = profile.discovery_methods or (
+            [profile.discovery_method] if profile.discovery_method else []
+        )
+        if routes:
+            labelled = [_DISCOVERY_LABELS.get(route, route) for route in routes]
+            add(f"- How it was found: {labelled[0]}")
+            for extra in labelled[1:]:
+                # Named as a second route, not a second source: one page found
+                # twice is still one page, and the score says so.
+                add(f"- Also found by: {extra} (additional route, not extra corroboration)")
+        for origin in profile.discovered_from_all or (
+            [profile.discovered_from] if profile.discovered_from else []
+        ):
+            add(f"- Linked from: {origin}")
         if profile.searched_name or profile.declared_name:
             add(f"- Searched name: {profile.searched_name or '—'}")
             add(f"- Declared name: {profile.declared_name or '—'}")
@@ -350,7 +581,10 @@ def _render_profiles(add: Any, model: ReportModel) -> None:
             add(f"- Source of the statements above: <{profile.detail_source_url}>")
         elif profile.detail_note:
             add(f"- {profile.detail_note}")
-        add(f"- Automated confidence: {profile.confidence:.2f} (computed by the platform)")
+        add(
+            f"- Correlation score: {profile.confidence:.2f} "
+            f"(computed by the platform; not a probability)"
+        )
         add(
             f"- Analyst decision: {profile.analyst_decision or 'none recorded'}"
             + (f" — {profile.analyst_note}" if profile.analyst_note else "")

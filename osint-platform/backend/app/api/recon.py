@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, status
 from sqlalchemy import select
 
@@ -12,15 +14,23 @@ from app.core.errors import NotFoundError, ValidationError
 from app.models import Finding, SocialProfile, Target
 from app.models.enums import FindingKind, TargetType
 from app.schemas.recon import (
+    DiscoveredAnchorRead,
     ImportedResultRead,
     ManualResultImport,
+    NameVariantRead,
     ReconQueryPlan,
     ReconQueryRead,
+    ReconStageRead,
+    SearchIngestRead,
     SourcePlatformRead,
+    StagedReconPlan,
 )
 from app.services import recon_import
 from app.services.normalization import NormalizedTarget
-from app.services.recon import generate_queries
+from app.services.promotion import promote_finding
+from app.services.providers.search import get_search_provider
+from app.services.recon import discovered_anchors, generate_queries, staged_plan
+from app.services.search_ingest import search_target
 
 router = APIRouter(prefix="/cases/{case_id}", tags=["recon"])
 
@@ -71,21 +81,22 @@ def recon_queries(case_id: CaseId, target_id: str, session: DbSession) -> ReconQ
         queries=[ReconQueryRead(**query.as_dict()) for query in queries],
         anchors_used=context.describe(),
         also_known_as=list(declared),
-        capabilities=[
-            SourcePlatformRead(
-                platform=item.platform,
-                display_name=item.display_name,
-                domains=list(item.domains),
-                server_fetchable=item.server_fetchable,
-                public_api_available=item.public_api_available,
-                manual_search_supported=item.manual_search_supported,
-                handle_check_supported=item.handle_check_supported,
-                image_reference_supported=item.image_reference_supported,
-                search_filters=list(item.search_filters),
-                notes=item.notes or item.fetch_note or None,
-            )
-            for item in CAPABILITIES
-        ],
+        capabilities=[_capability(item) for item in CAPABILITIES],
+    )
+
+
+def _capability(item: Any) -> SourcePlatformRead:
+    return SourcePlatformRead(
+        platform=item.platform,
+        display_name=item.display_name,
+        domains=list(item.domains),
+        server_fetchable=item.server_fetchable,
+        public_api_available=item.public_api_available,
+        manual_search_supported=item.manual_search_supported,
+        handle_check_supported=item.handle_check_supported,
+        image_reference_supported=item.image_reference_supported,
+        search_filters=list(item.search_filters),
+        notes=item.notes or item.fetch_note or None,
     )
 
 
@@ -107,6 +118,88 @@ def _declared_names(session: DbSession, case_id: CaseId, searched: str) -> tuple
         if wanted and wanted <= parts and declared not in found:
             found.append(declared)
     return tuple(found)
+
+
+@router.get(
+    "/targets/{target_id}/recon-plan",
+    response_model=StagedReconPlan,
+    summary="The staged reconnaissance plan for a PERSON target",
+)
+def recon_plan(case_id: CaseId, target_id: str, session: DbSession) -> StagedReconPlan:
+    """The plan an investigator works through, stage by stage.
+
+    Built from the name's variants, the anchors supplied, and the anchors public
+    sources actually published about candidates in this case. Nothing is
+    invented: a discovered anchor carries the URL that published it.
+    """
+    target = _person_target(session, case_id, target_id)
+    normalized = NormalizedTarget(
+        type=target.type,
+        raw_input=target.raw_input,
+        value=target.normalized_value,
+        attributes=dict(target.attributes or {}),
+    )
+    context = PersonContext.from_target(normalized)
+    canonical = str(normalized.attributes.get("display_name", target.normalized_value))
+    declared = _declared_names(session, case_id, canonical)
+    plan = staged_plan(
+        canonical,
+        context,
+        discovered=discovered_anchors(session, case_id),
+        also_known_as=declared,
+    )
+
+    provider = get_search_provider()
+    configured, note = provider.is_available()
+    payload = plan.as_dict()
+    return StagedReconPlan(
+        target_id=target.id,
+        canonical=payload["canonical"],
+        variants=[NameVariantRead(**item) for item in payload["variants"]],
+        stages=[ReconStageRead(**item) for item in payload["stages"]],
+        discovered_anchors=[DiscoveredAnchorRead(**item) for item in payload["discovered_anchors"]],
+        anchors_used=context.describe(),
+        also_known_as=list(declared),
+        capabilities=[_capability(item) for item in CAPABILITIES],
+        search_provider=provider.key,
+        search_provider_configured=configured,
+        search_provider_note=note,
+    )
+
+
+@router.post(
+    "/targets/{target_id}/search",
+    response_model=SearchIngestRead,
+    summary="Run the plan through a configured search provider and ingest the results",
+)
+async def run_provider_search(
+    case_id: CaseId, target_id: str, session: DbSession
+) -> SearchIngestRead:
+    """Search the public web and feed what returns into the investigation.
+
+    With no provider configured this does nothing and says so — which is the
+    point. A report has to distinguish "the public web returned nothing" from
+    "the public web was never searched", and only the caller can fix the second.
+
+    Results reach the report through the same pipeline a collector's findings
+    use: no special confidence for having been returned by a search engine.
+    """
+    target = _person_target(session, case_id, target_id)
+    report = await search_target(session, case_id=case_id, target_id=target.id)
+    for finding_id in report.findings:
+        finding = session.get(Finding, finding_id)
+        if finding is None:
+            continue
+        promote_finding(
+            session,
+            case_id=case_id,
+            finding=finding,
+            target=target,
+            candidate_entity_id=None,
+        )
+    session.commit()
+    payload = report.to_dict()
+    return SearchIngestRead(**payload)
 
 
 @router.post(

@@ -32,6 +32,7 @@ from app.models.enums import Classification, FindingKind, TargetType
 from app.schemas.recon import ManualResultImport
 from app.services.evidence import EvidenceStore
 from app.services.images import record_image
+from app.services.name_variants import classify_observed_name
 from app.services.normalization import NormalizedTarget
 from app.services.social_profiles import DISCOVERY_MANUAL_IMPORT, record_profile
 
@@ -92,6 +93,10 @@ def import_results(
         # the URL yielded none — and marked as theirs, not the page's.
         observed_handle = (item.handle or "").strip().lstrip("@") or None
         handle = (profile.handle if profile and profile.handle else None) or observed_handle
+        # The organisation the investigator read off the result. The page's claim,
+        # recorded as theirs — and the signal that turns a reduced-name lead into
+        # something worth believing, through the ordinary anchor comparison.
+        organization = (item.organization or "").strip()
         data: dict[str, Any] = {
             "url": url,
             "host": (profile.platform if profile else ""),
@@ -118,6 +123,8 @@ def import_results(
             # What the page displays, recorded as the page's claim. It never
             # becomes the target's name: the investigator named the subject.
             "displayed_name": (item.display_name or "").strip() or None,
+            "organization": organization or None,
+            "affiliations": [organization] if organization else [],
         }
 
         # An imported URL is checked against the anchors exactly as a collected
@@ -127,11 +134,18 @@ def import_results(
         matched = anchor_matches(
             PersonCandidate(
                 url=url,
-                name=subject_name,
+                name=(item.display_name or "").strip() or subject_name,
                 handles=[handle] if handle else [],
+                affiliations=[organization] if organization else [],
             ),
             context,
         )
+        variant_type, variant_reason = classify_observed_name(
+            (item.display_name or "").strip() or item.title or subject_name, subject_name
+        )
+        data["name_variant_type"] = variant_type
+        data["name_variant_reason"] = variant_reason
+        data["canonical_target"] = subject_name
         if matched:
             data["corroborated_by"] = [kind for kind, _ in matched]
             data["match_reasons"] = [

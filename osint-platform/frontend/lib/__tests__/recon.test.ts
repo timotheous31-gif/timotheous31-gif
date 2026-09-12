@@ -5,6 +5,11 @@ import {
   FAMILY_ORDER,
   SEARCH_ENGINES,
   capabilitySummary,
+  IMAGE_ENGINES,
+  isImageQuery,
+  needsCorroboration,
+  providerStatus,
+  variantTone,
   evidenceClassLabel,
   familyLabel,
   familyPurpose,
@@ -16,7 +21,12 @@ import {
   socialResults,
   toImportPayload,
 } from "@/lib/recon";
-import type { ImportedResult, ReconQuery, SourcePlatform } from "@/types/api";
+import type {
+  ImportedResult,
+  ReconQuery,
+  SourcePlatform,
+  StagedReconPlan,
+} from "@/types/api";
 
 function query(overrides: Partial<ReconQuery> = {}): ReconQuery {
   return {
@@ -25,6 +35,10 @@ function query(overrides: Partial<ReconQuery> = {}): ReconQuery {
     rationale: "The plainest search.",
     priority: 10,
     anchors_used: [],
+    name_variant: "Timotheous Samar",
+    variant_type: "EXACT_NAME",
+    variant_label: "Exact name as supplied",
+    stage: 1,
     ...overrides,
   };
 }
@@ -316,5 +330,73 @@ describe("import payload", () => {
     });
     expect(payload?.handle).toBeNull();
     expect(payload?.display_name).toBeNull();
+  });
+});
+
+describe("name variants in the UI", () => {
+  it("shows a shorter spelling as weaker than the exact one", () => {
+    expect(variantTone("EXACT_NAME")).toBe("SUCCESS");
+    expect(variantTone("TOKEN_REDUCED_VARIANT")).toBe("SKIPPED");
+    expect(variantTone("PARTIAL_NAME_MATCH")).toBe("SKIPPED");
+  });
+
+  it("marks exactly the spellings that need corroborating", () => {
+    expect(needsCorroboration("TOKEN_REDUCED_VARIANT")).toBe(true);
+    expect(needsCorroboration("PARTIAL_NAME_MATCH")).toBe(true);
+    expect(needsCorroboration("EXACT_NAME")).toBe(false);
+    expect(needsCorroboration("INITIALIZED_VARIANT")).toBe(false);
+    expect(needsCorroboration("EXTENDED_NAME_MATCH")).toBe(false);
+  });
+});
+
+describe("provider status", () => {
+  const plan = (overrides: Partial<StagedReconPlan> = {}): StagedReconPlan => ({
+    target_id: "t1",
+    canonical: "Tabitha Afzal Imdad",
+    variants: [],
+    stages: [],
+    discovered_anchors: [],
+    anchors_used: [],
+    also_known_as: [],
+    capabilities: [],
+    search_provider: "none",
+    search_provider_configured: false,
+    search_provider_note: "",
+    execution: "",
+    ...overrides,
+  });
+
+  it("says the public web was not searched, never that nothing was found", () => {
+    const status = providerStatus(plan());
+    expect(status.label).toBe("Public web not searched");
+    expect(status.detail).toContain("not searched automatically");
+    expect(status.detail).not.toContain("no results");
+  });
+
+  it("prefers the backend's own explanation when it has one", () => {
+    const status = providerStatus(plan({ search_provider_note: "SEARCH_PROVIDER is not set." }));
+    expect(status.detail).toBe("SEARCH_PROVIDER is not set.");
+  });
+
+  it("says plainly that a configured provider earns no extra confidence", () => {
+    const status = providerStatus(
+      plan({ search_provider: "serper", search_provider_configured: true }),
+    );
+    expect(status.tone).toBe("SUCCESS");
+    expect(status.detail).toContain("no extra confidence");
+  });
+});
+
+describe("image queries", () => {
+  it("offers image engines for image queries only", () => {
+    expect(isImageQuery("image")).toBe(true);
+    expect(isImageQuery("social")).toBe(false);
+    expect(IMAGE_ENGINES).toContain("Google Images");
+  });
+
+  it("builds an image search URL without scraping anything", () => {
+    const url = searchUrl('"Tabitha Afzal" photo', "Google Images");
+    expect(url).toContain("tbm=isch");
+    expect(url).toContain("Tabitha%20Afzal");
   });
 });

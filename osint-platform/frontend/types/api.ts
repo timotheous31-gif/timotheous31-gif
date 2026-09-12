@@ -404,7 +404,10 @@ export interface SocialProfileRecord {
   retrieved_at: string | null;
   /** How the profile entered the case, and the page that published the link. */
   discovery_method: string | null;
+  /** Every route this profile was found by, strongest first. */
+  discovery_methods: string[];
   discovered_from: string | null;
+  discovered_from_all: string[];
   /** Explicit statements read from the profile page, each with its own line. */
   profile_facts: ProfileFact[];
   /** The name the source declares, beside the name that was searched. */
@@ -505,6 +508,68 @@ export interface ReconQuery {
   rationale: string;
   priority: number;
   anchors_used: string[];
+  /** The spelling this query searches, and how it relates to the canonical name. */
+  name_variant: string;
+  variant_type: string;
+  variant_label: string;
+  /** Which stage of the plan (1-5) it belongs to. */
+  stage: number;
+}
+
+/** One spelling to search for, and why it exists. */
+export interface NameVariant {
+  search_variant: string;
+  variant_type: string;
+  variant_label: string;
+  canonical_target: string;
+  variant_generation_reason: string;
+  /** How much this spelling may contribute as a name match. Shorter is weaker. */
+  name_weight: number;
+}
+
+/** Something a public source published about a candidate, with its source. */
+export interface DiscoveredAnchor {
+  kind: string;
+  value: string;
+  source_url: string;
+  source_label: string;
+}
+
+export interface ReconStage {
+  stage: number;
+  title: string;
+  purpose: string;
+  queries: ReconQuery[];
+}
+
+/** The plan an investigator works through, stage by stage. */
+export interface StagedReconPlan {
+  target_id: string;
+  canonical: string;
+  variants: NameVariant[];
+  stages: ReconStage[];
+  discovered_anchors: DiscoveredAnchor[];
+  anchors_used: string[];
+  also_known_as: string[];
+  capabilities: SourcePlatform[];
+  search_provider: string;
+  search_provider_configured: boolean;
+  search_provider_note: string;
+  execution: string;
+}
+
+/** What one automated ingestion run did. */
+export interface SearchIngestResult {
+  provider: string;
+  configured: boolean;
+  reason: string | null;
+  queries_run: number;
+  results_seen: number;
+  results_stored: number;
+  duplicates: number;
+  rejected_urls: number;
+  failures: Record<string, string>[];
+  findings: string[];
 }
 
 export interface ReconQueryPlan {

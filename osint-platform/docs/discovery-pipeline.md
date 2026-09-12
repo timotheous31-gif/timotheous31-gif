@@ -125,6 +125,194 @@ something the investigator supplied independently of the source. The linked
 profile therefore lands at the name-only ceiling, well below anything that could
 merge identities.
 
+## Name variants
+
+An investigation for **Tabitha Afzal Imdad** found nothing, because public
+sources write her as **Tabitha Afzal**. Searching only the canonical spelling is
+too literal to be useful.
+
+`app/services/name_variants.py` generates spellings **by rule, never by
+permutation**. Four transformations, each of which a person could plausibly have
+used about themselves:
+
+| Kind | Example | Rule |
+|---|---|---|
+| `EXACT_NAME` | `Tabitha Afzal Imdad` | as supplied |
+| `INITIAL_VARIANT` | `Tabitha A Imdad`, `Tabitha A. Imdad` | a middle name to its initial |
+| `REDUCED_NAME_VARIANT` | `Tabitha Afzal`, `Tabitha Imdad` | one part dropped |
+| `HYPHENATION_VARIANT` | `Tabitha Afzal-Imdad` | the last two parts joined |
+
+Plus one kind only a *source* can produce: `EXTENDED_NAME_MATCH`, where a page
+publishes a fuller name carrying every searched part.
+
+**Bounds, stated:** at most 8 variants; names of more than 4 parts are searched
+only as written (dropping parts from a transliterated or compound name invents
+people); a 2-part name yields only itself (there is no middle to drop, and one
+token matches far too much); particles stay attached to the part they qualify, so
+"Anna van der Berg" never becomes "Anna van". Dropping the *last* part is offered
+only for a 3-part name — on a longer one it drops two at once, which is a
+different name rather than a shorter form.
+
+Every variant carries `search_variant`, `variant_type`, `canonical_target` and
+`variant_generation_reason`. Nothing writes a variant back onto the target.
+
+### A variant is a discovery signal, not identity proof
+
+Each kind fires its own named confidence rule, with its own ceiling:
+
+| Kind | Rule | Score | Ceiling |
+|---|---|---|---|
+| `EXACT_NAME` / `EXTENDED_NAME_MATCH` | `same_person_name` | 0.15 | 0.30 |
+| `HYPHENATION_VARIANT` | `name_variant_hyphenation` | 0.14 | 0.28 |
+| `INITIAL_VARIANT` | `name_variant_initial` | 0.12 | 0.24 |
+| `REDUCED_NAME_VARIANT` | `name_variant_reduced` | 0.08 | 0.18 |
+| `PARTIAL_NAME_MATCH` | `name_variant_partial` | 0.05 | 0.12 |
+
+A shorter name is shared by more people, so it is worth less — and every ceiling
+sits below the auto-merge threshold, so no spelling can merge identities however
+many pages carry it. Strengthening comes only from an independent anchor:
+an employer, a school, a handle, an ORCID, a profile URL, a place.
+
+Both halves of the scoring path use this. `assess()` in the collectors and
+`assess_profile()` in promotion call the same classifier — an existing test from
+PR #9 caught the first attempt, where only one did and the two disagreed again.
+
+## Automated search ingestion
+
+The acceptance failure: forty-six well-aimed queries, **zero findings**, because
+a query is a suggestion and nothing came back unless the investigator pasted it
+in by hand.
+
+With a provider configured, `app/services/search_ingest.py` runs the plan and
+feeds every result through the pipeline a collector's findings use:
+
+```
+SearchResult -> URL validation (SSRF) -> platform classification
+            -> candidate finding -> anchor correlation
+            -> social / web / document / image evidence -> report
+```
+
+`SearchResult` carries `query`, `search_variant`, `variant_type`, `query_family`,
+`displayed_url`, `result_type`, `image_url`, `rank`, `provider` and
+`retrieved_at`. Providers fill in content; the caller that ran the query fills in
+provenance, so an adapter cannot forget or misstate which search found what.
+
+### Three rules on every result
+
+**A search result earns no confidence for being a search result.** The name rule
+that fires depends on the *spelling* that found it. A test asserts a mismatch
+reason saying so appears on every ingested result.
+
+**The same page found four ways is one page.** A URL reached from two queries and
+two variants is one source with four provenance records. The repeat appends to
+`searches` and deliberately does **not** touch `confidence` — a search engine
+repeating itself is not a second source agreeing.
+
+**Provider output is untrusted input.** Every URL goes through the same SSRF
+guard a pasted URL does: loopback, RFC1918, link-local, metadata endpoints,
+credentials in the authority and non-http(s) schemes are all refused before
+anything is stored. No second HTTP path exists.
+
+### $0 mode stays useful
+
+`SEARCH_PROVIDER=none` is the default and every workflow still runs: name
+variants, the staged plan, the $0 collectors (GitHub, ORCID, OpenAlex, Crossref,
+Wikidata, handle checks), published-link pivots from pages we legitimately fetch,
+manual import, promotion, analyst review and the full report. What changes with a
+provider configured is that results arrive **without the investigator copying
+each one**.
+
+## The staged plan
+
+One list of forty-six queries is a wall, not a workflow. The plan is now five
+stages, in the order an investigator actually works:
+
+1. **The name as supplied** — broad, mostly other people.
+2. **Spellings a public source might use** — usually what finds a real footprint.
+3. **Paired with what you already know** — supplied anchors; fewest strangers.
+4. **Paired with what the investigation found** — a claim a page actually
+   published, carrying the URL that published it.
+5. **Targeted platform, image and document sweeps.**
+
+Stage 4 is the iterative part, and it is bounded by provenance:
+`discovered_anchors()` reads claims off persisted findings and keeps only those
+with a source URL. The query's rationale cites that page, so an investigator can
+see where a search term came from and reject it. An anchor without a source would
+be the platform inventing a term and then searching for it.
+
+## Source coverage
+
+The worst thing a report can do is let "nobody looked" read as "there is nothing
+to find". Every source family resolves to exactly one state:
+
+| State | Means |
+|---|---|
+| `FOUND` | Searched; records returned. |
+| `NO_MATCH_RETURNED` | Searched; nothing returned. **The only state that is evidence of absence** — and only for what that source indexes. |
+| `NOT_SEARCHED` | Never attempted. Says nothing about the subject. |
+| `SKIPPED` | Declined an anonymous automated request. |
+| `FAILED` | Broke upstream. A gap, not a negative result. |
+| `MANUAL_REVIEW_AVAILABLE` | Not automatable; queries are generated for you. |
+| `PROVIDER_NOT_CONFIGURED` | A channel switched off by configuration. |
+
+The executive summary carries the gap sentences **first among the caveats and
+never omits them**, and when there are no findings at all it says explicitly that
+this is a statement about what was searched rather than about what exists.
+
+## Current versus historical executions
+
+A case with five reruns had forty collector rows, and the report counted them as
+forty sources. It had used eight, five times.
+
+**No new entity, no migration.** A `Job` *is* an execution, and
+`CollectorRun.job_id` already records which one a run belonged to. So the latest
+execution is the latest job's runs; everything else is history, kept and counted
+separately. Runs with no job (a direct engine call) group as one unattributed
+execution rather than being dropped.
+
+The report now shows `investigation executions`, the latest execution's
+attempted / successful / failed / skipped counts, and `historical collector runs`
+as a distinct figure. Coverage describes **today's** outcome, not the best one
+across reruns.
+
+## Crossref: "Event loop is closed"
+
+Root cause, reproduced before fixing: `httpx.AsyncClient` binds its connection
+pool to the loop that created it, and `AsyncClient.is_closed` only tracks an
+explicit `aclose()` — not whether that loop is still alive. The engine runs each
+target under its own `asyncio.run`, so the second run reused a module-global
+client whose keep-alive connections belonged to a loop that had already closed,
+and the next request on one of them raised `RuntimeError: Event loop is closed`.
+
+Intermittent by nature: it needed a connection the previous loop had actually
+kept alive, which is why it surfaced on Crossref rather than on every source.
+
+Two complementary fixes:
+
+- **The engine closes the pool inside its own loop** (`_collect`, in a `finally`).
+  The loop's owner owns the client's lifecycle.
+- **`get_http_client()` rebuilds when the running loop is not the one the client
+  was created in**, and logs that it had to. A caller that forgets cannot
+  resurrect the bug, only lose a connection pool.
+
+A client injected by a test is never rebuilt and never closed by
+`close_owned_client()` — swapping it would silently disconnect the mock transport.
+
+## Wikidata: citizenship is not a location
+
+PR #9 flagged it; this round fixes it. `P27` is *country of citizenship* and it
+was being read into `candidate.locations` — where the anchor engine compares a
+supplied city or country. That made a citizenship claim matchable against a
+place, which is precisely the nationality inference this platform refuses, in the
+one place it would have been invisible.
+
+It is kept, because Wikidata genuinely publishes it about public figures, but as
+an explicitly source-claimed `citizenship_claims` fact that feeds **nothing**:
+not a location, not an affiliation, not an anchor. It carries its own
+interpretation string, and `LOCATION_PROPERTIES` is now empty — Wikidata's place
+claims that *are* places (birthplace, residence) were never collected and still
+are not. No migration: it lives in the finding's `extra`.
+
 ## Social discovery
 
 ### The capability registry

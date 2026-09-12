@@ -22,11 +22,18 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from app.collectors.capabilities import search_platforms
 from app.collectors.person import PersonContext, normalize_handle
+from app.services.name_variants import (
+    EXACT,
+    TOKEN_REDUCED,
+    VARIANT_LABELS,
+    NameVariant,
+    generate_variants,
+)
 
 #: Query families, ordered by how much signal they usually carry.
 FAMILY_GENERAL = "general"
@@ -144,6 +151,13 @@ FORBIDDEN_TERMS: frozenset[str] = NEVER_SEARCHABLE | CONTEXTUAL_TERMS
 #: Ceiling on generated queries. A recon list is something a human works
 #: through, so it stays human-sized.
 MAX_QUERIES = 60
+#: Queries across all five stages of the staged plan. Larger than a single
+#: family's cap because the stages are worked one at a time, but still a
+#: worklist: an investigator reads these, they are not fed to a machine.
+MAX_STAGED_QUERIES = 40
+#: Discovered anchors turned into queries. Each costs two searches, and an
+#: unbounded list of claims read off candidate pages is a crawl.
+MAX_DISCOVERED_ANCHORS = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +174,14 @@ class ReconQuery:
     priority: int
     #: Which anchors the query was built from, e.g. ``["organization"]``.
     anchors_used: list[str] = field(default_factory=list)
+    #: The name spelling this query searches for, and how it relates to the
+    #: canonical one. A hit on a reduced spelling is worth less than a hit on
+    #: the full one, and a report cannot say so unless the query records which
+    #: it used.
+    name_variant: str = ""
+    variant_type: str = EXACT
+    #: Which stage of the plan it belongs to (1-5).
+    stage: int = 1
 
     @property
     def key(self) -> str:
@@ -173,6 +195,10 @@ class ReconQuery:
             "rationale": self.rationale,
             "priority": self.priority,
             "anchors_used": list(self.anchors_used),
+            "name_variant": self.name_variant,
+            "variant_type": self.variant_type,
+            "variant_label": VARIANT_LABELS.get(self.variant_type, self.variant_type),
+            "stage": self.stage,
         }
 
 
@@ -548,3 +574,394 @@ def is_permitted(query: str, *, supplied: Sequence[str] = ()) -> bool:
 
 def _contains(text: str, terms: frozenset[str]) -> bool:
     return any(re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text) for term in terms)
+
+
+# ----------------------------------------------------------- the staged plan
+#
+# A single list of forty-six queries is a wall, not a workflow. An investigator
+# works outward: the name, then the spellings a source might have used, then the
+# things they already know, then the things the first passes discovered, then the
+# targeted sweeps. The stages below are that order, made explicit — so the UI can
+# show one at a time and a report can say which stage produced a lead.
+
+STAGE_CANONICAL = 1
+STAGE_VARIANTS = 2
+STAGE_SUPPLIED_ANCHORS = 3
+STAGE_DISCOVERED_ANCHORS = 4
+STAGE_TARGETED = 5
+
+STAGE_TITLES: dict[int, str] = {
+    STAGE_CANONICAL: "The name as you supplied it",
+    STAGE_VARIANTS: "Spellings a public source might use",
+    STAGE_SUPPLIED_ANCHORS: "Paired with what you already know",
+    STAGE_DISCOVERED_ANCHORS: "Paired with what the investigation found",
+    STAGE_TARGETED: "Targeted platform, image and document sweeps",
+}
+
+STAGE_PURPOSES: dict[int, str] = {
+    STAGE_CANONICAL: (
+        "The plainest search. Broad, and mostly other people — but it is where the "
+        "obvious public footprint shows up."
+    ),
+    STAGE_VARIANTS: (
+        "The same search under shorter or differently punctuated spellings. This is "
+        "usually what finds a real footprint; a hit here is a lead, not a match, "
+        "because a shorter name is shared by more people."
+    ),
+    STAGE_SUPPLIED_ANCHORS: (
+        "The name paired with an employer, a school, a handle or a place you "
+        "supplied. These return the fewest strangers, so run them first."
+    ),
+    STAGE_DISCOVERED_ANCHORS: (
+        "The name paired with something a public source actually published about a "
+        "candidate — an employer, a role, a field. Only claims with provenance "
+        "appear here; nothing is invented."
+    ),
+    STAGE_TARGETED: (
+        "Platform, image and document sweeps. Broadest, and best run once the "
+        "stages above have told you which spelling and which anchor to trust."
+    ),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveredAnchor:
+    """Something a public source published about a candidate, with its source.
+
+    The provenance is not decoration. Generating a query from "communications
+    professional" is only legitimate because a page we actually read said so —
+    an anchor without a source is a guess, and a guess in a query becomes a
+    guess in a report.
+    """
+
+    kind: str
+    value: str
+    #: The URL that published it.
+    source_url: str
+    source_label: str = ""
+
+    @property
+    def key(self) -> str:
+        return f"{self.kind}:{self.value.strip().lower()}"
+
+
+@dataclass(frozen=True, slots=True)
+class ReconStage:
+    """One stage of the plan."""
+
+    number: int
+    title: str
+    purpose: str
+    queries: list[ReconQuery] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "stage": self.number,
+            "title": self.title,
+            "purpose": self.purpose,
+            "queries": [query.as_dict() for query in self.queries],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ReconPlan:
+    """The staged plan, plus the variants and anchors it was built from."""
+
+    canonical: str
+    variants: list[NameVariant] = field(default_factory=list)
+    stages: list[ReconStage] = field(default_factory=list)
+    discovered: list[DiscoveredAnchor] = field(default_factory=list)
+
+    @property
+    def queries(self) -> list[ReconQuery]:
+        return [query for stage in self.stages for query in stage.queries]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "canonical": self.canonical,
+            "variants": [variant.to_dict() for variant in self.variants],
+            "stages": [stage.as_dict() for stage in self.stages],
+            "discovered_anchors": [
+                {
+                    "kind": anchor.kind,
+                    "value": anchor.value,
+                    "source_url": anchor.source_url,
+                    "source_label": anchor.source_label,
+                }
+                for anchor in self.discovered
+            ],
+        }
+
+
+def staged_plan(
+    name: str,
+    context: PersonContext | None = None,
+    *,
+    variants: list[NameVariant] | None = None,
+    discovered: list[DiscoveredAnchor] | None = None,
+    also_known_as: Sequence[str] = (),
+) -> ReconPlan:
+    """Build the five-stage plan for ``name``.
+
+    Every query carries the spelling it searches and the stage it belongs to, so
+    a result ingested from it can say how it was found. The same screening as
+    :func:`generate_queries` applies — a stage cannot smuggle a query past it.
+    """
+    canonical = " ".join((name or "").split())
+    if not canonical:
+        return ReconPlan(canonical="")
+
+    context = context or PersonContext()
+    spellings = variants if variants is not None else generate_variants(canonical)
+    anchors = list(discovered or [])
+    supplied = supplied_values(context)
+
+    def keep(queries: list[ReconQuery]) -> list[ReconQuery]:
+        return [item for item in queries if is_permitted(item.query, supplied=supplied)]
+
+    exact = spellings[0] if spellings else None
+    stage_one = keep(
+        [
+            ReconQuery(
+                query=_quoted(canonical),
+                family=FAMILY_GENERAL,
+                rationale="The plainest search: every public page that names them.",
+                priority=10,
+                name_variant=canonical,
+                variant_type=exact.variant_type if exact else EXACT,
+                stage=STAGE_CANONICAL,
+            )
+        ]
+    )
+
+    stage_two: list[ReconQuery] = []
+    for variant in spellings[1:]:
+        stage_two.append(
+            ReconQuery(
+                query=_quoted(variant.value),
+                family=FAMILY_GENERAL,
+                rationale=variant.reason,
+                priority=12,
+                anchors_used=["name_variant"],
+                name_variant=variant.value,
+                variant_type=variant.variant_type,
+                stage=STAGE_VARIANTS,
+            )
+        )
+    for extra in also_known_as:
+        declared = " ".join(str(extra or "").split())
+        if declared and declared.lower() != canonical.lower():
+            stage_two.append(
+                ReconQuery(
+                    query=_quoted(declared),
+                    family=FAMILY_GENERAL,
+                    rationale=(
+                        f"A public source declares the fuller name {declared!r}. Searching it "
+                        f"returns far fewer same-name strangers. The name under investigation "
+                        f"is unchanged."
+                    ),
+                    priority=8,
+                    anchors_used=["declared_name"],
+                    name_variant=declared,
+                    variant_type=EXACT,
+                    stage=STAGE_VARIANTS,
+                )
+            )
+    stage_two = keep(stage_two)
+
+    stage_three = keep(
+        [
+            replace(query, stage=STAGE_SUPPLIED_ANCHORS, name_variant=canonical)
+            for query in _anchor_queries(_quoted(canonical), context)
+        ]
+    )
+
+    stage_four = keep(_discovered_queries(canonical, spellings, anchors))
+
+    targeted: list[ReconQuery] = [
+        *_social_queries(_quoted(canonical), canonical),
+        *_image_queries(_quoted(canonical), context),
+        *_academic_queries(_quoted(canonical)),
+    ]
+    # The strongest reduced spelling also gets the platform sweep: that is the
+    # spelling a public profile is most likely to be published under.
+    reduced = next((item for item in spellings[1:] if item.variant_type == TOKEN_REDUCED), None)
+    if reduced is not None:
+        targeted.extend(
+            replace(query, name_variant=reduced.value, variant_type=reduced.variant_type)
+            for query in _social_queries(_quoted(reduced.value), reduced.value)
+        )
+    stage_five = keep(
+        [
+            replace(
+                query,
+                stage=STAGE_TARGETED,
+                name_variant=query.name_variant or canonical,
+                variant_type=query.variant_type,
+            )
+            for query in targeted
+        ]
+    )
+
+    stages = [
+        ReconStage(STAGE_CANONICAL, STAGE_TITLES[1], STAGE_PURPOSES[1], _dedupe(stage_one)),
+        ReconStage(STAGE_VARIANTS, STAGE_TITLES[2], STAGE_PURPOSES[2], _dedupe(stage_two)),
+        ReconStage(
+            STAGE_SUPPLIED_ANCHORS, STAGE_TITLES[3], STAGE_PURPOSES[3], _dedupe(stage_three)
+        ),
+        ReconStage(
+            STAGE_DISCOVERED_ANCHORS, STAGE_TITLES[4], STAGE_PURPOSES[4], _dedupe(stage_four)
+        ),
+        ReconStage(STAGE_TARGETED, STAGE_TITLES[5], STAGE_PURPOSES[5], _dedupe(stage_five)),
+    ]
+
+    # Deduplicate across stages, keeping the earliest (narrowest) appearance, and
+    # cap the whole plan: five stages of twenty is still a wall.
+    seen: set[str] = set()
+    trimmed: list[ReconStage] = []
+    budget = MAX_STAGED_QUERIES
+    for stage in stages:
+        kept: list[ReconQuery] = []
+        for query in stage.queries:
+            if query.key in seen or budget <= 0:
+                continue
+            seen.add(query.key)
+            budget -= 1
+            kept.append(query)
+        trimmed.append(replace(stage, queries=kept))
+
+    return ReconPlan(
+        canonical=canonical, variants=list(spellings), stages=trimmed, discovered=anchors
+    )
+
+
+def _dedupe(queries: list[ReconQuery]) -> list[ReconQuery]:
+    ordered = sorted(queries, key=lambda item: (item.priority, item.family, item.query))
+    seen: set[str] = set()
+    unique: list[ReconQuery] = []
+    for query in ordered:
+        if query.key in seen:
+            continue
+        seen.add(query.key)
+        unique.append(query)
+    return unique
+
+
+def _discovered_queries(
+    canonical: str, spellings: list[NameVariant], anchors: list[DiscoveredAnchor]
+) -> list[ReconQuery]:
+    """Queries pairing a spelling with something a source actually published.
+
+    The strongest reduced spelling is used alongside the canonical one, because
+    the discovered claim and the shorter name usually come from the same page —
+    that pairing is the one most likely to find more of the same footprint.
+    """
+    if not anchors:
+        return []
+    reduced = next((item for item in spellings[1:] if item.variant_type == TOKEN_REDUCED), None)
+    targets = [(canonical, EXACT)]
+    if reduced is not None:
+        targets.append((reduced.value, reduced.variant_type))
+
+    out: list[ReconQuery] = []
+    for anchor in anchors[:MAX_DISCOVERED_ANCHORS]:
+        value = anchor.value.strip()
+        if not value:
+            continue
+        for spelling, variant_type in targets:
+            out.append(
+                ReconQuery(
+                    query=f'"{spelling}" "{value}"',
+                    family=FAMILY_ANCHOR,
+                    rationale=(
+                        f"{anchor.source_label or 'A public source'} published "
+                        f"{value!r} for a candidate ({anchor.source_url}). Pairing it with "
+                        f"{spelling!r} narrows the search to that person's footprint."
+                    ),
+                    priority=6,
+                    anchors_used=[f"discovered_{anchor.kind}"],
+                    name_variant=spelling,
+                    variant_type=variant_type,
+                    stage=STAGE_DISCOVERED_ANCHORS,
+                )
+            )
+    return out
+
+
+#: Keys on a persisted finding that carry a claim about a candidate, and the
+#: anchor kind each becomes. Closed, because an anchor built from a key nobody
+#: vetted is an anchor built from whatever a page happened to contain.
+DISCOVERED_CLAIM_KEYS: tuple[tuple[str, str], ...] = (
+    ("company", "organization"),
+    ("repository_homepage", "website"),
+)
+#: Claim *kinds* read from the structured facts a profile page stated.
+DISCOVERED_FACT_KINDS: dict[str, str] = {
+    "employer": "organization",
+    "occupation": "occupation",
+    "professional_field": "field",
+}
+
+
+def discovered_anchors(session: Any, case_id: Any) -> list[DiscoveredAnchor]:
+    """Claims public sources published about candidates in this case.
+
+    Only values that came with a URL. A query built from "communications
+    professional" is legitimate because a page we read said so, and the rationale
+    cites that page — so an investigator can see where a search term came from
+    and reject it. Without the source it would be the platform inventing an
+    anchor and then searching for it, which is how a guess becomes a finding.
+    """
+    from sqlalchemy import select
+
+    from app.models import Finding
+
+    found: dict[str, DiscoveredAnchor] = {}
+    for finding in session.scalars(select(Finding).where(Finding.case_id == case_id)):
+        data = finding.data or {}
+        source_url = str(data.get("url") or finding.source_url or "")
+        label = str(data.get("source_label") or finding.collector)
+        if not source_url:
+            continue
+
+        for key, kind in DISCOVERED_CLAIM_KEYS:
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                anchor = DiscoveredAnchor(
+                    kind=kind,
+                    value=value.strip(),
+                    source_url=source_url,
+                    source_label=label,
+                )
+                found.setdefault(anchor.key, anchor)
+
+        for entry in data.get("readme_facts") or []:
+            if not isinstance(entry, dict):
+                continue
+            fact_kind = DISCOVERED_FACT_KINDS.get(str(entry.get("kind", "")))
+            value = entry.get("value")
+            if fact_kind and isinstance(value, str) and value.strip():
+                anchor = DiscoveredAnchor(
+                    kind=fact_kind,
+                    value=value.strip(),
+                    source_url=str(entry.get("source_url") or source_url),
+                    source_label=label,
+                )
+                found.setdefault(anchor.key, anchor)
+
+        for affiliation in data.get("affiliations") or []:
+            if isinstance(affiliation, str) and affiliation.strip():
+                anchor = DiscoveredAnchor(
+                    kind="organization",
+                    value=affiliation.strip(),
+                    source_url=source_url,
+                    source_label=label,
+                )
+                found.setdefault(anchor.key, anchor)
+
+    # Organisations first: an employer narrows a name search far more than a
+    # field does, and the plan's budget is spent top-down.
+    order = {"organization": 0, "occupation": 1, "field": 2, "website": 3}
+    return sorted(found.values(), key=lambda item: (order.get(item.kind, 9), item.value))[
+        :MAX_DISCOVERED_ANCHORS
+    ]

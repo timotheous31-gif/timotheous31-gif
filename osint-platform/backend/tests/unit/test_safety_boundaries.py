@@ -180,3 +180,237 @@ def test_no_email_address_is_ever_constructed_from_a_name_and_a_domain():
             if pattern.search(line) and not line.lstrip().startswith(("#", '"', "*", "'")):
                 offenders.append(f"{path}: {line.strip()[:80]}")
     assert not offenders, offenders
+
+
+def test_no_provider_adapter_targets_a_consumer_search_result_page():
+    """Search *APIs* are documented products; result pages are not to be parsed.
+
+    A vendor API on a domain containing "google" — google.serper.dev is one — is
+    a documented paid API and is allowed. What is forbidden is a request to the
+    consumer search UI, which is what scraping would look like.
+    """
+    pattern = re.compile(
+        r"https?://(?:www\.)?(?:google\.com|bing\.com|duckduckgo\.com|startpage\.com)/",
+        re.I,
+    )
+    offenders = []
+    for path in _sources():
+        for number, line in enumerate(path.read_text("utf-8").splitlines(), 1):
+            if pattern.search(line) and not line.lstrip().startswith(("#", '"', "'", "*")):
+                offenders.append(f"{path.name}:{number}: {line.strip()[:70]}")
+    assert not offenders, offenders
+
+
+def test_no_html_parser_is_applied_to_a_search_response():
+    """Search results are read from JSON APIs; no markup is ever parsed.
+
+    Scoped to the search path deliberately. ``http_meta`` does parse HTML — the
+    title and OpenGraph tags of a page the investigation is actually about — and
+    that is a different act from parsing a search engine's result page. What must
+    stay true is that nothing in the search path can do it.
+    """
+    banned = ("beautifulsoup", "bs4", "lxml.html", "html.parser", "pyquery", "selectolax")
+    search_path = (
+        BACKEND / "services" / "providers" / "search.py",
+        BACKEND / "services" / "search_ingest.py",
+        BACKEND / "services" / "recon.py",
+        BACKEND / "services" / "recon_import.py",
+        BACKEND / "collectors" / "search.py",
+    )
+    offenders = []
+    for path in search_path:
+        lowered = path.read_text("utf-8").lower()
+        for term in banned:
+            if f"import {term}" in lowered or f"from {term}" in lowered:
+                offenders.append(f"{path.name}: {term}")
+    assert not offenders, offenders
+
+
+def test_a_search_result_url_is_validated_before_it_is_stored():
+    """Provider output is third-party input, held to the pasted-URL standard."""
+    from app.services.search_ingest import public_url
+
+    for unsafe in (
+        "http://127.0.0.1/admin",
+        "http://localhost/admin",
+        "http://10.1.2.3/",
+        "http://192.168.0.1/",
+        "http://169.254.169.254/latest/meta-data/",
+        "https://user:pass@example.com/",
+        "javascript:alert(1)",
+        "file:///etc/passwd",
+        "",
+    ):
+        assert public_url(unsafe) is None, unsafe
+    assert public_url("https://example.org/team/person") == "https://example.org/team/person"
+
+
+def test_nothing_infers_a_nationality_from_a_place():
+    """Wikidata's citizenship claim is kept apart from anything comparable.
+
+    It was being read into ``candidate.locations``, where the anchor engine
+    compares a supplied city or country — which made a citizenship claim
+    matchable against a place. That is the nationality inference this platform
+    refuses, in the one place it would have been invisible.
+    """
+    from app.collectors.wikidata import (
+        CITIZENSHIP_INTERPRETATION,
+        CITIZENSHIP_PROPERTY,
+        LOCATION_PROPERTIES,
+    )
+
+    assert CITIZENSHIP_PROPERTY == "P27"
+    assert CITIZENSHIP_PROPERTY not in LOCATION_PROPERTIES
+    assert LOCATION_PROPERTIES == ()
+    lowered = CITIZENSHIP_INTERPRETATION.lower()
+    assert "not a location" in lowered
+    assert "infers a nationality" in lowered
+
+
+def test_a_citizenship_claim_never_reaches_the_anchor_comparison():
+    from app.collectors.person import PersonCandidate, PersonContext, anchor_matches
+
+    # A candidate carrying only a citizenship claim, and a supplied country.
+    candidate = PersonCandidate(
+        url="https://www.wikidata.org/wiki/Q1",
+        name="Example Person",
+        extra={"citizenship_claims": ["Pakistan"]},
+    )
+    assert anchor_matches(candidate, PersonContext(country="Pakistan")) == []
+
+
+# ---------------------------------------------------- what a match may rest on
+
+
+def test_an_affiliation_match_needs_the_whole_organisation_name():
+    """The strongest non-identifier signal may not fire on a shared word.
+
+    ``context_affiliation_match`` scores 0.50 with a floor of 0.50 — it takes a
+    name-only candidate from 0.1500 to 0.5750 on its own. It fired first on any
+    shared word over two characters ("University of Karachi" corroborating
+    "University of Sindh"), then on any shared *distinctive* word, which still
+    let "Aga Khan University" corroborate "Aga Khan Foundation" and "University
+    of Sindh" corroborate "Sindh Agriculture University". Those are different
+    organisations. A rule this strong matches a whole name or nothing.
+
+    The rows below are the specification. A behaviour change has to change a row.
+    """
+    from app.collectors.person import PersonCandidate, PersonContext, anchor_matches
+
+    def matched(supplied: str, observed: str) -> bool:
+        candidate = PersonCandidate(
+            url="https://example.org/person", name="Example Person", affiliations=[observed]
+        )
+        kinds = [
+            kind for kind, _ in anchor_matches(candidate, PersonContext(organizations=(supplied,)))
+        ]
+        return "affiliation" in kinds
+
+    must_not_match = (
+        # Generic collisions.
+        ("University of Karachi", "University of Sindh"),
+        ("Government College University", "Government of Sindh"),
+        ("Ministry of Education", "Ministry of Health"),
+        ("National Institute of Technology", "National Institute of Health"),
+        ("Higher Education Commission", "Education Department"),
+        # Specific collisions — the ones a distinctive-word rule still allowed.
+        ("Aga Khan University", "Aga Khan Foundation"),
+        ("University of Sindh", "Sindh Agriculture University"),
+        ("Shah Abdul Latif University", "Shah Abdul Latif Medical Institute"),
+        # Related but separate bodies, and a campus that is named.
+        ("Aga Khan University", "The Aga Khan University Hospital"),
+        ("Shah Abdul Latif University", "Shah Abdul Latif University Khairpur"),
+        # An abbreviation is not resolved. Documented, deliberate false negative.
+        ("MIT", "Massachusetts Institute of Technology"),
+    )
+    for supplied, observed in must_not_match:
+        assert not matched(supplied, observed), f"{supplied!r} must not corroborate {observed!r}"
+
+    must_match = (
+        ("University of Sindh", "University of Sindh"),
+        # An address, a campus or a parenthetical qualifier is dropped.
+        ("University of Sindh", "University of Sindh, Jamshoro"),
+        ("Ministry of Education", "Ministry of Education (Islamabad)"),
+        ("Higher Education Commission", "Higher Education Commission - Sindh"),
+        # Word order and "the" and "of" carry no identity.
+        ("University of Sindh", "Sindh University"),
+        ("Example Research Institute", "Institute of Example Research"),
+        ("Aga Khan University", "The Aga Khan University"),
+    )
+    for supplied, observed in must_match:
+        assert matched(supplied, observed), f"{supplied!r} must corroborate {observed!r}"
+
+
+def test_an_explicit_organisation_identifier_matches_where_a_name_cannot():
+    """A registered identifier is an agreement about the body, not its spelling."""
+    from app.collectors.person import PersonCandidate, PersonContext, anchor_matches
+
+    candidate = PersonCandidate(
+        url="https://example.org/person",
+        name="Example Person",
+        affiliations=["Massachusetts Institute of Technology"],
+        extra={"organization_ids": {"ror": "https://ror.org/042nb2s40"}},
+    )
+    context = PersonContext(
+        organizations=("MIT",),
+        raw={"organization_ids": {"ror": "https://ror.org/042nb2s40"}},
+    )
+    kinds = [kind for kind, _ in anchor_matches(candidate, context)]
+    assert "affiliation" in kinds
+
+
+def test_a_profession_must_match_as_a_phrase_not_one_shared_word():
+    from app.collectors.person import PersonCandidate, PersonContext, anchor_matches
+
+    def matched(occupation: str, summary: str) -> bool:
+        candidate = PersonCandidate(
+            url="https://example.org/person", name="Example Person", summary=summary
+        )
+        kinds = [
+            kind for kind, _ in anchor_matches(candidate, PersonContext(occupation=occupation))
+        ]
+        return "occupation" in kinds
+
+    assert not matched("assistant professor", "Assistant Manager at Example Bank")
+    assert matched("lecturer", "Lecturer in English")
+    assert matched("applied linguist", "Applied linguist and lecturer")
+
+
+def test_no_name_variant_claims_a_role_for_a_name_part():
+    """A three-part name is not reliably "first, middle, last".
+
+    "Tabitha Afzal Imdad" may carry a patronymic where a Western reading expects
+    a middle name, and nothing in this system learns which. So a variant kind,
+    its label, its explanation and its confidence rule all describe what happened
+    to a *token*, never what role that token plays in the person's name.
+    """
+    from app.correlation.confidence import default_engine
+    from app.services.name_variants import (
+        VARIANT_LABELS,
+        VARIANT_ORDER,
+        generate_variants,
+    )
+
+    forbidden = (
+        "middle name",
+        "first name",
+        "last name",
+        "surname",
+        "given name",
+        "family name",
+        "maiden name",
+    )
+    texts = [
+        *VARIANT_ORDER,
+        *VARIANT_LABELS.values(),
+        *[variant.reason for variant in generate_variants("Tabitha Afzal Imdad Khan")],
+        *[
+            rule.reason
+            for key, rule in default_engine.rules.items()
+            if key.startswith(("name_variant", "same_person_name"))
+        ],
+    ]
+    for text in texts:
+        lowered = text.lower()
+        for phrase in forbidden:
+            assert phrase not in lowered, f"{phrase!r} appears in {text!r}"

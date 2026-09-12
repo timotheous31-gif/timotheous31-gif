@@ -40,10 +40,52 @@ export interface PersonCandidate {
   mismatchReasons: string[];
   /** Which supplied context corroborated it, if any. */
   corroboratedBy: string[];
+  /**
+   * Citizenships this source *states*, with the sentence that bounds them.
+   *
+   * Shown attributed and used for nothing. Not a location, not a residence, not
+   * a current position, and never inferred — see the backend's
+   * `CITIZENSHIP_CAVEAT`.
+   */
+  citizenshipClaims: string[];
+  citizenshipNote: string | null;
+  /**
+   * Identifiers another index also carries, where independence could not be
+   * established. Deliberately separate from `corroboratedBy`: the reader must
+   * not have to guess which kind of claim a list is making.
+   */
+  sharedIdentifiers: SharedIdentifier[];
+}
+
+export interface SharedIdentifier {
+  identifier: string;
+  value: string;
+  sources: string[];
+  independence: string;
+  label: string;
+  reason: string;
 }
 
 function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : [];
+}
+
+function sharedIdentifiers(value: unknown): SharedIdentifier[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const entry = item as Record<string, unknown>;
+    return [
+      {
+        identifier: String(entry["identifier"] ?? ""),
+        value: String(entry["value"] ?? ""),
+        sources: strings(entry["sources"]),
+        independence: String(entry["independence"] ?? "UNKNOWN"),
+        label: String(entry["label"] ?? ""),
+        reason: String(entry["reason"] ?? ""),
+      },
+    ];
+  });
 }
 
 function record(value: unknown): Record<string, string> {
@@ -82,6 +124,11 @@ export function toCandidate(entity: Entity): PersonCandidate {
     matchReasons: strings(attributes["match_reasons"]),
     mismatchReasons: strings(attributes["mismatch_reasons"]),
     corroboratedBy: strings(attributes["corroborated_by"]),
+    citizenshipClaims: strings(attributes["citizenship_claims"]),
+    citizenshipNote: attributes["citizenship_interpretation"]
+      ? String(attributes["citizenship_interpretation"])
+      : null,
+    sharedIdentifiers: sharedIdentifiers(attributes["shared_identifiers"]),
   };
 }
 

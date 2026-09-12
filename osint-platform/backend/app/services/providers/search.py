@@ -14,8 +14,9 @@ silently returning nothing.
 from __future__ import annotations
 
 import abc
-from dataclasses import dataclass
-from typing import ClassVar
+from dataclasses import dataclass, replace
+from datetime import datetime
+from typing import Any, ClassVar
 from urllib.parse import urlsplit
 
 from app.core import http
@@ -29,17 +30,83 @@ log = get_logger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class SearchResult:
-    """One normalised search hit."""
+    """One normalised search hit, with everything needed to account for it.
+
+    The provenance fields matter as much as the content. A result is discovery
+    evidence — "this public page exists and a search for *this spelling* found
+    it" — and a report has to be able to say which query and which name variant
+    surfaced it. Without that, a reduced-name hit and an exact-name hit look
+    identical in the record, and they are not worth the same.
+    """
 
     title: str
     url: str
     snippet: str
     rank: int
     provider: str
+    #: The query text that produced it.
+    query: str = ""
+    #: The spelling searched for, and how it relates to the canonical name.
+    search_variant: str = ""
+    variant_type: str = ""
+    #: Which family of the recon plan the query belonged to.
+    query_family: str = ""
+    #: What the provider displayed as the source, when it supplies one. Never
+    #: trusted over the URL itself — it is a label, not an address.
+    displayed_url: str = ""
+    #: ``web`` | ``image`` | ``news`` | ``video`` | ``document`` — only when the
+    #: provider states it. Never inferred from the URL here; classification is
+    #: the ingestion layer's job and it has better tools for it.
+    result_type: str = ""
+    #: An image the provider legitimately returned alongside the result. Treated
+    #: as untrusted input and validated before anything is done with it.
+    image_url: str = ""
+    retrieved_at: datetime | None = None
 
     @property
     def host(self) -> str:
         return (urlsplit(self.url).hostname or "").lower().removeprefix("www.")
+
+    def with_provenance(
+        self,
+        *,
+        query: str,
+        search_variant: str,
+        variant_type: str,
+        query_family: str,
+        retrieved_at: datetime,
+    ) -> SearchResult:
+        """A copy carrying the search that found it.
+
+        Providers fill in content; the caller that ran the query fills in which
+        query it was. Keeping those separate means a provider adapter cannot
+        forget, or lie about, its own provenance.
+        """
+        return replace(
+            self,
+            query=query,
+            search_variant=search_variant,
+            variant_type=variant_type,
+            query_family=query_family,
+            retrieved_at=retrieved_at,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "title": self.title,
+            "url": self.url,
+            "snippet": self.snippet,
+            "rank": self.rank,
+            "provider": self.provider,
+            "query": self.query,
+            "search_variant": self.search_variant,
+            "variant_type": self.variant_type,
+            "query_family": self.query_family,
+            "displayed_url": self.displayed_url or self.host,
+            "result_type": self.result_type or None,
+            "image_url": self.image_url or None,
+            "retrieved_at": self.retrieved_at.isoformat() if self.retrieved_at else None,
+        }
 
 
 class SearchProvider(abc.ABC):
@@ -127,6 +194,8 @@ class BraveSearchProvider(SearchProvider):
                 snippet=str(item.get("description", ""))[:500],
                 rank=index,
                 provider=self.key,
+                displayed_url=str(item.get("meta_url", {}).get("netloc", "") or ""),
+                image_url=_thumbnail(item),
             )
             for index, item in enumerate(items[:limit], start=1)
             if item.get("url")
@@ -165,6 +234,7 @@ class BingSearchProvider(SearchProvider):
                 snippet=str(item.get("snippet", ""))[:500],
                 rank=index,
                 provider=self.key,
+                displayed_url=str(item.get("displayUrl", "") or ""),
             )
             for index, item in enumerate(items[:limit], start=1)
             if item.get("url")
@@ -204,10 +274,24 @@ class SerperSearchProvider(SearchProvider):
                 snippet=str(item.get("snippet", ""))[:500],
                 rank=int(item.get("position", index)),
                 provider=self.key,
+                displayed_url=str(item.get("displayedLink", "") or ""),
+                image_url=str(item.get("imageUrl", "") or ""),
             )
             for index, item in enumerate(items[:limit], start=1)
             if item.get("link")
         ]
+
+
+def _thumbnail(item: dict[str, Any]) -> str:
+    """A thumbnail a provider returned, if it returned one.
+
+    Untrusted: it comes from a third party describing a page neither of us
+    controls. Nothing fetches it here — it is validated where it is used.
+    """
+    thumbnail = item.get("thumbnail")
+    if isinstance(thumbnail, dict):
+        return str(thumbnail.get("src", "") or "")
+    return ""
 
 
 _PROVIDERS: dict[str, type[SearchProvider]] = {}
