@@ -65,7 +65,15 @@ class StagedProvider(SearchProvider):
 
 
 def _result(url: str, title: str, snippet: str = "", **kwargs) -> SearchResult:
-    return SearchResult(title=title, url=url, snippet=snippet, rank=1, provider="staged", **kwargs)
+    return SearchResult(
+        title=title,
+        url=url,
+        provider="staged",
+        snippet=snippet,
+        provider_position=1,
+        position_is_rank=True,
+        **kwargs,
+    )
 
 
 RUN1_ANSWERS = {REDUCED: [_result(LINKEDIN_A, REDUCED, "Communications professional")]}
@@ -100,7 +108,7 @@ def _execute(session, case, provider, monkeypatch) -> Job:
     from app.services import search_ingest
     from app.services.engine import InvestigationEngine, InvestigationOptions
 
-    monkeypatch.setattr(search_ingest, "get_search_provider", lambda: provider)
+    monkeypatch.setattr(search_ingest, "get_search_provider", lambda *_a, **_k: provider)
     job = Job(case_id=case.id, state=JobState.RUNNING, params={}, result={})
     session.add(job)
     session.flush()
@@ -573,7 +581,9 @@ def test_an_engine_run_without_a_job_records_no_observations(db_session, monkeyp
     case, _target = _case_with_person(db_session)
     from app.services import search_ingest
 
-    monkeypatch.setattr(search_ingest, "get_search_provider", lambda: StagedProvider(RUN1_ANSWERS))
+    monkeypatch.setattr(
+        search_ingest, "get_search_provider", lambda *_a, **_k: StagedProvider(RUN1_ANSWERS)
+    )
     engine = InvestigationEngine()
     engine.plan = lambda target, options: []  # type: ignore[method-assign]
     result = engine.run(db_session, case.id, InvestigationOptions())

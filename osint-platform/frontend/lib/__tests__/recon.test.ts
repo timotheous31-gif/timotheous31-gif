@@ -362,6 +362,9 @@ describe("provider status", () => {
     search_provider: "none",
     search_provider_configured: false,
     search_provider_note: "",
+    search_provider_runs_requested_query: true,
+    search_provider_search_budget: null,
+    search_provider_provenance_note: "",
     execution: "",
     ...overrides,
   });

@@ -81,13 +81,79 @@ class Settings(BaseSettings):
     #: Hard ceiling on a single collector run.
     collector_timeout_seconds: float = 60.0
 
+    # --- search-result enrichment -------------------------------------------
+    #: Some providers return a URL and a title and no description at all. Rather
+    #: than invent a description, the platform may fetch a *small* number of
+    #: high-value result pages through the same SSRF-guarded client every
+    #: collector uses, and extract a short public text excerpt. Strictly bounded:
+    #: an uncapped fetch of every search result is a crawler, and this is not
+    #: one.
+    result_enrichment_enabled: bool = True
+    max_result_enrichments_per_investigation: int = 3
+    #: Byte ceiling on an enrichment fetch, and the length of the excerpt kept.
+    result_enrichment_max_bytes: int = 750_000
+    result_enrichment_excerpt_chars: int = 600
+
     # ------------------------------------------------------------- providers
-    search_provider: Literal["none", "brave", "bing", "serper"] = "none"
+    search_provider: Literal[
+        "none", "anthropic_web_search", "google_wss", "brave", "bing", "serper"
+    ] = "none"
     brave_api_key: SecretStr | None = None
     bing_api_key: SecretStr | None = None
     serper_api_key: SecretStr | None = None
     github_token: SecretStr | None = None
     hibp_api_key: SecretStr | None = None
+
+    # --- Anthropic web search ------------------------------------------------
+    # A *secondary* discovery channel. Anthropic's server-side web search is not
+    # a deterministic query API: the model decides which searches to run, there
+    # is no parameter that submits an exact query, and results carry no
+    # description and no documented ranking. Everything below exists to keep that
+    # channel bounded and honestly accounted for. Required only when
+    # SEARCH_PROVIDER=anthropic_web_search; every other mode, including the
+    # zero-cost default, never reads these.
+    anthropic_api_key: SecretStr | None = None
+    anthropic_api_url: str = "https://api.anthropic.com"
+    #: Sent as ``anthropic-version``. The documented stable value.
+    anthropic_api_version: str = "2023-06-01"
+    #: The model that drives the search tool. Anthropic's web-search
+    #: documentation uses this model in every example on the page, and it is a
+    #: current Active model in the published catalogue. Configurable because the
+    #: documentation does not enumerate per-model web-search support, so an
+    #: operator who wants a cheaper model verifies it for their own account.
+    anthropic_web_search_model: str = "claude-opus-5"
+    #: Hard ceiling on searches per request, enforced by Anthropic itself. This
+    #: is the spend cap: an exceeded ceiling returns a tool-result error and
+    #: Anthropic does not bill a search that errored.
+    anthropic_web_search_max_uses: int = 4
+    #: Output-token ceiling for the driving request. The model's prose is
+    #: discarded — only the search-result blocks are ingested — so this needs to
+    #: be just large enough for the turn to complete its searches.
+    anthropic_web_search_max_tokens: int = 4096
+    #: Published price per search operation, used for the cost *estimate*. Never
+    #: presented as a billed total. $10 per 1,000 searches at time of writing.
+    anthropic_web_search_unit_cost_usd: float = 0.01
+    #: Domain control. Anthropic accepts one or the other and rejects a request
+    #: carrying both, so supplying both here is a configuration error.
+    anthropic_web_search_allowed_domains: list[str] = Field(default_factory=list)
+    anthropic_web_search_blocked_domains: list[str] = Field(default_factory=list)
+    #: Coarse localisation, passed through as the documented ``user_location``.
+    #: City / region / ISO 3166-1 alpha-2 country / IANA timezone only. Nothing
+    #: here is derived from the investigator's address or IP, and nothing
+    #: narrower than a city is accepted.
+    anthropic_web_search_city: str | None = None
+    anthropic_web_search_region: str | None = None
+    anthropic_web_search_country: str | None = None
+    anthropic_web_search_timezone: str | None = None
+
+    # --- Google Web Search Service ------------------------------------------
+    # Configuration and adapter only. The provider is PENDING_PARTNER_ACCESS: it
+    # can be configured and inspected but refuses to issue a request, because
+    # partner credentials do not exist yet and faking access would be worse than
+    # not having it.
+    google_wss_api_key: SecretStr | None = None
+    google_wss_client_id: str | None = None
+    google_wss_endpoint: str = ""
 
     # --- free person sources -------------------------------------------------
     # Every endpoint below is public and needs no key or account. They are
@@ -115,9 +181,20 @@ class Settings(BaseSettings):
     evidence_store_raw: bool = True
     evidence_dir: str = "./data/evidence"
 
-    @field_validator("cors_origins", mode="before")
+    @field_validator(
+        "cors_origins",
+        "anthropic_web_search_allowed_domains",
+        "anthropic_web_search_blocked_domains",
+        mode="before",
+    )
     @classmethod
-    def _split_origins(cls, value: object) -> object:
+    def _split_list(cls, value: object) -> object:
+        """Accept a comma-separated string for any list-valued setting.
+
+        Environment variables are strings, and ``docker-compose.yml`` passes
+        these through as one. A blank value is an empty list, not a list
+        containing an empty entry.
+        """
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
@@ -128,6 +205,8 @@ class Settings(BaseSettings):
         "serper_api_key",
         "github_token",
         "hibp_api_key",
+        "anthropic_api_key",
+        "google_wss_api_key",
         mode="before",
     )
     @classmethod

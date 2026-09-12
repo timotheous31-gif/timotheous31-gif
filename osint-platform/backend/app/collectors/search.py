@@ -134,7 +134,7 @@ class SearchCollector(BaseCollector):
                             "title": item.title,
                             "url": item.url,
                             "snippet": item.snippet,
-                            "rank": item.rank,
+                            "provider_position": item.provider_position,
                         }
                         for item in response
                     ],
@@ -158,7 +158,12 @@ class SearchCollector(BaseCollector):
         if target.type is TargetType.PERSON:
             return [self._person_candidate(item, query, target)]
         # A search hit is weak on its own: it shows a page mentions the target.
-        confidence = 0.5 if item.rank <= 3 else 0.4
+        # The small bonus for an early result applies only where the provider
+        # documents its order as a relevance ranking. A provider that returns a
+        # list and says nothing about its order gets no bonus, because reading one
+        # into it would be inventing a signal.
+        top_ranked = item.position_is_rank and (item.provider_position or 0) in (1, 2, 3)
+        confidence = 0.5 if top_ranked else 0.4
         return [
             FindingDraft(
                 kind=FindingKind.SEARCH_RESULT,
@@ -169,14 +174,15 @@ class SearchCollector(BaseCollector):
                     "host": item.host,
                     "title": item.title,
                     "snippet": item.snippet,
-                    "rank": item.rank,
+                    "provider_position": item.provider_position,
+                    "position_is_rank": item.position_is_rank,
                     "query": query,
                     "provider": item.provider,
                 },
                 source_url=item.url,
                 confidence=confidence,
                 confidence_reasons=[
-                    f"Returned at rank {item.rank} by {item.provider} for {query!r}",
+                    _position_reason(item, query),
                     "A search hit shows a page mentions the target, not that they are related",
                 ],
                 classification=Classification.PUBLIC,
@@ -207,7 +213,8 @@ class SearchCollector(BaseCollector):
                 "host": item.host,
                 "title": item.title,
                 "snippet": item.snippet,
-                "rank": item.rank,
+                "provider_position": item.provider_position,
+                "position_is_rank": item.position_is_rank,
                 "query": query,
                 "provider": item.provider,
                 "subject_name": display,
@@ -224,7 +231,7 @@ class SearchCollector(BaseCollector):
                 "affiliations": [],
                 "locations": [],
                 "match_reasons": [
-                    f"A search for {display!r} returned this page at rank {item.rank}",
+                    f"A search for {display!r} returned this page",
                 ],
                 "mismatch_reasons": [
                     "A search engine matched text on the page, which may name a "
@@ -237,10 +244,28 @@ class SearchCollector(BaseCollector):
             # an identification, however highly the provider ranked the page.
             confidence=0.2,
             confidence_reasons=[
-                f"Returned at rank {item.rank} by {item.provider} for {query!r}",
+                _position_reason(item, query),
                 "Matched on displayed name only; personal names are not unique",
                 "Kept as a separate candidate until independent evidence links it",
             ],
             classification=Classification.PERSONAL,
             dedupe_key=f"person-candidate:{target.value}:{item.url}",
         )
+
+
+def _position_reason(item: SearchResult, query: str) -> str:
+    """How the provider returned this result, without overstating it.
+
+    "Rank" is a claim about relevance ordering. Only a provider that documents its
+    order as a ranking gets that word; one that returns an unordered list is
+    described as having returned the page, and nothing more.
+    """
+    if item.position_is_rank and item.provider_position:
+        return f"Returned at rank {item.provider_position} by {item.provider} for {query!r}"
+    if item.provider_position:
+        return (
+            f"Returned by {item.provider} for {query!r}, at position "
+            f"{item.provider_position} in a list whose order the provider does not "
+            f"document as a ranking"
+        )
+    return f"Returned by {item.provider} for {query!r}; the provider states no ordering"

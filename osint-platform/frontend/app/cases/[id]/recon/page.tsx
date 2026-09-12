@@ -456,23 +456,73 @@ function IngestSummary({ ingest }: { ingest: SearchIngestResult }) {
       </div>
     );
   }
+  const accounting = ingest.accounting;
+  const budget =
+    accounting && accounting.search_budget !== null
+      ? `${accounting.searches_executed} / ${accounting.search_budget}`
+      : String(ingest.queries_run);
+  const blocked = ingest.outcome !== "ok";
   return (
     <div className="border-b border-line px-4 py-2 text-xs">
       <p>
-        {ingest.queries_run} query(ies) through {ingest.provider}: {ingest.results_stored} new
+        {ingest.queries_run} search(es) through {ingest.provider}: {ingest.results_stored} new
         result(s) stored, {ingest.duplicates} already known, {ingest.rejected_urls} rejected as
         unsafe or irrelevant.
       </p>
-      {ingest.results_stored === 0 && ingest.failures.length === 0 ? (
+      {/* The plan and the execution, never the same number. One supported provider
+          chooses its own queries, and showing the plan here would claim work that
+          was never done. */}
+      {!ingest.queries_as_planned ? (
+        <p className="mt-0.5 text-muted">
+          This provider chooses its own searches from the plan rather than running them
+          verbatim. {ingest.queries_planned} query(ies) were offered; the {ingest.queries_run}{" "}
+          above are the ones it reported running.
+        </p>
+      ) : null}
+      {accounting ? (
+        <p className="mt-0.5 text-muted">
+          Searches: {budget}
+          {accounting.estimated_search_cost_usd !== null ? (
+            <>
+              {" · "}Estimated search-tool cost: $
+              {accounting.estimated_search_cost_usd.toFixed(2)} (estimate, not a bill)
+            </>
+          ) : null}
+          {" · "}Token cost: not included
+        </p>
+      ) : null}
+      {accounting?.budget_exhausted ? (
+        <p className="mt-0.5 text-probable">
+          The search budget was exhausted, so the public web was examined incompletely. That is
+          partial coverage, not an absence of results.
+        </p>
+      ) : null}
+      {ingest.low_context_results > 0 ? (
+        <p className="mt-0.5 text-muted">
+          {ingest.low_context_results} result(s) came with no description from the provider. They
+          are correlated on the name the page displays only, unless the page&apos;s own text was
+          read.
+          {ingest.enrichment?.limit
+            ? ` ${ingest.enrichment.fetches_used ?? 0} of ${ingest.enrichment.limit} permitted page read(s) used.`
+            : ""}
+        </p>
+      ) : null}
+      {ingest.results_stored === 0 && ingest.failures.length === 0 && !blocked ? (
         <p className="mt-0.5 text-muted">
           The provider searched and returned nothing usable. That is an absence in this
           provider&apos;s index — not a finding about the subject.
         </p>
       ) : null}
+      {blocked && !accounting?.budget_exhausted ? (
+        <p className="mt-0.5 text-danger">
+          The channel did not finish cleanly ({ingest.outcome}). {ingest.reason || ""} Coverage is
+          partial, and nothing here means the public web holds nothing.
+        </p>
+      ) : null}
       {ingest.failures.length > 0 ? (
         <p className="mt-0.5 text-danger">
-          {ingest.failures.length} query(ies) failed. A failure is a gap in coverage, not a
-          negative result.
+          {ingest.failures.length} search(es) failed or were refused. A failure is a gap in
+          coverage, not a negative result.
         </p>
       ) : null}
     </div>

@@ -240,12 +240,24 @@ export function providerStatus(plan: StagedReconPlan): {
   detail: string;
 } {
   if (plan.search_provider_configured) {
+    const budget =
+      plan.search_provider_search_budget === null
+        ? ""
+        : ` At most ${plan.search_provider_search_budget} search(es) per investigation.`;
+    // A provider that chooses its own queries changes what this plan is. Saying
+    // "configured" and leaving it there would let an investigator believe the
+    // queries below are the ones that will run.
+    const detail = plan.search_provider_runs_requested_query
+      ? "Public web results are fetched and fed through the same correlation a collector's " +
+        "findings use. A search engine returning a page earns it no extra confidence."
+      : "This provider takes the plan as a brief and chooses its own searches: there is no " +
+        "parameter that submits an exact query, so the queries below are not guaranteed to " +
+        "run. What it actually searched is recorded per result." +
+        budget;
     return {
       tone: "SUCCESS",
       label: `${plan.search_provider} configured`,
-      detail:
-        "Public web results are fetched and fed through the same correlation a collector's " +
-        "findings use. A search engine returning a page earns it no extra confidence.",
+      detail,
     };
   }
   return {

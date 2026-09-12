@@ -164,6 +164,9 @@ def recon_plan(case_id: CaseId, target_id: str, session: DbSession) -> StagedRec
         search_provider=provider.key,
         search_provider_configured=configured,
         search_provider_note=note,
+        search_provider_runs_requested_query=provider.runs_requested_query,
+        search_provider_search_budget=provider.search_budget(),
+        search_provider_provenance_note=provider.provenance_note,
     )
 
 

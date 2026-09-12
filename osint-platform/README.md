@@ -131,7 +131,7 @@ See [docs/architecture.md](docs/architecture.md) for the detail.
 | `wayback` | Internet Archive CDX | — | first and recent snapshots, coverage |
 | `github` | api.github.com | optional | profile, repositories, languages, topics, commit metadata |
 | `username` | curated public platforms | — | handle presence (never identity) |
-| `search` | Brave / Bing / Serper | **required** | public references |
+| `search` | Anthropic web search / Brave / Bing / Serper / Google WSS (pending) | **required** | public references |
 | `email` | address structure, Gravatar, HIBP | optional | domain, Gravatar hash, breach *names* only |
 
 A collector that cannot run says so — `GET /api/v1/collectors` reports
@@ -187,6 +187,7 @@ facial recognition anywhere in the platform.
 See [docs/person-recon.md](docs/person-recon.md).
 - [Social & visual recon](docs/social-recon.md) — public profiles, public images, and analyst decisions
 - [Discovery pipeline](docs/discovery-pipeline.md) — how collector output becomes structured, reviewable evidence
+- [Search-provider compliance](docs/search-provider-compliance.md) — what each search channel's documentation establishes, and what it leaves open
 - [Operations](docs/operations.md) — deleting a case, and what happens when the queue stops moving
 
 ---
@@ -311,6 +312,8 @@ documentation domains (`example.com`, RFC 5737 addresses) and invented handles.
 - [docs/privacy.md](docs/privacy.md) — classification, redaction, retention
 - [docs/development.md](docs/development.md) — setup, workflow, conventions
 - [docs/api.md](docs/api.md) — endpoint reference and examples
+- [docs/search-provider-compliance.md](docs/search-provider-compliance.md) — one page
+  per search channel: the documented terms, and the ones still unresolved
 
 ---
 

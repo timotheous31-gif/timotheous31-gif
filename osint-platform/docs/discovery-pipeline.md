@@ -192,10 +192,17 @@ SearchResult -> URL validation (SSRF) -> platform classification
             -> social / web / document / image evidence -> report
 ```
 
-`SearchResult` carries `query`, `search_variant`, `variant_type`, `query_family`,
-`displayed_url`, `result_type`, `image_url`, `rank`, `provider` and
-`retrieved_at`. Providers fill in content; the caller that ran the query fills in
-provenance, so an adapter cannot forget or misstate which search found what.
+`SearchResult` carries the content a provider returned plus the provenance of the
+search that returned it: `query` (what the provider **executed**), `planned_query`
+(what the platform **asked for**), `query_executed_as_planned`, `search_variant`,
+`variant_type`, `query_family`, `snippet`, `provider_position`, `position_is_rank`,
+`displayed_url`, `result_type`, `image_url`, `page_age`, `retrieval_call_id`,
+`retrieval_result_id` and `retrieved_at`. Providers fill in content and their own
+execution record; the caller that built the plan fills in the plan, so an adapter
+cannot forget or misstate which search found what.
+
+Two of those fields exist because of a provider that does not behave like a search
+API, and both are explained under *Providers are not interchangeable* below.
 
 ### Three rules on every result
 
@@ -221,6 +228,125 @@ Wikidata, handle checks), published-link pivots from pages we legitimately fetch
 manual import, promotion, analyst review and the full report. What changes with a
 provider configured is that results arrive **without the investigator copying
 each one**.
+
+No provider requires a credential unless it is selected. Adding
+`anthropic_web_search` and `google_wss` added no requirement to the $0 path: with
+`SEARCH_PROVIDER` unset, neither credential is read, and a test asserts a PERSON
+investigation still produces findings with no key of any kind configured.
+
+### A missing field is never filled in
+
+A provider that returns no description produces a result whose `snippet` is
+`None` — which is a different value from `""`, and the difference is load-bearing:
+"this provider publishes no description" and "it published an empty one" are
+different facts, and the report distinguishes them. Such a result is stored as a
+**low-context discovery candidate**: correlated on the name the page displays, with
+a mismatch reason saying that is the only link to the subject.
+
+Nothing synthesises a description — not from the URL, not from the title, not from
+a model's summary of the page. The platform may instead **read a small, capped
+number of the most promising pages itself** (`app/services/enrichment.py`), through
+the same `app.core.http` client every collector uses, and correlate against the
+text those pages actually publish:
+
+* eligible only where the provider returned no description at all;
+* ranked by how likely the page is to be about the subject (a profile- or
+  publication-shaped URL, a title carrying the subject's name);
+* `MAX_RESULT_ENRICHMENTS_PER_INVESTIGATION` (default 3) is a hard ceiling;
+* robots.txt honoured, one request per page, no link following, a byte ceiling,
+  and a short excerpt kept rather than a copy of someone else's page;
+* **every decision is recorded**, including each refusal and its reason, so the
+  report can tell a page that was read and said nothing from a page nobody read.
+
+Anthropic's own `web_fetch` tool would do the same job for free, and is
+deliberately **not** used: its commercial, storage and security behaviour has not
+been separately audited, and it would put a second fetch path outside the SSRF
+guard, the redirect validation, the byte ceiling and robots handling.
+
+## Providers are not interchangeable
+
+`SEARCH_PROVIDER` selects one of:
+
+| Key | State | Runs the query it is handed | Returns a description | Documents a ranking |
+| --- | --- | --- | --- | --- |
+| `none` | default | — | — | — |
+| `anthropic_web_search` | active, **secondary** | **no** | **no** | **no** |
+| `google_wss` | **PENDING_PARTNER_ACCESS** | yes | yes | yes |
+| `brave` / `bing` / `serper` | active | yes | yes | yes |
+
+Each provider declares `runs_requested_query`, `supplies_snippet` and
+`position_is_rank`, and the ingestion layer reads those declarations. A false
+declaration there would become a false statement in a report, which is why they
+are class attributes and not comments.
+
+### Anthropic web search: a bounded discovery channel
+
+Anthropic's server-side web search is a *secondary* channel. Three documented
+properties decide how it is used, and every one is a constraint:
+
+**It chooses its own queries.** There is no parameter that submits an exact query;
+triggering is steerable through the system prompt, and `max_uses` is the only hard
+constraint. So the recon plan is sent as a **brief**, and what comes back records
+the query Anthropic actually executed (`server_tool_use.input.query`). A planned
+query is **never** recorded as an executed one, and the execution ledger counts the
+searches the provider reported running — which is also what it bills.
+
+**It returns no description.** A result is `url`, `title`, `page_age` and an opaque
+blob, and nothing else. See *A missing field is never filled in*.
+
+**Searches are billed and capped.** `ANTHROPIC_WEB_SEARCH_MAX_USES` (default 4) is
+the spend cap, enforced by Anthropic; an exceeded cap returns a tool-result error,
+and an errored search is not billed. Cost is reported as an **estimate** computed
+from the published unit price and the count Anthropic reported, with the token half
+named as excluded rather than omitted. Nothing presents it as an invoice.
+
+Two further rules:
+
+**Errors arrive inside an HTTP 200.** `max_uses_exceeded`, `too_many_requests`,
+`unavailable`, `invalid_tool_input`, `query_too_long` and `request_too_large` all
+come back inside a successful response. None of them may become
+`NO_MATCH_RETURNED`: they map to SKIPPED, PARTIAL or FAILED and a budget-exhausted
+state. An **empty result list**, by contrast, is a real absence in the index, and
+that distinction is asserted by tests in both directions.
+
+**The channel is a relay source.** Anthropic does not disclose which index
+answered a query, so the retrieval channel is recorded as `anthropic_web_search`
+and never as Google, Bing or any other engine; each result's claim origin is the
+public URL it points at. `anthropic_web_search` is in `RELAY_SOURCES`, so two pages
+reached through it can never amplify each other as independent corroboration — a
+second discovery route is not a second party.
+
+Tool version: `web_search_20250305` with `allowed_callers: ["direct"]`, chosen so
+the raw result blocks arrive unfiltered and the channel stays ZDR-eligible. Whether
+results may be stored, cached or redistributed in a commercial product is **not**
+established by Anthropic's documentation; see
+[`search-provider-compliance.md`](search-provider-compliance.md).
+
+### Google Web Search Service: configured, not activated
+
+`GoogleWebSearchServiceProvider` exists so that the day partner credentials arrive
+is a configuration change and not a redesign. `PENDING_PARTNER_ACCESS` is enforced
+in code: `is_available()` returns false whatever credentials are present, and both
+entry points refuse rather than attempt a call. No stubbed results, no faked
+access, and **no path from this provider to scraping Google's HTML** — which is
+forbidden outright and has its own test.
+
+### If the channel is unavailable
+
+The platform falls back to **manual review availability**, never silently to
+another paid provider. An unavailable channel reports itself unavailable, the
+coverage table says so, and the generated queries remain for the investigator to
+run by hand. A test asserts that selecting `anthropic_web_search` without a key
+does not quietly use a configured Brave key instead.
+
+## Measuring discovery
+
+`app/services/benchmark.py` measures what a run achieved rather than whether it
+ran, against a fixture ground truth: known-URL recall, useful-result recall, false
+associations, duplicate rate, searches consumed against the budget, and enrichment
+fetches consumed against the cap. Two of those are failure counts that must stay at
+zero — a false association (a same-name stranger scoring at or above
+POSSIBLE_MATCH) and an auto-confirmation.
 
 ## The staged plan
 

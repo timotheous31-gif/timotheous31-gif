@@ -159,13 +159,13 @@ GET /api/v1/collectors
   "requires_api_key": true,
   "rate_limit": "1/1s (concurrency 1)",
   "available": false,
-  "unavailable_reason": "No search provider is configured. Set SEARCH_PROVIDER to brave, bing or serper and supply the matching API key.",
+  "unavailable_reason": "No search provider is configured. Set SEARCH_PROVIDER to anthropic_web_search, brave, bing or serper and supply the matching credential. Every free structured source and the manual search workflow keep working with no provider at all.",
   "configuration": {
     "required_settings": ["SEARCH_PROVIDER"],
     "optional_settings": [],
     "configured": false,
     "mode": "none",
-    "detail": "No search provider is configured. Set SEARCH_PROVIDER to brave, bing or serper and supply the matching API key."
+    "detail": "No search provider is configured. Set SEARCH_PROVIDER to anthropic_web_search, brave, bing or serper and supply the matching credential. Every free structured source and the manual search workflow keep working with no provider at all."
   }
 }]
 ```

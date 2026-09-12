@@ -44,7 +44,8 @@ def _person_finding(url: str, name: str = "Timotheous Samar", **extra):
         "host": url.split("/")[2],
         "title": extra.pop("title", f"Page about {name}"),
         "snippet": "",
-        "rank": extra.pop("rank", 1),
+        "provider_position": extra.pop("provider_position", 1),
+        "position_is_rank": True,
         "query": f'"{name}"',
         "provider": "brave",
         "subject_name": name,
@@ -205,9 +206,10 @@ def test_person_search_results_are_candidates_not_plain_hits():
     item = SearchResult(
         title="Example profile",
         url="https://example.com/people/1",
-        snippet="",
-        rank=1,
         provider="brave",
+        snippet="",
+        provider_position=1,
+        position_is_rank=True,
     )
     draft = collector._normalize_result(item, '"Timotheous Samar"', target)[0]
     assert draft.kind is FindingKind.PERSON_CANDIDATE
@@ -223,7 +225,12 @@ def test_non_person_search_results_are_unchanged():
     collector = SearchCollector(Settings(_env_file=None))
     target = normalize_target("example.com")
     item = SearchResult(
-        title="Example", url="https://example.org/a", snippet="", rank=1, provider="brave"
+        title="Example",
+        url="https://example.org/a",
+        provider="brave",
+        snippet="",
+        provider_position=1,
+        position_is_rank=True,
     )
     draft = collector._normalize_result(item, '"example.com"', target)[0]
     assert draft.kind is FindingKind.SEARCH_RESULT

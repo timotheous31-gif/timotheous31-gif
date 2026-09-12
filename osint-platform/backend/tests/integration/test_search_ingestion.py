@@ -62,9 +62,10 @@ def result(url: str, title: str, snippet: str = "", **kwargs) -> SearchResult:
     return SearchResult(
         title=title,
         url=url,
+        provider=kwargs.pop("provider", "fake"),
         snippet=snippet,
-        rank=kwargs.pop("rank", 1),
-        provider="fake",
+        provider_position=kwargs.pop("provider_position", 1),
+        position_is_rank=kwargs.pop("position_is_rank", True),
         **kwargs,
     )
 
@@ -308,11 +309,17 @@ async def test_provenance_records_the_query_variant_and_family(api_client, case_
         item for item in _findings(case_id) if item.data["url"].endswith("tabitha-example")
     )
     search = finding.data["searches"][0]
-    assert search["query"]
+    # A provider that runs what it is handed records the same text twice and says
+    # so. The two fields exist precisely so a provider that does *not* can record
+    # an executed query with no planned one.
+    assert search["executed_query"]
+    assert search["planned_query"] == search["executed_query"]
+    assert search["query_executed_as_planned"] is True
     assert search["search_variant"]
     assert search["variant_type"]
     assert search["query_family"]
     assert search["provider"] == "fake"
+    assert search["retrieval_channel"] == "fake"
     assert finding.data["canonical_target"] == CANONICAL
 
 

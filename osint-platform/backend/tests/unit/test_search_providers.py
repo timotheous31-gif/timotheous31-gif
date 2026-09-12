@@ -23,7 +23,14 @@ from app.services.providers.search import (
 
 
 def test_all_providers_are_registered():
-    assert set(available_providers()) == {"none", "brave", "bing", "serper"}
+    assert set(available_providers()) == {
+        "none",
+        "anthropic_web_search",
+        "google_wss",
+        "brave",
+        "bing",
+        "serper",
+    }
 
 
 def test_default_provider_is_none_and_reports_why():
@@ -95,7 +102,8 @@ async def test_brave_results_are_normalised(mock_http):
     results = await provider.search("example")
     assert len(results) == 1
     assert results[0].url == "https://example.com/"
-    assert results[0].rank == 1
+    assert results[0].provider_position == 1
+    assert results[0].position_is_rank is True
     assert results[0].host == "example.com"
 
 
@@ -136,7 +144,8 @@ async def test_serper_results_are_normalised(mock_http):
     )
     provider = SerperSearchProvider(Settings(_env_file=None, serper_api_key="k"))
     results = await provider.search("example")
-    assert results[0].rank == 2
+    assert results[0].provider_position == 2
+    assert results[0].position_is_rank is True
 
 
 @respx.mock
@@ -213,7 +222,7 @@ async def test_collect_deduplicates_urls_across_queries(collector_ctx, mock_http
 
 
 def test_search_result_host_strips_www():
-    result = SearchResult("t", "https://www.example.com/a", "s", 1, "brave")
+    result = SearchResult("t", "https://www.example.com/a", "brave", snippet="s")
     assert result.host == "example.com"
 
 

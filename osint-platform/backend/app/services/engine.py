@@ -644,28 +644,48 @@ class InvestigationEngine:
         was switched off. Queries that ran and returned nothing are a SUCCESS with
         no findings, which the coverage table reads as a real absence for this
         source only.
+
+        A *blocked* channel is neither. A search budget that ran out, a provider
+        rate limit, or an upstream error that arrived inside an HTTP 200 all mean
+        the public web was examined incompletely. Those are PARTIAL when some
+        searches ran and SKIPPED when none did — never SUCCESS, because a SUCCESS
+        with no findings is read downstream as a verified absence, and nobody
+        verified anything here.
         """
         run.finished_at = datetime.now(UTC)
         run.stats = {
+            "provider": report.provider,
+            # Plan and execution, side by side and never merged.
+            "queries_planned": report.queries_planned,
             "queries_run": report.queries_run,
+            "executed_queries": list(report.executed_queries),
+            "queries_as_planned": report.queries_as_planned,
             "image_queries_run": report.image_queries_run,
             "results_seen": report.results_seen,
             "results_stored": report.results_stored,
             "duplicates": report.duplicates,
             "rejected_urls": report.rejected_urls,
+            "low_context_results": report.low_context_results,
             "findings": len(report.findings),
+            "outcome": report.outcome,
+            "accounting": report.accounting.to_dict() if report.accounting else None,
+            "enrichment": dict(report.enrichment or {}),
         }
         if not report.configured:
             run.status = RunStatus.SKIPPED
             run.error_message = report.reason or "No search provider is configured"
         elif report.failures and not report.queries_run:
-            run.status = RunStatus.FAILED
+            run.status = RunStatus.SKIPPED if report.blocked else RunStatus.FAILED
             first = report.failures[0]
             run.error_type = str(first.get("error_type") or "ProviderError")
             run.error_message = str(first.get("error") or "")[:2000]
-        elif report.failures:
+        elif report.failures or report.blocked:
             run.status = RunStatus.PARTIAL
-            run.error_message = f"{len(report.failures)} query(ies) failed"
+            run.error_type = str((report.failures or [{}])[0].get("error_type") or "") or None
+            run.error_message = (
+                f"{len(report.failures)} search(es) failed or were refused; "
+                f"channel outcome {report.outcome}"
+            )
         else:
             run.status = RunStatus.SUCCESS
         session.flush()
