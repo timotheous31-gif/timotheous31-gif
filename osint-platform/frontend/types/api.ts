@@ -657,3 +657,65 @@ export interface EvidenceVerification {
   mismatched: string[];
   intact: boolean;
 }
+
+// --------------------------------------------------------------- identity
+
+/** What a role is allowed to do, as the backend computed it. */
+export type WorkspaceRole = "OWNER" | "ADMIN" | "ANALYST" | "VIEWER";
+
+export interface User {
+  id: string;
+  email: string;
+  display_name: string;
+  is_active: boolean;
+  created_at: string;
+  last_login_at: string | null;
+}
+
+export interface Workspace {
+  id: string;
+  name: string;
+  slug: string;
+  created_at: string;
+}
+
+/**
+ * A workspace as the signed-in user sees it.
+ *
+ * `permissions` exists so the interface can hide a control the user cannot use.
+ * It is **not** a security boundary: the backend re-checks every request, and a
+ * client that ignored this list entirely would gain nothing.
+ */
+export interface WorkspaceSummary {
+  workspace: Workspace;
+  role: WorkspaceRole;
+  permissions: string[];
+}
+
+export interface SessionInfo {
+  user: User;
+  workspaces: WorkspaceSummary[];
+  /** Echoed in `X-CSRF-Token` on every state-changing request. */
+  csrf_token: string;
+  expires_at: string;
+}
+
+export interface Membership {
+  id: string;
+  user: User;
+  workspace_id: string;
+  role: WorkspaceRole;
+  created_at: string;
+}
+
+export interface AuditEntry {
+  id: string;
+  occurred_at: string;
+  actor_user_id: string | null;
+  workspace_id: string | null;
+  event_type: string;
+  object_type: string;
+  object_id: string;
+  request_id: string;
+  metadata: Record<string, unknown>;
+}

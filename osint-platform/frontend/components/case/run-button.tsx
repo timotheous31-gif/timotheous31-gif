@@ -2,10 +2,12 @@
 
 import { useState } from "react";
 
+import { useSession } from "@/components/session";
 import { Badge, Button, ErrorNotice } from "@/components/ui/primitives";
 import { usePolling } from "@/hooks/useApi";
 import { api } from "@/lib/api";
 import { displayState, stateHint, stateLabel, stateTone } from "@/lib/jobs";
+import { PERMISSION, can, deniedMessage } from "@/lib/permissions";
 import type { Job } from "@/types/api";
 
 const TERMINAL = new Set(["COMPLETE", "FAILED", "CANCELLED"]);
@@ -20,6 +22,10 @@ export function RunButton({ caseId, onFinished }: { caseId: string; onFinished?:
   const [jobId, setJobId] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<Error | null>(null);
+  const { workspace } = useSession();
+  // Hiding the control is a courtesy, not the check: POST /cases/{id}/run
+  // refuses a VIEWER whatever this component renders.
+  const mayRun = can(workspace, PERMISSION.investigationRun);
 
   const job = usePolling<Job>(
     () => api.getJob(jobId as string),
@@ -70,6 +76,11 @@ export function RunButton({ caseId, onFinished }: { caseId: string; onFinished?:
 
   return (
     <div className="flex flex-col items-end gap-1">
+      {!mayRun ? (
+        <p className="text-[11px] text-muted">
+          {deniedMessage(workspace, "start an investigation")}
+        </p>
+      ) : null}
       <div className="flex items-center gap-2">
         {running ? (
           <>
@@ -85,7 +96,7 @@ export function RunButton({ caseId, onFinished }: { caseId: string; onFinished?:
             </Button>
           </>
         ) : (
-          <Button variant="primary" onClick={start} disabled={starting}>
+          <Button variant="primary" onClick={start} disabled={starting || !mayRun}>
             {starting ? "Starting…" : "Run investigation"}
           </Button>
         )}

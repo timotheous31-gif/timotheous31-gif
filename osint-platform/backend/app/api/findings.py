@@ -2,22 +2,24 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 
-from app.api.deps import CaseId, DbSession
+from app.api.deps import CaseContext, DbSession, require
+from app.core.permissions import Permission
 from app.models import CollectorRun, Evidence, Finding
 from app.models.enums import Classification, FindingKind
 from app.schemas.common import Page
 from app.schemas.finding import CollectorRunRead, EvidenceRead, FindingRead
-from app.services import cases as case_service
 
 router = APIRouter(prefix="/cases/{case_id}", tags=["findings"])
 
 
 @router.get("/findings", response_model=Page[FindingRead], summary="List a case's findings")
 def list_findings(
-    case_id: CaseId,
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
     session: DbSession,
     kind: FindingKind | None = Query(default=None),
     classification: Classification | None = Query(default=None),
@@ -27,10 +29,9 @@ def list_findings(
     offset: int = Query(default=0, ge=0),
 ) -> Page[FindingRead]:
     """Findings are already privacy-filtered: redacted values never leave here."""
-    case_service.get_case(session, case_id)
 
-    stmt = select(Finding).where(Finding.case_id == case_id)
-    count_stmt = select(func.count()).select_from(Finding).where(Finding.case_id == case_id)
+    stmt = select(Finding).where(Finding.case_id == ctx.case_id)
+    count_stmt = select(func.count()).select_from(Finding).where(Finding.case_id == ctx.case_id)
     for condition in (
         Finding.kind == kind if kind is not None else None,
         Finding.classification == classification if classification is not None else None,
@@ -59,15 +60,14 @@ def list_findings(
 
 @router.get("/evidence", response_model=Page[EvidenceRead], summary="List stored evidence")
 def list_evidence(
-    case_id: CaseId,
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
     session: DbSession,
     collector: str | None = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> Page[EvidenceRead]:
-    case_service.get_case(session, case_id)
-    stmt = select(Evidence).where(Evidence.case_id == case_id)
-    count_stmt = select(func.count()).select_from(Evidence).where(Evidence.case_id == case_id)
+    stmt = select(Evidence).where(Evidence.case_id == ctx.case_id)
+    count_stmt = select(func.count()).select_from(Evidence).where(Evidence.case_id == ctx.case_id)
     if collector:
         stmt = stmt.where(Evidence.collector == collector)
         count_stmt = count_stmt.where(Evidence.collector == collector)
@@ -85,21 +85,25 @@ def list_evidence(
 
 
 @router.get("/evidence/verify", summary="Verify stored evidence integrity")
-def verify_evidence(case_id: CaseId, session: DbSession) -> dict:
+def verify_evidence(
+    session: DbSession,
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
+) -> dict:
     """Re-hash every stored artefact and report any that no longer match."""
     from app.services.evidence import EvidenceStore
 
-    case_service.get_case(session, case_id)
-    return EvidenceStore().verify_case(session, case_id)
+    return EvidenceStore().verify_case(session, ctx.case_id)
 
 
 @router.get("/runs", response_model=list[CollectorRunRead], summary="List collector runs")
-def list_runs(case_id: CaseId, session: DbSession) -> list[CollectorRunRead]:
+def list_runs(
+    session: DbSession,
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
+) -> list[CollectorRunRead]:
     """Every collector execution, including the ones that failed or were skipped."""
-    case_service.get_case(session, case_id)
     runs = session.scalars(
         select(CollectorRun)
-        .where(CollectorRun.case_id == case_id)
+        .where(CollectorRun.case_id == ctx.case_id)
         .order_by(CollectorRun.created_at.desc())
     )
     return [CollectorRunRead.model_validate(run) for run in runs]

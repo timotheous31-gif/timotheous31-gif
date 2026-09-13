@@ -19,7 +19,9 @@ import {
   Th,
 } from "@/components/ui/primitives";
 import { useAsync } from "@/hooks/useApi";
+import { useSession } from "@/components/session";
 import { api } from "@/lib/api";
+import { PERMISSION, can, deniedMessage } from "@/lib/permissions";
 import { formatDateTime } from "@/lib/format";
 import type { CaseStatus } from "@/types/api";
 
@@ -31,6 +33,8 @@ export default function CasesPage() {
   const [name, setName] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<Error | null>(null);
+  const { workspace } = useSession();
+  const mayCreate = can(workspace, PERMISSION.caseCreate);
 
   const cases = useAsync(
     () => api.listCases({ q: query || undefined, status: status || undefined, limit: 100 }),
@@ -43,7 +47,13 @@ export default function CasesPage() {
     setCreating(true);
     setCreateError(null);
     try {
-      await api.createCase({ name: name.trim() });
+      // The API requires the workspace to be named when the user belongs to
+      // more than one, because guessing which one owns a case is guessing who
+      // may read it.
+      await api.createCase({
+        name: name.trim(),
+        ...(workspace ? { workspace_id: workspace.workspace.id } : {}),
+      });
       setName("");
       cases.reload();
     } catch (cause) {
@@ -65,8 +75,17 @@ export default function CasesPage() {
       <Card>
         <CardHeader
           title="New case"
-          description="Give the investigation a name you will recognise later"
+          description={
+            workspace
+              ? `Give the investigation a name you will recognise later · ${workspace.workspace.name}`
+              : "Give the investigation a name you will recognise later"
+          }
         />
+        {!mayCreate ? (
+          <p className="px-4 pb-4 text-xs text-muted">
+            {deniedMessage(workspace, "create cases")}
+          </p>
+        ) : null}
         <form onSubmit={createCase} className="flex flex-wrap items-center gap-2 p-4">
           <Input
             aria-label="Case name"
@@ -75,7 +94,11 @@ export default function CasesPage() {
             onChange={(event) => setName(event.target.value)}
             className="max-w-md flex-1"
           />
-          <Button type="submit" variant="primary" disabled={creating || !name.trim()}>
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={creating || !name.trim() || !mayCreate}
+          >
             {creating ? "Creating…" : "Create case"}
           </Button>
         </form>

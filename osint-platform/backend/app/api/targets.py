@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Query, status
+from typing import Annotated
 
-from app.api.deps import CaseId, DbSession, parse_uuid
+from fastapi import APIRouter, Body, Depends, Query, status
+
+from app.api.deps import CaseContext, CurrentUser, DbSession, parse_uuid, require
 from app.core.errors import AmbiguousTargetError
+from app.core.permissions import Permission
 from app.models.enums import TargetType
 from app.schemas.case import (
     NormalizationPreview,
@@ -27,7 +30,11 @@ router = APIRouter(prefix="/cases/{case_id}/targets", tags=["targets"])
     status_code=status.HTTP_201_CREATED,
     summary="Add a target to a case",
 )
-def add_target(case_id: CaseId, payload: TargetCreate, session: DbSession) -> TargetRead:
+def add_target(
+    payload: TargetCreate,
+    ctx: Annotated[CaseContext, Depends(require(Permission.TARGET_WRITE))],
+    session: DbSession,
+) -> TargetRead:
     """Normalise and attach a target.
 
     The target type is inferred from the input's shape when it is not supplied.
@@ -35,7 +42,7 @@ def add_target(case_id: CaseId, payload: TargetCreate, session: DbSession) -> Ta
     ``ambiguous_target_type`` rather than being filed as an organisation;
     resend it with ``type`` set to PERSON or ORGANIZATION.
     """
-    target = case_service.add_target(session, case_id, payload)
+    target = case_service.add_target(session, ctx.case_id, payload)
     session.commit()
     return TargetRead.model_validate(target)
 
@@ -46,14 +53,18 @@ def add_target(case_id: CaseId, payload: TargetCreate, session: DbSession) -> Ta
     status_code=status.HTTP_201_CREATED,
     summary="Add several targets at once",
 )
-def add_targets(case_id: CaseId, payload: TargetBulkCreate, session: DbSession) -> list[TargetRead]:
+def add_targets(
+    payload: TargetBulkCreate,
+    ctx: Annotated[CaseContext, Depends(require(Permission.TARGET_WRITE))],
+    session: DbSession,
+) -> list[TargetRead]:
     """Add many targets. Duplicates within the case are skipped, not fatal."""
     from app.core.errors import ConflictError
 
     created: list[TargetRead] = []
     for item in payload.targets:
         try:
-            target = case_service.add_target(session, case_id, item)
+            target = case_service.add_target(session, ctx.case_id, item)
         except ConflictError:
             continue
         created.append(TargetRead.model_validate(target))
@@ -63,14 +74,14 @@ def add_targets(case_id: CaseId, payload: TargetBulkCreate, session: DbSession) 
 
 @router.get("", response_model=Page[TargetRead], summary="List a case's targets")
 def list_targets(
-    case_id: CaseId,
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
     session: DbSession,
     target_type: TargetType | None = Query(default=None, alias="type"),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> Page[TargetRead]:
     items, total = case_service.list_targets(
-        session, case_id, target_type=target_type, limit=limit, offset=offset
+        session, ctx.case_id, target_type=target_type, limit=limit, offset=offset
     )
     return Page[TargetRead](
         items=[TargetRead.model_validate(item) for item in items],
@@ -81,25 +92,36 @@ def list_targets(
 
 
 @router.get("/{target_id}", response_model=TargetRead, summary="Fetch one target")
-def get_target(case_id: CaseId, target_id: str, session: DbSession) -> TargetRead:
-    target = case_service.get_target(session, case_id, parse_uuid(target_id, "target_id"))
+def get_target(
+    target_id: str,
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
+    session: DbSession,
+) -> TargetRead:
+    target = case_service.get_target(session, ctx.case_id, parse_uuid(target_id, "target_id"))
     return TargetRead.model_validate(target)
 
 
 @router.patch("/{target_id}", response_model=TargetRead, summary="Update a target")
 def update_target(
-    case_id: CaseId, target_id: str, payload: TargetUpdate, session: DbSession
+    target_id: str,
+    payload: TargetUpdate,
+    ctx: Annotated[CaseContext, Depends(require(Permission.TARGET_WRITE))],
+    session: DbSession,
 ) -> TargetRead:
     target = case_service.update_target(
-        session, case_id, parse_uuid(target_id, "target_id"), payload
+        session, ctx.case_id, parse_uuid(target_id, "target_id"), payload
     )
     session.commit()
     return TargetRead.model_validate(target)
 
 
 @router.delete("/{target_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Remove a target")
-def delete_target(case_id: CaseId, target_id: str, session: DbSession) -> None:
-    case_service.delete_target(session, case_id, parse_uuid(target_id, "target_id"))
+def delete_target(
+    target_id: str,
+    ctx: Annotated[CaseContext, Depends(require(Permission.TARGET_WRITE))],
+    session: DbSession,
+) -> None:
+    case_service.delete_target(session, ctx.case_id, parse_uuid(target_id, "target_id"))
     session.commit()
 
 
@@ -109,7 +131,7 @@ def delete_target(case_id: CaseId, target_id: str, session: DbSession) -> None:
     summary="Preview how an input would be normalised",
 )
 def preview_normalization(
-    case_id: CaseId,
+    principal: CurrentUser,
     value: str = Body(embed=True, max_length=1024),
     target_type: TargetType | None = Body(default=None, embed=True, alias="type"),
 ) -> NormalizationPreview:

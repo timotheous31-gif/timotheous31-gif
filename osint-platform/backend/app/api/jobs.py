@@ -1,11 +1,34 @@
-"""Investigation run and job endpoints."""
+"""Investigation run and job endpoints.
+
+Two of these routes take a job id and no case id, which made them the platform's
+most exposed surface: a job UUID alone was enough to read an investigation's
+progress, or to stop it, in anybody's workspace. ``CurrentJob`` resolves
+job -> case -> membership so the URLs are unchanged and the authorization is not
+optional.
+"""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, status
+from typing import Annotated
 
-from app.api.deps import CaseId, DbSession, parse_uuid
+from fastapi import APIRouter, Depends, Query, status
+
+from app.api.deps import (
+    AppSettings,
+    CaseContext,
+    CurrentUser,
+    DbSession,
+    JobContext,
+    accessible_workspace_ids,
+    require,
+    require_job,
+)
+from app.core import throttle
+from app.core.errors import ThrottledError
+from app.core.permissions import Permission
+from app.models.enums import AuditEvent
 from app.schemas.finding import JobRead, RunRequest, RunResponse
+from app.services import audit
 from app.services import jobs as job_service
 
 run_router = APIRouter(prefix="/cases/{case_id}", tags=["investigations"])
@@ -41,21 +64,50 @@ def _read(jobs: list) -> list[JobRead]:
     summary="Start an investigation",
 )
 def run_investigation(
-    case_id: CaseId, session: DbSession, payload: RunRequest | None = None
+    ctx: Annotated[CaseContext, Depends(require(Permission.INVESTIGATION_RUN))],
+    session: DbSession,
+    settings: AppSettings,
+    payload: RunRequest | None = None,
 ) -> RunResponse:
     """Queue an investigation for the case.
 
     The job is handed to a Celery worker when one is reachable and executed
     inline otherwise; the response says which happened rather than leaving the
     caller to guess.
+
+    Throttled per user. An investigation is the most expensive thing this platform
+    does — every collector, every outbound request, and on a paid provider, real
+    money — so it is the one a runaway script must not be able to repeat freely.
     """
+    verdict = throttle.check(
+        throttle.principal_key("investigation", str(ctx.principal.user_id)),
+        limit=settings.rate_limit_investigation_per_hour,
+        window_seconds=3600,
+        settings=settings,
+    )
+    if verdict.refused:
+        raise ThrottledError(
+            "You have started a lot of investigations in a short time. They are "
+            "expensive to run, so there is an hourly ceiling. Try again shortly.",
+            retry_after=verdict.retry_after,
+        )
+
     options = payload or RunRequest()
     job = job_service.create_job(
         session,
-        case_id,
+        ctx.case_id,
         include_collectors=options.collectors,
         exclude_collectors=options.exclude_collectors,
         target_ids=list(options.target_ids),
+    )
+    audit.record(
+        session,
+        event=AuditEvent.INVESTIGATION_STARTED,
+        actor_user_id=ctx.principal.user_id,
+        workspace_id=ctx.workspace_id,
+        object_type="job",
+        object_id=job.id,
+        metadata={"case_id": str(ctx.case_id), "collectors": len(options.collectors or [])},
     )
     session.commit()
 
@@ -66,23 +118,54 @@ def run_investigation(
 
 
 @run_router.get("/jobs", response_model=list[JobRead], summary="List a case's jobs")
-def list_case_jobs(case_id: CaseId, session: DbSession) -> list[JobRead]:
-    return _read(job_service.list_jobs(session, case_id))
+def list_case_jobs(
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
+    session: DbSession,
+) -> list[JobRead]:
+    return _read(job_service.list_jobs(session, ctx.case_id))
 
 
 @router.get("/{job_id}", response_model=JobRead, summary="Job status and progress")
-def get_job(job_id: str, session: DbSession) -> JobRead:
-    return _read([job_service.get_job(session, parse_uuid(job_id, "job_id"))])[0]
+def get_job(ctx: Annotated[JobContext, Depends(require_job(Permission.CASE_READ))]) -> JobRead:
+    return _read([ctx.job])[0]
 
 
 @router.post("/{job_id}/cancel", response_model=JobRead, summary="Request cancellation")
-def cancel_job(job_id: str, session: DbSession) -> JobRead:
+def cancel_job(
+    ctx: Annotated[JobContext, Depends(require_job(Permission.INVESTIGATION_CANCEL))],
+    session: DbSession,
+) -> JobRead:
     """Ask a running investigation to stop; the worker checks between collectors."""
-    job = job_service.request_cancel(session, parse_uuid(job_id, "job_id"))
+    job = job_service.request_cancel(session, ctx.job.id)  # type: ignore[attr-defined]
+    audit.record(
+        session,
+        event=AuditEvent.INVESTIGATION_CANCELLED,
+        actor_user_id=ctx.principal.user_id,
+        workspace_id=ctx.workspace_id,
+        object_type="job",
+        object_id=job.id,
+        metadata={"case_id": str(ctx.case_id)},
+    )
     session.commit()
     return _read([job])[0]
 
 
 @router.get("", response_model=list[JobRead], summary="List recent jobs")
-def list_jobs(session: DbSession, limit: int = Query(default=50, ge=1, le=200)) -> list[JobRead]:
-    return _read(job_service.list_jobs(session, limit=limit))
+def list_jobs(
+    principal: CurrentUser,
+    session: DbSession,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[JobRead]:
+    """Recent jobs across the caller's workspaces, and no others.
+
+    Filtered in the query rather than after it. A cross-workspace job listing was
+    the quietest of the IDOR holes here: it disclosed other customers' case ids,
+    run times and progress without ever naming a case.
+    """
+    return _read(
+        job_service.list_jobs(
+            session,
+            limit=limit,
+            workspace_ids=accessible_workspace_ids(session, principal.user_id),
+        )
+    )

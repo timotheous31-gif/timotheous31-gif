@@ -253,3 +253,52 @@ class ObservationSubject(StrEnum):
     SOCIAL_PROFILE = "SOCIAL_PROFILE"
     PUBLIC_CONTACT = "PUBLIC_CONTACT"
     IMAGE_EVIDENCE = "IMAGE_EVIDENCE"
+
+
+class WorkspaceRole(StrEnum):
+    """What a member may do in a workspace.
+
+    Four roles, ordered by what they can destroy. Deliberately few: a pilot
+    deployment has an owner, the people who run investigations, and the people
+    who read them, and every role beyond that is a permission matrix nobody
+    reads. The mapping from role to permission lives in
+    :mod:`app.core.permissions` and is explicit rather than inherited, so
+    "what can an ANALYST do" is answered by reading one table.
+    """
+
+    #: Everything, including transferring the workspace to somebody else.
+    OWNER = "OWNER"
+    #: Everything except ownership transfer.
+    ADMIN = "ADMIN"
+    #: Runs investigations. Cannot manage who else is in the workspace.
+    ANALYST = "ANALYST"
+    #: Reads. Cannot execute, delete, import, or record an analyst decision.
+    VIEWER = "VIEWER"
+
+
+class AuditEvent(StrEnum):
+    """Security-relevant events, recorded append-only.
+
+    The list is short and closed on purpose. An audit log that records
+    everything is one nobody reads; these are the events a pilot customer would
+    be asked about after an incident — who got in, who was let in, who ran what,
+    and who took data out.
+    """
+
+    USER_LOGIN_SUCCESS = "user_login_success"
+    USER_LOGIN_FAILURE = "user_login_failure"
+    USER_LOGOUT = "user_logout"
+    USER_CREATED = "user_created"
+    MEMBERSHIP_ADDED = "membership_added"
+    MEMBERSHIP_REMOVED = "membership_removed"
+    ROLE_CHANGED = "role_changed"
+    OWNERSHIP_TRANSFERRED = "ownership_transferred"
+    CASE_CREATED = "case_created"
+    CASE_DELETED = "case_deleted"
+    INVESTIGATION_STARTED = "investigation_started"
+    INVESTIGATION_CANCELLED = "investigation_cancelled"
+    REPORT_GENERATED = "report_generated"
+    REPORT_DOWNLOADED = "report_downloaded"
+    ANALYST_DECISION_CREATED = "analyst_decision_created"
+    MANUAL_RESULT_IMPORTED = "manual_result_imported"
+    RATE_LIMIT_TRIGGERED = "rate_limit_triggered"

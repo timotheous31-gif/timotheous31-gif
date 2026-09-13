@@ -6,6 +6,13 @@ autogenerate and the test fixtures both rely on that.
 
 from __future__ import annotations
 
+from app.models.auth import (
+    AuditLogEntry,
+    User,
+    UserSession,
+    Workspace,
+    WorkspaceMembership,
+)
 from app.models.base import Base, TimestampMixin, UUIDMixin, utcnow
 from app.models.case import Case
 from app.models.collection import (
@@ -18,6 +25,7 @@ from app.models.collection import (
 from app.models.entity import Entity, Relationship, entity_sources, relationship_evidence
 from app.models.enums import (
     AnalystDecision,
+    AuditEvent,
     CaseStatus,
     Classification,
     ContactClassification,
@@ -36,6 +44,7 @@ from app.models.enums import (
     RunStatus,
     TargetStatus,
     TargetType,
+    WorkspaceRole,
 )
 from app.models.job import Job
 from app.models.social import (
@@ -51,6 +60,8 @@ from app.models.timeline import TimelineEvent
 __all__ = [
     "AnalystDecision",
     "AnalystDecisionRecord",
+    "AuditEvent",
+    "AuditLogEntry",
     "Base",
     "Case",
     "CaseStatus",
@@ -86,6 +97,11 @@ __all__ = [
     "TimelineEvent",
     "TimestampMixin",
     "UUIDMixin",
+    "User",
+    "UserSession",
+    "Workspace",
+    "WorkspaceMembership",
+    "WorkspaceRole",
     "case_tags",
     "entity_sources",
     "finding_evidence",

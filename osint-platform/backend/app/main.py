@@ -28,6 +28,31 @@ hash-verified evidence.
 This API does not implement — and will not accept extensions implementing —
 credential harvesting, login probing, private-account bypass, surveillance or
 doxxing workflows.
+
+## Authentication
+
+Every endpoint except `POST /api/v1/auth/login` requires a session.
+
+1. `POST /api/v1/auth/login` with `{"email": ..., "password": ...}`. The response
+   sets an `HttpOnly` session cookie and returns a `csrf_token`.
+2. Send the cookie on every request. Browsers do this automatically; `curl` needs
+   `-c cookies.txt -b cookies.txt`.
+3. On `POST`, `PATCH` and `DELETE`, also send the token as an `X-CSRF-Token`
+   header.
+
+Every object belongs to a workspace, and a caller sees only the workspaces they
+are a member of. An object in another workspace answers **404**, not 403 — a
+caller who may not have it is not told that it exists.
+
+The first administrator is created from the command line, never by an API call:
+
+    python -m app.cli create-admin
+
+**Using this page against a live deployment:** sign in first with the `/auth/login`
+operation below. The browser stores the session cookie, so subsequent "Try it out"
+calls are authenticated — but `GET` requests only. Swagger UI does not send the
+`X-CSRF-Token` header, so a state-changing call from this page is refused by
+design; use `curl` or the application for those.
 """
 
 
@@ -45,6 +70,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         environment=settings.environment,
         version=__version__,
         search_provider=settings.search_provider,
+        docs_enabled=settings.docs_enabled,
+        secure_cookies=settings.cookies_secure,
+        hsts=settings.hsts_enabled,
+        rate_limits=settings.rate_limit_enabled,
     )
     yield
     from app.core.http import close_http_client
@@ -62,9 +91,12 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         description=DESCRIPTION,
         version=__version__,
-        docs_url="/docs",
-        redoc_url="/redoc",
-        openapi_url="/openapi.json",
+        # Turned off entirely rather than merely hidden when a deployment asks:
+        # /docs is the one page on this origin that runs a script, and the only
+        # reason the Content-Security-Policy has an exception.
+        docs_url="/docs" if settings.docs_enabled else None,
+        redoc_url="/redoc" if settings.docs_enabled else None,
+        openapi_url="/openapi.json" if settings.docs_enabled else None,
         lifespan=lifespan,
     )
 
@@ -72,11 +104,20 @@ def create_app() -> FastAPI:
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_bytes)
     app.add_middleware(
         CORSMiddleware,
+        # Explicit origins, never a wildcard. Starlette refuses to combine "*"
+        # with credentials, and production additionally refuses to start with one
+        # configured — see Settings.production_problems.
         allow_origins=settings.cors_origins,
-        allow_credentials=False,
+        # The session lives in a cookie, so the browser must be allowed to send
+        # it. This is precisely why the origin list must stay explicit: a
+        # credentialed request from an origin on this list can act as the user.
+        allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["*"],
-        expose_headers=["X-Request-ID"],
+        # Named rather than "*", because with credentials enabled a wildcard is
+        # both refused by browsers and a wider grant than anything here needs.
+        allow_headers=["Content-Type", "X-CSRF-Token", "X-Request-ID", "Accept"],
+        expose_headers=["X-Request-ID", "Retry-After"],
+        max_age=600,
     )
 
     register_exception_handlers(app)

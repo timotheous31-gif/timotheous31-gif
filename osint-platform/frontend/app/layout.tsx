@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 
 import "./globals.css";
-import { Nav } from "@/components/nav";
+import { AppShell } from "@/components/app-shell";
+import { SessionProvider } from "@/components/session";
 
 export const metadata: Metadata = {
   title: "OSINT Investigation Platform",
@@ -15,10 +16,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className="min-h-screen">
-        <div className="flex min-h-screen flex-col lg:flex-row">
-          <Nav />
-          <main className="min-w-0 flex-1 px-5 py-6 lg:px-8">{children}</main>
-        </div>
+        <SessionProvider>
+          <AppShell>{children}</AppShell>
+        </SessionProvider>
       </body>
     </html>
   );

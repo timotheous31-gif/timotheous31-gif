@@ -5,6 +5,7 @@ are identical whichever entry point you use.
 
 Examples::
 
+    python -m app.cli admin create-admin
     osint case create "Acme Investigation"
     osint target add --case CASE_ID --domain example.com
     osint investigate --domain example.com
@@ -36,6 +37,12 @@ case_app = typer.Typer(name="case", help="Create and manage investigation cases.
 target_app = typer.Typer(name="target", help="Add and inspect investigation targets.")
 app.add_typer(case_app)
 app.add_typer(target_app)
+
+# Bootstrap lives in its own module: it is the only part of the CLI that creates
+# credentials, and keeping it separate makes that surface easy to review.
+from app.cli.admin import admin_app  # noqa: E402 - imported after `app` exists
+
+app.add_typer(admin_app)
 
 JsonOpt = Annotated[bool, typer.Option("--json", help="Emit machine-readable JSON.")]
 VerboseOpt = Annotated[bool, typer.Option("--verbose", "-v", help="Verbose logging.")]

@@ -106,3 +106,45 @@ class PolicyError(OsintError):
     """The request is refused by platform policy (robots.txt, privacy rules)."""
 
     code = "policy_refused"
+
+
+class AuthenticationRequired(OsintError):
+    """No valid session. The caller must sign in."""
+
+    code = "authentication_required"
+
+
+class PermissionDenied(OsintError):
+    """A signed-in caller whose role does not permit this action.
+
+    Distinct from :class:`NotFoundError`, and the distinction matters: this is
+    returned when the caller may *see* the object but not do the thing. When they
+    may not see it at all — an object in another workspace — the answer is 404, so
+    a UUID cannot be probed for existence.
+    """
+
+    code = "permission_denied"
+
+
+class CsrfError(OsintError):
+    """A state-changing request without a matching CSRF token."""
+
+    code = "csrf_failed"
+
+
+class ThrottledError(OsintError):
+    """The caller has exceeded a rate limit.
+
+    Carries ``retry_after`` so the handler can set the header. Deliberately its
+    own type rather than reusing :class:`RateLimitExceeded`, which means "a
+    third-party API throttled *us*" — conflating the two would let an inbound
+    throttle be reported to an investigator as an upstream failure.
+    """
+
+    code = "rate_limited"
+
+    def __init__(
+        self, message: str, *, retry_after: int = 60, detail: object | None = None
+    ) -> None:
+        super().__init__(message, detail=detail)
+        self.retry_after = max(int(retry_after), 1)

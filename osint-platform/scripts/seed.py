@@ -7,7 +7,7 @@ real person or organisation is used as sample data, and the script never
 contacts the network — the findings are fixtures, so the dashboard has
 something to show before any collector runs.
 
-    python scripts/seed.py [--database-url URL] [--reset]
+    python scripts/seed.py [--database-url URL] [--reset] [--demo-password PW]
 """
 
 from __future__ import annotations
@@ -264,8 +264,13 @@ RUNS = [
 ]
 
 
-def seed(database_url: str | None, reset: bool) -> str:
-    """Create the demonstration case and return its id."""
+def seed(database_url: str | None, reset: bool, *, demo_password: str | None = None) -> str:
+    """Create the demonstration case and return its id.
+
+    ``demo_password`` creates a demonstration account so the case is reachable
+    through the interface. There is no default: a seed script that ships a
+    known password is a seed script that eventually reaches production.
+    """
     from app.correlation.extraction import extract
     from app.correlation.resolver import EntityResolver
     from app.models import CollectorRun, Evidence, Finding
@@ -285,6 +290,8 @@ def seed(database_url: str | None, reset: bool) -> str:
                 session.delete(case)
             session.flush()
 
+        workspace_id = _demo_workspace(session, demo_password)
+
         case = case_service.create_case(
             session,
             CaseCreate(
@@ -296,6 +303,7 @@ def seed(database_url: str | None, reset: bool) -> str:
                 ),
                 tags=["demo", "fixture-data"],
             ),
+            workspace_id=workspace_id,
         )
 
         targets = {}
@@ -382,6 +390,62 @@ def seed(database_url: str | None, reset: bool) -> str:
     return case_id
 
 
+#: The demonstration account. It exists only when a password is supplied, and it
+#: is never created in production.
+DEMO_EMAIL = "demo@example.com"
+DEMO_WORKSPACE = "Demonstration"
+
+
+def _demo_workspace(session, demo_password: str | None):
+    """The workspace the demonstration case belongs to.
+
+    A case needs an owner, and the seed script cannot invent an account without
+    inventing a credential — which is precisely the thing this platform refuses to
+    ship. So there are two honest behaviours and no third:
+
+    * with ``--demo-password``, create a demonstration user and workspace using
+      the password the operator supplied, and say so loudly;
+    * without it, leave the case **unclaimed** and print the one command that
+      adopts it into a real workspace.
+
+    Neither path ever produces a default password, and production refuses both.
+    """
+    from app.core.settings import get_settings
+
+    settings = get_settings()
+    if settings.environment == "production":
+        raise SystemExit(
+            "Refusing to seed demonstration data into a production deployment.\n"
+            "Set ENVIRONMENT=development if this really is a scratch database."
+        )
+
+    if not demo_password:
+        print(
+            "No --demo-password given, so the demonstration case is created "
+            "UNCLAIMED: it belongs to no workspace and the API will not show it.\n"
+            "Adopt it with:\n"
+            "    python -m app.cli admin create-admin\n"
+            "    python -m app.cli admin claim-cases --workspace <slug>\n"
+        )
+        return None
+
+    from app.services import accounts
+
+    user = accounts.get_user_by_email(session, DEMO_EMAIL)
+    if user is None:
+        user = accounts.create_user(
+            session, email=DEMO_EMAIL, password=demo_password, display_name="Demo analyst"
+        )
+    workspace = accounts.get_workspace_by_slug(session, "demonstration")
+    if workspace is None:
+        workspace = accounts.create_workspace(session, name=DEMO_WORKSPACE, owner=user)
+    print(
+        f"Demonstration account: {DEMO_EMAIL} (workspace {workspace.slug!r}), with "
+        f"the password you supplied. FOR LOCAL USE ONLY."
+    )
+    return workspace.id
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database-url", default=None, help="Override DATABASE_URL.")
@@ -390,9 +454,18 @@ def main() -> int:
         action="store_true",
         help="Delete any existing demonstration case first.",
     )
+    parser.add_argument(
+        "--demo-password",
+        default=None,
+        help=(
+            "Create a demonstration account with this password, so the seeded case "
+            "is visible in the interface. Development only; there is deliberately "
+            "no default. Without it the case is created unclaimed."
+        ),
+    )
     args = parser.parse_args()
     try:
-        seed(args.database_url, args.reset)
+        seed(args.database_url, args.reset, demo_password=args.demo_password)
     except Exception as exc:  # a CLI should fail with a message, not a traceback
         print(f"Seeding failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1

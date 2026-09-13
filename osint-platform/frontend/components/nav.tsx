@@ -4,6 +4,8 @@ import clsx from "clsx";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { UserMenu } from "@/components/user-menu";
+
 const LINKS = [
   { href: "/", label: "Dashboard", glyph: "▤" },
   { href: "/cases", label: "Cases", glyph: "▣" },
@@ -16,7 +18,7 @@ export function Nav() {
 
   return (
     <nav
-      className="shrink-0 border-b border-line bg-panel lg:h-screen lg:w-56 lg:border-b-0 lg:border-r"
+      className="flex shrink-0 flex-col border-b border-line bg-panel lg:h-screen lg:w-56 lg:border-b-0 lg:border-r"
       aria-label="Primary"
     >
       <div className="px-4 py-4">
@@ -48,6 +50,7 @@ export function Nav() {
           );
         })}
       </ul>
+      <UserMenu />
     </nav>
   );
 }

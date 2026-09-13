@@ -15,7 +15,9 @@ import {
   Spinner,
 } from "@/components/ui/primitives";
 import { useAsync } from "@/hooks/useApi";
+import { useSession } from "@/components/session";
 import { api } from "@/lib/api";
+import { PERMISSION, can, deniedMessage } from "@/lib/permissions";
 import {
   EXPANDED_BY_DEFAULT,
   SEARCH_ENGINES,
@@ -432,6 +434,10 @@ function ProviderBanner({
   onRun: () => void;
 }) {
   const status = providerStatus(plan);
+  const { workspace } = useSession();
+  // Running a provider search spends money on a paid channel, so it needs the
+  // same permission as an investigation. The API refuses it regardless.
+  const mayRun = can(workspace, PERMISSION.investigationRun);
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3">
       <Badge tone={status.tone}>{status.label}</Badge>
@@ -439,9 +445,15 @@ function ProviderBanner({
         {status.detail}
       </span>
       {plan.search_provider_configured ? (
-        <Button variant="primary" onClick={onRun} disabled={busy}>
-          {busy ? "Searching…" : "Search the public web"}
-        </Button>
+        mayRun ? (
+          <Button variant="primary" onClick={onRun} disabled={busy}>
+            {busy ? "Searching…" : "Search the public web"}
+          </Button>
+        ) : (
+          <span className="text-[11px] text-muted">
+            {deniedMessage(workspace, "run a provider search")}
+          </span>
+        )
       ) : null}
     </div>
   );

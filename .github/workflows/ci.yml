@@ -89,6 +89,83 @@ jobs:
       - name: Vitest
         run: npm test
 
+  security:
+    name: Security (dependencies, secrets)
+    runs-on: ubuntu-latest
+    # Every tool here is free and needs no account, so the job runs on every
+    # pull request from every fork rather than being something only maintainers
+    # see.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks scans history, not just the diff — a credential removed in a
+          # later commit is still published in an earlier one.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: osint-platform/frontend/package-lock.json
+
+      # --- Python dependencies ------------------------------------------------
+      #
+      # Policy, so a red build means something and a green one is not luck:
+      #
+      #   * the job FAILS on a HIGH or CRITICAL advisory in a dependency this
+      #     application actually installs;
+      #   * it REPORTS medium and low findings in the step summary without
+      #     failing, because a build that cries wolf gets ignored and then the
+      #     one real finding is ignored with it;
+      #   * a finding with no fixed version available is reported, not failed —
+      #     there is nothing a contributor could do about it in this pull
+      #     request, and blocking their work does not make the advisory go away.
+      #
+      # Anything waived is waived in `.security-policy.toml`, with a reason and a
+      # review date. An empty waiver list is the intended steady state.
+      - name: Install backend
+        working-directory: osint-platform/backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pip-audit
+
+      - name: pip-audit (fail on high and critical)
+        id: pip_audit
+        working-directory: osint-platform/backend
+        run: |
+          set +e
+          pip-audit --skip-editable --progress-spinner off --format json --output audit.json
+          set -e
+          python ../scripts/triage_audit.py audit.json >> "$GITHUB_STEP_SUMMARY"
+
+      # --- npm dependencies ---------------------------------------------------
+      - name: Install frontend
+        working-directory: osint-platform/frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: npm audit (fail on high and critical)
+        working-directory: osint-platform/frontend
+        run: |
+          set +e
+          npm audit --json > npm-audit.json
+          set -e
+          python ../scripts/triage_audit.py --npm npm-audit.json >> "$GITHUB_STEP_SUMMARY"
+
+      # --- secrets ------------------------------------------------------------
+      #
+      # A committed credential is the one finding that is never "low severity":
+      # it is already published, and rotating it is the only remedy. So this step
+      # fails the build outright.
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
   migrations:
     name: Migrations (PostgreSQL)
     runs-on: ubuntu-latest

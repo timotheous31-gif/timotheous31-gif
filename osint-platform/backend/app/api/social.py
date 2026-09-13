@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, status
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import select
 
-from app.api.deps import CaseId, DbSession, parse_uuid
+from app.api.deps import CaseContext, DbSession, parse_uuid, require
 from app.core.errors import ValidationError
+from app.core.permissions import Permission
 from app.models import Entity, EntityType, ImageEvidence, ImageFetchState, SocialProfile
-from app.models.enums import DecisionSubject
+from app.models.enums import AuditEvent, DecisionSubject
 from app.schemas.social import (
     AnalystDecisionRead,
     AnalystDecisionWrite,
@@ -18,6 +21,7 @@ from app.schemas.social import (
     PublicContactRead,
     SocialProfileRead,
 )
+from app.services import audit
 from app.services import decisions as decision_service
 from app.services import images as image_service
 from app.services import promotion as contact_service
@@ -41,13 +45,15 @@ def _decorate(records, decisions, schema):
     "/social-profiles", response_model=list[SocialProfileRead], summary="Public social profiles"
 )
 def list_social_profiles(
-    case_id: CaseId,
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
     session: DbSession,
     candidate_id: str | None = Query(default=None),
 ) -> list[SocialProfileRead]:
     entity_id = parse_uuid(candidate_id, "candidate_id") if candidate_id else None
-    profiles = profile_service.profiles_for_case(session, case_id, candidate_entity_id=entity_id)
-    decisions = decision_service.decision_map(session, case_id)
+    profiles = profile_service.profiles_for_case(
+        session, ctx.case_id, candidate_entity_id=entity_id
+    )
+    decisions = decision_service.decision_map(session, ctx.case_id)
     return _decorate(profiles, decisions, SocialProfileRead)
 
 
@@ -57,7 +63,7 @@ def list_social_profiles(
     summary="Public professional and business contacts",
 )
 def list_public_contacts(
-    case_id: CaseId,
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
     session: DbSession,
     candidate_id: str | None = Query(default=None),
 ) -> list[PublicContactRead]:
@@ -68,20 +74,22 @@ def list_public_contacts(
     which is worse than returning nothing.
     """
     entity_id = parse_uuid(candidate_id, "candidate_id") if candidate_id else None
-    contacts = contact_service.contacts_for_case(session, case_id, candidate_entity_id=entity_id)
-    decisions = decision_service.decision_map(session, case_id)
+    contacts = contact_service.contacts_for_case(
+        session, ctx.case_id, candidate_entity_id=entity_id
+    )
+    decisions = decision_service.decision_map(session, ctx.case_id)
     return _decorate(contacts, decisions, PublicContactRead)
 
 
 @router.get("/images", response_model=list[ImageEvidenceRead], summary="Public image evidence")
 def list_images(
-    case_id: CaseId,
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
     session: DbSession,
     candidate_id: str | None = Query(default=None),
 ) -> list[ImageEvidenceRead]:
     entity_id = parse_uuid(candidate_id, "candidate_id") if candidate_id else None
-    records = image_service.images_for_case(session, case_id, candidate_entity_id=entity_id)
-    decisions = decision_service.decision_map(session, case_id)
+    records = image_service.images_for_case(session, ctx.case_id, candidate_entity_id=entity_id)
+    decisions = decision_service.decision_map(session, ctx.case_id)
     return _decorate(records, decisions, ImageEvidenceRead)
 
 
@@ -91,8 +99,8 @@ def list_images(
     summary="Fetch a referenced image's bytes",
 )
 async def fetch_image(
-    case_id: CaseId,
     image_id: str,
+    ctx: Annotated[CaseContext, Depends(require(Permission.INVESTIGATION_RUN))],
     session: DbSession,
     payload: FetchImageRequest | None = None,
 ) -> ImageEvidenceRead:
@@ -105,7 +113,7 @@ async def fetch_image(
     """
     options = payload or FetchImageRequest()
     record = session.get(ImageEvidence, parse_uuid(image_id, "image_id"))
-    if record is None or record.case_id != case_id:
+    if record is None or record.case_id != ctx.case_id:
         raise ValidationError(f"No image {image_id} in this case")
 
     if options.respect_platform_block and record.social_profile_id is not None:
@@ -135,7 +143,10 @@ async def fetch_image(
 
 
 @router.get("/candidates", response_model=list[CandidateGroup], summary="Candidates and evidence")
-def list_candidates(case_id: CaseId, session: DbSession) -> list[CandidateGroup]:
+def list_candidates(
+    session: DbSession,
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
+) -> list[CandidateGroup]:
     """Every candidate with the profiles and images attributed to it.
 
     Grouped by candidate and by source. Never by visual similarity: the platform
@@ -144,16 +155,16 @@ def list_candidates(case_id: CaseId, session: DbSession) -> list[CandidateGroup]
     entities = list(
         session.scalars(
             select(Entity)
-            .where(Entity.case_id == case_id, Entity.type == EntityType.PERSONA)
+            .where(Entity.case_id == ctx.case_id, Entity.type == EntityType.PERSONA)
             .order_by(Entity.confidence.desc())
         )
     )
     candidates = [item for item in entities if item.attributes.get("role") == "candidate"]
-    decisions = decision_service.decision_map(session, case_id)
+    decisions = decision_service.decision_map(session, ctx.case_id)
 
-    profiles = profile_service.profiles_for_case(session, case_id)
-    images = image_service.images_for_case(session, case_id)
-    contacts = contact_service.contacts_for_case(session, case_id)
+    profiles = profile_service.profiles_for_case(session, ctx.case_id)
+    images = image_service.images_for_case(session, ctx.case_id)
+    contacts = contact_service.contacts_for_case(session, ctx.case_id)
 
     groups: list[CandidateGroup] = []
     for entity in candidates:
@@ -207,10 +218,13 @@ def list_candidates(case_id: CaseId, session: DbSession) -> list[CandidateGroup]
 
 
 @router.get("/decisions", response_model=list[AnalystDecisionRead], summary="Analyst decisions")
-def list_decisions(case_id: CaseId, session: DbSession) -> list[AnalystDecisionRead]:
+def list_decisions(
+    session: DbSession,
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
+) -> list[AnalystDecisionRead]:
     return [
         AnalystDecisionRead.model_validate(record)
-        for record in decision_service.decisions_for_case(session, case_id)
+        for record in decision_service.decisions_for_case(session, ctx.case_id)
     ]
 
 
@@ -221,7 +235,9 @@ def list_decisions(case_id: CaseId, session: DbSession) -> list[AnalystDecisionR
     summary="Record an analyst decision",
 )
 def record_decision(
-    case_id: CaseId, payload: AnalystDecisionWrite, session: DbSession
+    payload: AnalystDecisionWrite,
+    ctx: Annotated[CaseContext, Depends(require(Permission.ANALYST_DECIDE))],
+    session: DbSession,
 ) -> AnalystDecisionRead:
     """Record what the analyst concluded.
 
@@ -231,12 +247,28 @@ def record_decision(
     """
     record = decision_service.record_decision(
         session,
-        case_id=case_id,
+        case_id=ctx.case_id,
         subject_type=payload.subject_type,
         subject_id=payload.subject_id,
         decision=payload.decision,
         note=payload.note,
         decided_by=payload.decided_by,
+    )
+    audit.record(
+        session,
+        event=AuditEvent.ANALYST_DECISION_CREATED,
+        actor_user_id=ctx.principal.user_id,
+        workspace_id=ctx.workspace_id,
+        object_type=str(payload.subject_type),
+        object_id=payload.subject_id,
+        metadata={
+            "case_id": str(ctx.case_id),
+            "decision": str(payload.decision),
+            # The note is the analyst's own words about a person under
+            # investigation. It stays on the decision record, where it belongs;
+            # copying it into the security log would spread it for no benefit.
+            "has_note": bool(payload.note),
+        },
     )
     session.commit()
     session.refresh(record)
@@ -249,7 +281,10 @@ def record_decision(
     summary="Withdraw an analyst decision",
 )
 def clear_decision(
-    case_id: CaseId, subject_type: DecisionSubject, subject_id: str, session: DbSession
+    subject_type: DecisionSubject,
+    subject_id: str,
+    ctx: Annotated[CaseContext, Depends(require(Permission.ANALYST_DECIDE))],
+    session: DbSession,
 ) -> None:
     """Withdraw a decision, leaving the automated assessment untouched.
 
@@ -257,7 +292,7 @@ def clear_decision(
     """
     removed = decision_service.clear_decision(
         session,
-        case_id=case_id,
+        case_id=ctx.case_id,
         subject_type=subject_type,
         subject_id=parse_uuid(subject_id, "subject_id"),
     )

@@ -10,19 +10,65 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from app.core.logging import get_logger, request_id_var
+from app.core.settings import get_settings
 
 log = get_logger(__name__)
 
 REQUEST_ID_HEADER = "X-Request-ID"
 
-#: Conservative defaults; the API serves JSON only, never third-party HTML.
+#: Conservative defaults. The API serves JSON, plus report documents that are
+#: sent as attachments under their own stricter policy (see
+#: :mod:`app.api.reports`).
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
     "Referrer-Policy": "no-referrer",
     "Cross-Origin-Opener-Policy": "same-origin",
-    "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+    "Cross-Origin-Resource-Policy": "same-site",
+    "Permissions-Policy": (
+        "geolocation=(), microphone=(), camera=(), payment=(), usb=(), " "interest-cohort=()"
+    ),
 }
+
+#: Content-Security-Policy for API responses.
+#:
+#: This application serves JSON and, at ``/docs``, a Swagger page. Nothing else
+#: on this origin is meant to execute, so everything is denied by default and the
+#: two exceptions are named below rather than waved through with ``script-src *``.
+#:
+#: ``frame-ancestors 'none'`` is the modern spelling of ``X-Frame-Options: DENY``;
+#: both are sent, because the older header is still what some proxies enforce.
+API_CSP = "default-src 'none'; " "frame-ancestors 'none'; " "base-uri 'none'; " "form-action 'none'"
+
+#: The interactive documentation is the one place on this origin that runs a
+#: script, and Swagger UI is loaded from a CDN with an inline bootstrap. It is
+#: therefore given its own policy instead of loosening the API's.
+#:
+#: This is the one unavoidable exception in the whole policy, and it is bounded
+#: three ways: it applies to ``/docs`` and ``/redoc`` only, it names the exact CDN
+#: rather than a wildcard, and a deployment that does not want a documentation
+#: page at all can turn it off with ``DOCS_ENABLED=false`` — which is the
+#: recommended production setting.
+DOCS_CSP = (
+    "default-src 'none'; "
+    "script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+    "style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+    "img-src 'self' data: https://fastapi.tiangolo.com; "
+    "font-src 'self' https://cdn.jsdelivr.net; "
+    "connect-src 'self'; "
+    "frame-ancestors 'none'; "
+    "base-uri 'none'; "
+    "form-action 'self'"
+)
+
+#: Paths served by FastAPI's own documentation UI.
+DOCS_PATHS = ("/docs", "/redoc", "/docs/oauth2-redirect")
+
+#: Two years, with subdomains, and preload-eligible. Sent **only** where HTTPS is
+#: actually terminated — see :attr:`app.core.settings.Settings.hsts_enabled`.
+#: Sending it in development would teach a developer's browser to refuse
+#: ``http://localhost`` for two years, which is a self-inflicted outage.
+HSTS_VALUE = "max-age=63072000; includeSubDomains"
 
 
 class BodySizeLimitMiddleware(BaseHTTPMiddleware):
@@ -89,6 +135,15 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         response.headers[REQUEST_ID_HEADER] = request_id
         for header, value in SECURITY_HEADERS.items():
             response.headers.setdefault(header, value)
+        # setdefault, so a response that set its own policy — a report document,
+        # which needs a stricter one — keeps it.
+        path = request.url.path
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            DOCS_CSP if path in DOCS_PATHS else API_CSP,
+        )
+        if get_settings().hsts_enabled:
+            response.headers.setdefault("Strict-Transport-Security", HSTS_VALUE)
         log.info(
             "http.request",
             method=request.method,

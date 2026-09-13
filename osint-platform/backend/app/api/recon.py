@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
-from typing import Any
+import uuid
+from typing import Annotated, Any
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 
-from app.api.deps import CaseId, DbSession, parse_uuid
+from app.api.deps import (
+    AppSettings,
+    CaseContext,
+    DbSession,
+    parse_uuid,
+    require,
+)
 from app.collectors.capabilities import CAPABILITIES
 from app.collectors.person import PersonContext
-from app.core.errors import NotFoundError, ValidationError
+from app.core import throttle
+from app.core.errors import NotFoundError, ThrottledError, ValidationError
+from app.core.permissions import Permission
 from app.models import Finding, SocialProfile, Target
-from app.models.enums import FindingKind, TargetType
+from app.models.enums import AuditEvent, FindingKind, TargetType
 from app.schemas.recon import (
     DiscoveredAnchorRead,
     ImportedResultRead,
@@ -25,7 +34,7 @@ from app.schemas.recon import (
     SourcePlatformRead,
     StagedReconPlan,
 )
-from app.services import recon_import
+from app.services import audit, recon_import
 from app.services.normalization import NormalizedTarget
 from app.services.promotion import promote_finding
 from app.services.providers.search import get_search_provider
@@ -35,7 +44,7 @@ from app.services.search_ingest import search_target
 router = APIRouter(prefix="/cases/{case_id}", tags=["recon"])
 
 
-def _person_target(session: DbSession, case_id: CaseId, target_id: str) -> Target:
+def _person_target(session: DbSession, case_id: uuid.UUID, target_id: str) -> Target:
     target = session.get(Target, parse_uuid(target_id, "target_id"))
     if target is None or target.case_id != case_id:
         raise NotFoundError(f"Target {target_id} is not in case {case_id}")
@@ -52,14 +61,18 @@ def _person_target(session: DbSession, case_id: CaseId, target_id: str) -> Targe
     response_model=ReconQueryPlan,
     summary="Generated reconnaissance queries for a PERSON target",
 )
-def recon_queries(case_id: CaseId, target_id: str, session: DbSession) -> ReconQueryPlan:
+def recon_queries(
+    target_id: str,
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
+    session: DbSession,
+) -> ReconQueryPlan:
     """The searches to run by hand, with the reason for each.
 
     The platform never submits these anywhere. It generates them, the
     investigator runs them in their own browser, and relevant public results
     come back through the import endpoint.
     """
-    target = _person_target(session, case_id, target_id)
+    target = _person_target(session, ctx.case_id, target_id)
     normalized = NormalizedTarget(
         type=target.type,
         raw_input=target.raw_input,
@@ -72,7 +85,7 @@ def recon_queries(case_id: CaseId, target_id: str, session: DbSession) -> ReconQ
     # Discovery feeds recon: a fuller name a public profile declared is worth
     # searching, and the investigator should not have to retype it. The target's
     # own name is untouched — these are extra searches, not a rename.
-    declared = _declared_names(session, case_id, name)
+    declared = _declared_names(session, ctx.case_id, name)
     queries = generate_queries(name, context, also_known_as=declared)
 
     return ReconQueryPlan(
@@ -100,7 +113,7 @@ def _capability(item: Any) -> SourcePlatformRead:
     )
 
 
-def _declared_names(session: DbSession, case_id: CaseId, searched: str) -> tuple[str, ...]:
+def _declared_names(session: DbSession, case_id: uuid.UUID, searched: str) -> tuple[str, ...]:
     """Fuller name spellings public profiles in this case declared.
 
     Only names a source actually published, and only where the searched name is
@@ -125,14 +138,18 @@ def _declared_names(session: DbSession, case_id: CaseId, searched: str) -> tuple
     response_model=StagedReconPlan,
     summary="The staged reconnaissance plan for a PERSON target",
 )
-def recon_plan(case_id: CaseId, target_id: str, session: DbSession) -> StagedReconPlan:
+def recon_plan(
+    target_id: str,
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
+    session: DbSession,
+) -> StagedReconPlan:
     """The plan an investigator works through, stage by stage.
 
     Built from the name's variants, the anchors supplied, and the anchors public
     sources actually published about candidates in this case. Nothing is
     invented: a discovered anchor carries the URL that published it.
     """
-    target = _person_target(session, case_id, target_id)
+    target = _person_target(session, ctx.case_id, target_id)
     normalized = NormalizedTarget(
         type=target.type,
         raw_input=target.raw_input,
@@ -141,11 +158,11 @@ def recon_plan(case_id: CaseId, target_id: str, session: DbSession) -> StagedRec
     )
     context = PersonContext.from_target(normalized)
     canonical = str(normalized.attributes.get("display_name", target.normalized_value))
-    declared = _declared_names(session, case_id, canonical)
+    declared = _declared_names(session, ctx.case_id, canonical)
     plan = staged_plan(
         canonical,
         context,
-        discovered=discovered_anchors(session, case_id),
+        discovered=discovered_anchors(session, ctx.case_id),
         also_known_as=declared,
     )
 
@@ -173,7 +190,10 @@ def recon_plan(case_id: CaseId, target_id: str, session: DbSession) -> StagedRec
     summary="Run the plan through a configured search provider and ingest the results",
 )
 async def run_provider_search(
-    case_id: CaseId, target_id: str, session: DbSession
+    target_id: str,
+    ctx: Annotated[CaseContext, Depends(require(Permission.INVESTIGATION_RUN))],
+    session: DbSession,
+    settings: AppSettings,
 ) -> SearchIngestRead:
     """Search the public web and feed what returns into the investigation.
 
@@ -184,15 +204,31 @@ async def run_provider_search(
     Results reach the report through the same pipeline a collector's findings
     use: no special confidence for having been returned by a search engine.
     """
-    target = _person_target(session, case_id, target_id)
-    report = await search_target(session, case_id=case_id, target_id=target.id)
+    verdict = throttle.check(
+        throttle.principal_key("recon-search", str(ctx.principal.user_id)),
+        limit=settings.rate_limit_recon_per_hour,
+        window_seconds=3600,
+        settings=settings,
+    )
+    if verdict.refused:
+        # Explicitly *not* an empty result set. A throttled search is a search
+        # that did not happen, and the coverage model has a state for that.
+        raise ThrottledError(
+            "You have run a lot of provider searches in a short time. This channel "
+            "is billed per search, so there is an hourly ceiling. Nothing was "
+            "searched — this is not a result.",
+            retry_after=verdict.retry_after,
+        )
+
+    target = _person_target(session, ctx.case_id, target_id)
+    report = await search_target(session, case_id=ctx.case_id, target_id=target.id)
     for finding_id in report.findings:
         finding = session.get(Finding, finding_id)
         if finding is None:
             continue
         promote_finding(
             session,
-            case_id=case_id,
+            case_id=ctx.case_id,
             finding=finding,
             target=target,
             candidate_entity_id=None,
@@ -209,7 +245,11 @@ async def run_provider_search(
     summary="Import public search results found by the investigator",
 )
 def import_recon_results(
-    case_id: CaseId, target_id: str, payload: ManualResultImport, session: DbSession
+    target_id: str,
+    payload: ManualResultImport,
+    ctx: Annotated[CaseContext, Depends(require(Permission.RESULT_IMPORT))],
+    session: DbSession,
+    settings: AppSettings,
 ) -> list[ImportedResultRead]:
     """Store results the investigator selected from their own search.
 
@@ -218,8 +258,29 @@ def import_recon_results(
     produced it. Imported results are filed under their own collector identity
     so nothing later mistakes them for something a search API returned.
     """
-    target = _person_target(session, case_id, target_id)
-    findings = recon_import.import_results(session, case_id, target.id, payload)
+    verdict = throttle.check(
+        throttle.principal_key("recon-import", str(ctx.principal.user_id)),
+        limit=settings.rate_limit_import_per_hour,
+        window_seconds=3600,
+        settings=settings,
+    )
+    if verdict.refused:
+        raise ThrottledError(
+            "You have imported a lot of results in a short time. Try again shortly.",
+            retry_after=verdict.retry_after,
+        )
+
+    target = _person_target(session, ctx.case_id, target_id)
+    findings = recon_import.import_results(session, ctx.case_id, target.id, payload)
+    audit.record(
+        session,
+        event=AuditEvent.MANUAL_RESULT_IMPORTED,
+        actor_user_id=ctx.principal.user_id,
+        workspace_id=ctx.workspace_id,
+        object_type="target",
+        object_id=target.id,
+        metadata={"case_id": str(ctx.case_id), "results": len(findings)},
+    )
     session.commit()
     return [_read(finding) for finding in findings]
 
@@ -230,7 +291,9 @@ def import_recon_results(
     summary="List investigator-imported results and image evidence",
 )
 def list_recon_results(
-    case_id: CaseId, session: DbSession, images_only: bool = False
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
+    session: DbSession,
+    images_only: bool = False,
 ) -> list[ImportedResultRead]:
     kinds = (
         [FindingKind.IMAGE_EVIDENCE]
@@ -239,7 +302,7 @@ def list_recon_results(
     )
     findings = session.scalars(
         select(Finding)
-        .where(Finding.case_id == case_id, Finding.kind.in_(kinds))
+        .where(Finding.case_id == ctx.case_id, Finding.kind.in_(kinds))
         .order_by(Finding.created_at.desc())
     ).all()
     return [_read(finding) for finding in findings]
