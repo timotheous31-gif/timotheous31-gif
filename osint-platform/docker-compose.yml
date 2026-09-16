@@ -20,6 +20,10 @@ x-backend-env: &backend-env
   SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-}
   SESSION_COOKIE_SAMESITE: ${SESSION_COOKIE_SAMESITE:-lax}
   SESSION_COOKIE_DOMAIN: ${SESSION_COOKIE_DOMAIN:-}
+  # A DEVELOPMENT default, like CORS_ORIGINS above. Production refuses to start
+  # with docs enabled, so a deployment that flips ENVIRONMENT=production without
+  # setting this gets a loud refusal naming the variable — never a silently
+  # inherited Swagger page on a customer's origin.
   DOCS_ENABLED: ${DOCS_ENABLED:-true}
   RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
   LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-8}

@@ -45,10 +45,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "console"
     api_prefix: str = "/api/v1"
-    #: Serve the interactive API documentation. On by default because it is
-    #: how a developer learns the API; recommended off in production, where it
-    #: is the only page on this origin that executes a script and the only
-    #: reason the CSP has an exception at all.
+    #: Serve the interactive API documentation. On by default because it is how a
+    #: developer learns the API, and **refused outright in production** (see
+    #: :meth:`production_problems`): it is the only page on this origin that
+    #: executes a script and the only reason the CSP has an exception at all.
+    #: Turning it off there is not a recommendation, it is a start-up condition.
     docs_enabled: bool = True
     #: Ceiling on an inbound request body. Investigation payloads are small.
     max_request_bytes: int = 1_000_000
@@ -333,6 +334,14 @@ class Settings(BaseSettings):
         if not self.rate_limit_enabled:
             problems.append(
                 "RATE_LIMIT_ENABLED=false leaves sign-in unthrottled. Keep it on in " "production."
+            )
+
+        if self.docs_enabled:
+            problems.append(
+                "DOCS_ENABLED=true serves Swagger UI at /docs. It is the only page on "
+                "this origin that executes a script, and the only reason the "
+                "Content-Security-Policy has a CDN exception at all. Set "
+                "DOCS_ENABLED=false in production."
             )
 
         return problems

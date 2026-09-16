@@ -295,6 +295,10 @@ class AuditEvent(StrEnum):
     OWNERSHIP_TRANSFERRED = "ownership_transferred"
     CASE_CREATED = "case_created"
     CASE_DELETED = "case_deleted"
+    #: A case that predates workspaces was adopted into one by an operator
+    #: running ``admin claim-cases``. Distinct from CASE_CREATED because the
+    #: case already existed: what changed is who can now read it.
+    CASE_CLAIMED = "case_claimed"
     INVESTIGATION_STARTED = "investigation_started"
     INVESTIGATION_CANCELLED = "investigation_cancelled"
     REPORT_GENERATED = "report_generated"

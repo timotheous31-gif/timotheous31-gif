@@ -667,6 +667,7 @@ class TestProductionConfigurationGate:
             environment="production",
             session_secret="a" * 48,
             cors_origins=["https://app.example.com"],
+            docs_enabled=False,
         )
         assert settings.production_problems() == []
         settings.require_safe_production()
@@ -684,6 +685,7 @@ class TestProductionConfigurationGate:
             ({"allow_private_networks": True}, "ALLOW_PRIVATE_NETWORKS"),
             ({"session_cookie_secure": False}, "SESSION_COOKIE_SECURE"),
             ({"rate_limit_enabled": False}, "RATE_LIMIT_ENABLED"),
+            ({"docs_enabled": True}, "DOCS_ENABLED"),
         ],
     )
     def test_a_dangerous_production_setting_refuses_to_start(self, kwargs, expected):
@@ -691,6 +693,7 @@ class TestProductionConfigurationGate:
             "environment": "production",
             "session_secret": "a" * 48,
             "cors_origins": ["https://app.example.com"],
+            "docs_enabled": False,
         }
         settings = Settings(**{**base, **kwargs})
         problems = settings.production_problems()
@@ -699,6 +702,92 @@ class TestProductionConfigurationGate:
         with pytest.raises(UnsafeProductionConfig) as raised:
             settings.require_safe_production()
         assert expected in str(raised.value)
+
+    # ---------------------------------------------------------------- docs
+    #
+    # The interactive documentation is the only page on this origin that runs a
+    # script, and the only reason the Content-Security-Policy has a CDN
+    # exception. Production refuses to *start* with it on rather than hiding the
+    # route at runtime: hiding it would leave the configuration dangerous and
+    # merely unexercised, and the operator who set it would never learn that.
+
+    def test_development_may_serve_the_documentation(self):
+        """The default, and the reason the setting exists at all."""
+        settings = Settings(environment="development", docs_enabled=True)
+        assert settings.docs_enabled is True
+        assert settings.production_problems() == []
+        settings.require_safe_production()
+
+    def test_production_with_documentation_disabled_is_allowed(self):
+        settings = Settings(
+            environment="production",
+            session_secret="a" * 48,
+            cors_origins=["https://app.example.com"],
+            docs_enabled=False,
+        )
+        assert settings.production_problems() == []
+        settings.require_safe_production()
+
+    def test_production_with_documentation_enabled_refuses_to_start(self):
+        settings = Settings(
+            environment="production",
+            session_secret="a" * 48,
+            cors_origins=["https://app.example.com"],
+            docs_enabled=True,
+        )
+        problems = settings.production_problems()
+        assert any("DOCS_ENABLED" in problem for problem in problems), problems
+
+        with pytest.raises(UnsafeProductionConfig) as raised:
+            settings.require_safe_production()
+        message = str(raised.value)
+        assert "DOCS_ENABLED" in message
+        # Names the remedy, not only the fault.
+        assert "DOCS_ENABLED=false" in message
+        # And the setting keeps its dangerous value rather than being corrected.
+        assert settings.docs_enabled is True
+
+    def test_the_refusal_happens_at_startup_not_at_request_time(self, monkeypatch):
+        """Building the application is what fails; the route is never merely hidden."""
+        from app.core.settings import reset_settings_cache
+
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("SESSION_SECRET", "b" * 48)
+        monkeypatch.setenv("CORS_ORIGINS", "https://app.example.com")
+        monkeypatch.setenv("DOCS_ENABLED", "true")
+        reset_settings_cache()
+
+        from app.main import create_app
+
+        with pytest.raises(UnsafeProductionConfig) as raised:
+            create_app()
+        assert "DOCS_ENABLED" in str(raised.value)
+
+    async def test_a_valid_production_deployment_serves_no_documentation(self, monkeypatch):
+        """The positive case: production starts, and the pages are simply gone."""
+        import httpx
+
+        from app.core.db import configure_engine
+        from app.core.settings import reset_settings_cache
+        from app.main import create_app
+        from app.models import Base
+
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("SESSION_SECRET", "c" * 48)
+        monkeypatch.setenv("CORS_ORIGINS", "https://app.example.com")
+        monkeypatch.setenv("DOCS_ENABLED", "false")
+        reset_settings_cache()
+
+        engine = configure_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        transport = httpx.ASGITransport(app=create_app())
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            for path in ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"):
+                assert (await client.get(path)).status_code == 404, path
+            # The deployment itself is up — this is a running service, not a
+            # blanket 404.
+            assert (await client.get("/health")).status_code == 200
+        Base.metadata.drop_all(engine)
 
     def test_nothing_is_repaired_silently(self):
         """The setting keeps the dangerous value; the process refuses instead."""
@@ -748,6 +837,7 @@ class TestProductionConfigurationGate:
             environment="production",
             session_secret="a" * 48,
             cors_origins=["https://app.example.com"],
+            docs_enabled=False,
             allow_private_networks=True,
             private_network_authorization="Engagement PENTEST-2026-04",
         )

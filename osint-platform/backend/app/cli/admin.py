@@ -167,10 +167,36 @@ def claim_cases(
             )
         if not yes and not typer.confirm(f"Adopt {len(orphans)} case(s)?"):
             warn("Nothing was changed.")
+            # Deliberately no audit entry: nothing was claimed, and a ledger that
+            # records intentions rather than changes cannot be read as a record of
+            # what happened.
             raise typer.Exit(code=1)
 
+        from app.models.enums import AuditEvent
+        from app.services import audit
+
+        operator_user, operator_host = _operator()
         for case in orphans:
             case.workspace_id = space.id
+            # One entry per case, which is what the schema already expresses:
+            # object_id is the case, workspace_id is who received it, occurred_at
+            # is when. No new shape, no list packed into metadata that a reader
+            # would have to parse back out.
+            audit.record(
+                session,
+                event=AuditEvent.CASE_CLAIMED,
+                workspace_id=space.id,
+                object_type="case",
+                object_id=case.id,
+                metadata={
+                    "workspace": space.slug,
+                    "case_name": case.name,
+                    "claimed_total": len(orphans),
+                    "via": "cli",
+                    "operator_user": operator_user,
+                    "operator_host": operator_host,
+                },
+            )
         session.commit()
 
         if as_json:
@@ -242,6 +268,35 @@ def reset_password(
             raise typer.BadParameter(str(exc)) from exc
         session.commit()
     success(f"Password changed for {email}. Every session for that account was ended.")
+
+
+def _operator() -> tuple[str, str]:
+    """Who ran this command, as well as a shell can answer it.
+
+    There is no signed-in user here — that is the whole point of a bootstrap CLI —
+    so ``actor_user_id`` stays null rather than being attributed to somebody who
+    did not do it. What can be recorded honestly is the account and the host the
+    command ran on, which is what an operator would be asked for afterwards.
+
+    Returned as two values, and stored as two fields, deliberately. Joining them
+    into ``user@host`` would produce exactly the shape this platform forbids
+    itself from constructing — see
+    ``test_no_email_address_is_ever_constructed_from_a_name_and_a_domain`` — and
+    an audit reader is better served by two fields they can filter on than by one
+    they have to split.
+    """
+    import getpass
+    import socket
+
+    try:
+        who = getpass.getuser()
+    except Exception:  # pragma: no cover - no passwd entry for the uid
+        who = "unknown"
+    try:
+        where = socket.gethostname()
+    except Exception:  # pragma: no cover - defensive
+        where = "unknown"
+    return who[:100], where[:100]
 
 
 def _unclaimed_count(session) -> int:
