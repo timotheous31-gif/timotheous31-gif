@@ -31,6 +31,11 @@ dependencies = [
     # memory-hard KDF: this platform hashes passwords, it does not invent
     # cryptography.
     "argon2-cffi>=23.1",
+    # RFC 6238 TOTP. The construction is short enough to be tempting to write by
+    # hand and exactly the kind of thing that is subtly wrong for years — a drift
+    # window applied one way, a comparison that is not constant time. Replay
+    # rejection is ours, because it needs the account's own last-used counter.
+    "pyotp>=2.9",
 ]
 
 [project.optional-dependencies]

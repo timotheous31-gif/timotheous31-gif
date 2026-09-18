@@ -27,20 +27,31 @@ import re
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import ConflictError, NotFoundError, ValidationError
 from app.core.logging import get_logger
 from app.core.security import (
     hash_password,
+    hash_recovery_code,
     needs_rehash,
+    new_recovery_codes,
     new_session_token,
+    new_totp_secret,
     token_digest,
     verify_password,
+    verify_recovery_code,
 )
 from app.core.settings import Settings, get_settings
-from app.models.auth import User, UserSession, Workspace, WorkspaceMembership
+from app.models.auth import (
+    MfaRecoveryCode,
+    User,
+    UserMfa,
+    UserSession,
+    Workspace,
+    WorkspaceMembership,
+)
 from app.models.case import Case
 from app.models.enums import WorkspaceRole
 
@@ -281,12 +292,16 @@ def create_session(
     settings = settings or get_settings()
     token = new_session_token()
     now = datetime.now(UTC)
+    # Stamped immediately when the account owes no second factor, so "is this
+    # session authenticated" stays one column read. An account with a confirmed
+    # factor gets a null, which every route treats as not-yet-signed-in.
     row = UserSession(
         user_id=user.id,
         token_hash=token_digest(token),
         expires_at=now + timedelta(hours=settings.session_lifetime_hours),
         last_seen_at=now,
         user_agent=(user_agent or "")[:200],
+        mfa_satisfied_at=None if mfa_required(session, user.id) else now,
     )
     user.last_login_at = now
     session.add(row)
@@ -369,3 +384,105 @@ def require_user(session: Session, user_id: uuid.UUID) -> User:
     if user is None:
         raise NotFoundError(f"No user {user_id}")
     return user
+
+
+# ------------------------------------------------------------------- factors
+
+
+def mfa_for(session: Session, user_id: uuid.UUID) -> UserMfa | None:
+    """The account's MFA row, enrolled or merely started."""
+    return session.scalar(select(UserMfa).where(UserMfa.user_id == user_id))
+
+
+def mfa_required(session: Session, user_id: uuid.UUID) -> bool:
+    """Whether this account must clear a second factor to sign in.
+
+    Only a *confirmed* factor counts. A half-finished enrolment — a secret
+    written, a QR code never scanned — must never start gating sign-in, or a
+    user who abandoned enrolment would be locked out by a factor they never
+    proved they had.
+    """
+    row = mfa_for(session, user_id)
+    return row is not None and row.is_active
+
+
+def satisfy_mfa(session: Session, row: UserSession) -> UserSession:
+    """Promote a password-stage session to fully authenticated."""
+    row.mfa_satisfied_at = datetime.now(UTC)
+    session.flush()
+    return row
+
+
+def begin_mfa_enrollment(session: Session, user: User) -> tuple[UserMfa, str]:
+    """Start enrolment, returning the row and the secret to show once.
+
+    Replaces any unconfirmed attempt: somebody who scanned a code into the wrong
+    app and started again should get a clean secret, not a second row racing the
+    first. A *confirmed* factor is never silently replaced — the caller checks.
+    """
+    existing = mfa_for(session, user.id)
+    if existing is not None:
+        session.delete(existing)
+        session.flush()
+    secret = new_totp_secret()
+    row = UserMfa(user_id=user.id, secret=secret)
+    session.add(row)
+    session.flush()
+    return row, secret
+
+
+def confirm_mfa_enrollment(session: Session, row: UserMfa, step: int) -> list[str]:
+    """Activate the factor and issue fresh recovery codes.
+
+    Returns the codes in plaintext **once**; only their Argon2 verifiers are
+    stored. Any codes from a previous enrolment are discarded, so a code printed
+    before a re-enrolment cannot open the account afterwards.
+    """
+    now = datetime.now(UTC)
+    row.confirmed_at = now
+    row.last_used_step = step
+    row.last_verified_at = now
+    session.execute(delete(MfaRecoveryCode).where(MfaRecoveryCode.user_id == row.user_id))
+    codes = new_recovery_codes()
+    for code in codes:
+        session.add(MfaRecoveryCode(user_id=row.user_id, code_hash=hash_recovery_code(code)))
+    session.flush()
+    return codes
+
+
+def disable_mfa(session: Session, user_id: uuid.UUID) -> bool:
+    """Remove the factor and every recovery code. Returns whether one existed."""
+    row = mfa_for(session, user_id)
+    session.execute(delete(MfaRecoveryCode).where(MfaRecoveryCode.user_id == user_id))
+    if row is None:
+        session.flush()
+        return False
+    session.delete(row)
+    session.flush()
+    return True
+
+
+def unused_recovery_codes(session: Session, user_id: uuid.UUID) -> list[MfaRecoveryCode]:
+    """Recovery codes that have not been spent."""
+    return list(
+        session.scalars(
+            select(MfaRecoveryCode).where(
+                MfaRecoveryCode.user_id == user_id, MfaRecoveryCode.used_at.is_(None)
+            )
+        )
+    )
+
+
+def consume_recovery_code(session: Session, user_id: uuid.UUID, code: str) -> bool:
+    """Spend a recovery code. Returns whether one matched.
+
+    Every unused code is checked, and the first match is marked spent in the same
+    transaction as the sign-in it authorises — so the same code cannot be used
+    twice, including by two requests arriving together.
+    """
+    for row in unused_recovery_codes(session, user_id):
+        if verify_recovery_code(code, row.code_hash):
+            row.used_at = datetime.now(UTC)
+            session.flush()
+            return True
+    return False

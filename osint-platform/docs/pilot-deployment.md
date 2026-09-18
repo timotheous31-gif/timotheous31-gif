@@ -361,3 +361,63 @@ Honesty here is worth more than a feature list. From
   application's.
 
 [security-model.md](security-model.md) has the full list.
+
+---
+
+## Downgrading destroys accounts and the audit trail
+
+**Read this before running `alembic downgrade`.** Investigation data is safe;
+everything that controls *access* to it is not.
+
+| Revision | Downgrading past it destroys |
+| --- | --- |
+| `90102014feb7` (MFA) | Every enrolled TOTP secret and every unused recovery code. Enrolled users fall back to a password alone and must re-enrol. Recoverable. |
+| `dbeccf60fc7e` (auth) | **Users, workspaces, memberships, sessions and the entire audit history.** Irrecoverable. |
+
+Verified, not assumed: migrating an installation up, adopting its cases, then
+downgrading and re-upgrading leaves every investigation table byte-identical —
+and leaves `users`, `workspaces`, `workspace_memberships`, `user_sessions` and
+`audit_events` with zero rows. The cases become unclaimed again, because
+`cases.workspace_id` is dropped with the column.
+
+There is no recovery path in the application for this. If you must downgrade past
+`dbeccf60fc7e`, take a database dump first and understand that restoring it is
+the only way back.
+
+## Rate limiting in production: two supported modes
+
+Inbound throttling counts in one process unless it is told otherwise. Behind a
+proxy with four workers, in-memory counting is four separate counters — a limit
+of eight sign-in attempts is really thirty-two, and nothing says so.
+
+Production therefore refuses to start unless one of these is true:
+
+```bash
+# Either: every worker counts into the same place.
+REDIS_URL=redis://redis:6379/0        # must be reachable at start-up
+
+# Or: an explicit statement that there is exactly one worker.
+SINGLE_WORKER_DEPLOYMENT=true
+```
+
+A configured-but-unreachable Redis is refused too. That is the case that would
+otherwise degrade silently: the connection fails at start-up, the process falls
+back to per-worker counting, and the deployment looks healthy while its limits
+are worth a fraction of their number.
+
+## Two-factor authentication
+
+Off until a user enrols. No deployment-wide switch turns it on for everybody: a
+factor forced onto an account whose owner has not yet scanned a QR code locks
+them out of their own account.
+
+- **Enrolment** requires the password again, then a code from the authenticator
+  before anything changes. A scanned-but-unconfirmed secret gates nothing.
+- **Recovery codes** are issued once, shown once, stored as Argon2 verifiers, and
+  each works exactly once.
+- **`admin reset-password` does not clear the second factor.** Shell access is not
+  account takeover; a user who has lost both password and phone needs the
+  recovery code, or a deliberate database change an operator can be held to.
+- **Rate limited** at `MFA_MAX_ATTEMPTS` (default 5) per `MFA_ATTEMPT_WINDOW_SECONDS`.
+  Bounded, like the sign-in cooldown, so it cannot be used to lock somebody out.
+

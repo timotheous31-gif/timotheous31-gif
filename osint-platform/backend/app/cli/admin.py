@@ -266,6 +266,32 @@ def reset_password(
             accounts.set_password(session, user, password)
         except PasswordPolicyError as exc:
             raise typer.BadParameter(str(exc)) from exc
+
+        from app.models.enums import AuditEvent
+        from app.services import audit
+
+        operator_user, operator_host = _operator()
+        had_mfa = accounts.mfa_required(session, user.id)
+        audit.record(
+            session,
+            event=AuditEvent.PASSWORD_CHANGED,
+            # The account whose password changed — not the operator, who has no
+            # application identity in a shell.
+            object_type="user",
+            object_id=user.id,
+            metadata={
+                "by": "admin-cli",
+                "subject_email": user.email,
+                "sessions_revoked": True,
+                # Stated explicitly because the alternative — an admin reset that
+                # quietly cleared the second factor — would turn shell access into
+                # account takeover. It does not, and the record says so.
+                "mfa_left_enabled": had_mfa,
+                "via": "cli",
+                "operator_user": operator_user,
+                "operator_host": operator_host,
+            },
+        )
         session.commit()
     success(f"Password changed for {email}. Every session for that account was ended.")
 

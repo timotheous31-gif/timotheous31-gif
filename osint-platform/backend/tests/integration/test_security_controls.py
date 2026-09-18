@@ -289,6 +289,7 @@ class TestSecurityHeaders:
         from app.main import create_app
 
         monkeypatch.setenv("DOCS_ENABLED", "false")
+        monkeypatch.setenv("SINGLE_WORKER_DEPLOYMENT", "true")
         reset_settings_cache()
         transport = httpx.ASGITransport(app=create_app())
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -668,6 +669,7 @@ class TestProductionConfigurationGate:
             session_secret="a" * 48,
             cors_origins=["https://app.example.com"],
             docs_enabled=False,
+            single_worker_deployment=True,
         )
         assert settings.production_problems() == []
         settings.require_safe_production()
@@ -694,6 +696,7 @@ class TestProductionConfigurationGate:
             "session_secret": "a" * 48,
             "cors_origins": ["https://app.example.com"],
             "docs_enabled": False,
+            "single_worker_deployment": True,
         }
         settings = Settings(**{**base, **kwargs})
         problems = settings.production_problems()
@@ -724,6 +727,7 @@ class TestProductionConfigurationGate:
             session_secret="a" * 48,
             cors_origins=["https://app.example.com"],
             docs_enabled=False,
+            single_worker_deployment=True,
         )
         assert settings.production_problems() == []
         settings.require_safe_production()
@@ -755,6 +759,7 @@ class TestProductionConfigurationGate:
         monkeypatch.setenv("SESSION_SECRET", "b" * 48)
         monkeypatch.setenv("CORS_ORIGINS", "https://app.example.com")
         monkeypatch.setenv("DOCS_ENABLED", "true")
+        monkeypatch.setenv("SINGLE_WORKER_DEPLOYMENT", "true")
         reset_settings_cache()
 
         from app.main import create_app
@@ -776,6 +781,7 @@ class TestProductionConfigurationGate:
         monkeypatch.setenv("SESSION_SECRET", "c" * 48)
         monkeypatch.setenv("CORS_ORIGINS", "https://app.example.com")
         monkeypatch.setenv("DOCS_ENABLED", "false")
+        monkeypatch.setenv("SINGLE_WORKER_DEPLOYMENT", "true")
         reset_settings_cache()
 
         engine = configure_engine("sqlite+pysqlite:///:memory:")
@@ -804,6 +810,7 @@ class TestProductionConfigurationGate:
             session_secret="a" * 48,
             cors_origins=["https://app.example.com"],
             docs_enabled=False,
+            single_worker_deployment=True,
             search_provider="none",
         )
         assert settings.production_problems() == []
@@ -824,6 +831,7 @@ class TestProductionConfigurationGate:
             session_secret="a" * 48,
             cors_origins=["https://app.example.com"],
             docs_enabled=False,
+            single_worker_deployment=True,
             **kwargs,
         )
         problems = settings.production_problems()
@@ -838,6 +846,7 @@ class TestProductionConfigurationGate:
             session_secret="a" * 48,
             cors_origins=["https://app.example.com"],
             docs_enabled=False,
+            single_worker_deployment=True,
             search_provider="anthropic_web_search",
             anthropic_api_key="sk-ant-example",
         )
@@ -851,6 +860,7 @@ class TestProductionConfigurationGate:
             session_secret="a" * 48,
             cors_origins=["https://app.example.com"],
             docs_enabled=False,
+            single_worker_deployment=True,
             search_provider="anthropic_web_search",
             anthropic_api_key="sk-ant-example",
             anthropic_web_search_allowed_domains=["example.com"],
@@ -865,6 +875,7 @@ class TestProductionConfigurationGate:
             session_secret="a" * 48,
             cors_origins=["https://app.example.com"],
             docs_enabled=False,
+            single_worker_deployment=True,
             search_provider="anthropic_web_search",
             anthropic_api_key="sk-ant-example",
             anthropic_web_search_max_uses=0,
@@ -897,6 +908,53 @@ class TestProductionConfigurationGate:
         """
         monkeypatch.setenv("ANTHROPIC_WEB_SEARCH_ALLOWED_DOMAINS", raw)
         assert Settings().anthropic_web_search_allowed_domains == expected
+
+    # --------------------------------------------------- rate-limit backend
+    #
+    # In-memory counters live in one process. Behind four workers that is four
+    # separate counters, so a limit of eight is really thirty-two — and nothing
+    # says so. Production therefore has two supported modes and no third.
+
+    def test_production_without_redis_refuses_to_start(self):
+        settings = Settings(
+            environment="production",
+            session_secret="a" * 48,
+            cors_origins=["https://app.example.com"],
+            docs_enabled=False,
+            redis_url="",
+        )
+        problems = settings.production_problems()
+        assert any("REDIS_URL" in problem for problem in problems), problems
+        with pytest.raises(UnsafeProductionConfig):
+            settings.require_safe_production()
+
+    def test_an_unreachable_redis_refuses_to_start(self):
+        """Configured-and-down is the case that would otherwise degrade silently."""
+        settings = Settings(
+            environment="production",
+            session_secret="a" * 48,
+            cors_origins=["https://app.example.com"],
+            docs_enabled=False,
+            redis_url="redis://127.0.0.1:6399/0",
+        )
+        problems = settings.production_problems()
+        assert any("could not be reached" in problem for problem in problems), problems
+
+    def test_a_single_worker_deployment_may_say_so(self):
+        """Per-process counting is exact when there is one process."""
+        settings = Settings(
+            environment="production",
+            session_secret="a" * 48,
+            cors_origins=["https://app.example.com"],
+            docs_enabled=False,
+            redis_url="",
+            single_worker_deployment=True,
+        )
+        assert settings.production_problems() == []
+
+    def test_development_needs_no_redis(self):
+        settings = Settings(environment="development", redis_url="")
+        assert settings.production_problems() == []
 
     def test_nothing_is_repaired_silently(self):
         """The setting keeps the dangerous value; the process refuses instead."""
@@ -947,6 +1005,7 @@ class TestProductionConfigurationGate:
             session_secret="a" * 48,
             cors_origins=["https://app.example.com"],
             docs_enabled=False,
+            single_worker_deployment=True,
             allow_private_networks=True,
             private_network_authorization="Engagement PENTEST-2026-04",
         )
@@ -1028,6 +1087,10 @@ class TestSsrfGuardNotWeakened:
             "http://172.16.31.9/",
             "http://192.168.1.1/",
             "http://[fd00::1]/",
+            # RFC 6598 shared address space. Python's `ipaddress` does not call
+            # this private, so the guard needs it named explicitly.
+            "http://100.64.0.1/",
+            "http://100.127.255.254/",
             "http://[fe80::1]/",
         ],
     )

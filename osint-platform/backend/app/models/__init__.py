@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from app.models.auth import (
     AuditLogEntry,
+    MfaRecoveryCode,
     User,
+    UserMfa,
     UserSession,
     Workspace,
     WorkspaceMembership,
@@ -81,6 +83,7 @@ __all__ = [
     "Job",
     "JobState",
     "MatchStrength",
+    "MfaRecoveryCode",
     "ObservationStage",
     "ObservationSubject",
     "ProfileAccess",
@@ -98,6 +101,7 @@ __all__ = [
     "TimestampMixin",
     "UUIDMixin",
     "User",
+    "UserMfa",
     "UserSession",
     "Workspace",
     "WorkspaceMembership",

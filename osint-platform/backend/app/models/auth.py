@@ -70,6 +70,12 @@ class User(UUIDMixin, TimestampMixin, Base):
     memberships: Mapped[list[WorkspaceMembership]] = relationship(
         back_populates="user", cascade="all, delete-orphan", lazy="selectin"
     )
+    mfa: Mapped[UserMfa | None] = relationship(
+        back_populates="user", cascade="all, delete-orphan", uselist=False
+    )
+    recovery_codes: Mapped[list[MfaRecoveryCode]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
     sessions: Mapped[list[UserSession]] = relationship(
         back_populates="user", cascade="all, delete-orphan", lazy="noload"
     )
@@ -151,8 +157,20 @@ class UserSession(UUIDMixin, TimestampMixin, Base):
     #: Truncated, for an operator recognising their own sessions. Never an IP
     #: address: this table exists to authenticate, not to log where somebody was.
     user_agent: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    #: When the second factor was satisfied. **Null means this session has passed
+    #: the password stage and nothing more**, which is not the same as signed in:
+    #: :func:`app.api.deps.current_principal` refuses it everywhere except the
+    #: MFA challenge and sign-out. Sessions for accounts without MFA are stamped
+    #: at creation, so "is this session authenticated" is one column read rather
+    #: than a join back to the user's enrolment state.
+    mfa_satisfied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     user: Mapped[User] = relationship(back_populates="sessions", lazy="joined")
+
+    @property
+    def mfa_pending(self) -> bool:
+        """Password accepted, second factor still owed."""
+        return self.mfa_satisfied_at is None
 
     @property
     def is_live(self) -> bool:
@@ -168,6 +186,75 @@ class UserSession(UUIDMixin, TimestampMixin, Base):
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<UserSession {self.id} user={self.user_id}>"
+
+
+class UserMfa(UUIDMixin, TimestampMixin, Base):
+    """One account's second factor.
+
+    A row here is **not** proof that MFA is on: ``confirmed_at`` is. Enrolment
+    writes the secret so the authenticator app has something to scan, and the
+    factor only becomes real once the user proves possession by returning a code
+    it generated. Without that split, a user who scanned a QR code into an app
+    they then deleted would be locked out of their own account by a factor they
+    never successfully used.
+
+    ``last_used_step`` is what makes verification a verifier. A TOTP code is
+    valid for its whole window, so a code seen once — over a shoulder, through a
+    phishing proxy — would otherwise work again for up to a minute. Every
+    accepted step is recorded and nothing at or below it is accepted again.
+    """
+
+    __tablename__ = "user_mfa"
+    __table_args__ = (UniqueConstraint("user_id", name="uq_user_mfa_user"),)
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    #: The base32 TOTP secret. Returned to the client exactly once, during
+    #: enrolment, and never by any route afterwards.
+    secret: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: Null until a code proves the app holds the same secret. Until then the
+    #: account signs in with a password alone and nothing here applies.
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    #: The last RFC 6238 counter accepted for this account. Replay rejection.
+    last_used_step: Mapped[int | None] = mapped_column(default=None)
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+    user: Mapped[User] = relationship(back_populates="mfa", lazy="joined")
+
+    @property
+    def is_active(self) -> bool:
+        """Whether this factor is actually required at sign-in."""
+        return self.confirmed_at is not None
+
+
+class MfaRecoveryCode(UUIDMixin, TimestampMixin, Base):
+    """One single-use way back in when the authenticator is gone.
+
+    Stored as an Argon2 verifier, never as the code. A recovery code is short
+    enough to be typed off paper, which also makes it short enough to be worth
+    grinding in a stolen database — so unlike a session token it gets the
+    memory-hard hash rather than a plain digest.
+
+    Consumed rather than deleted: ``used_at`` is set and the row stays. An
+    operator asked "was a recovery code used on this account, and when" needs an
+    answer, and a deleted row cannot give one.
+    """
+
+    __tablename__ = "mfa_recovery_codes"
+    __table_args__ = (Index("ix_recovery_user_used", "user_id", "used_at"),)
+
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    code_hash: Mapped[str] = mapped_column(String(512), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+    user: Mapped[User] = relationship(back_populates="recovery_codes")
+
+    @property
+    def is_spent(self) -> bool:
+        return self.used_at is not None
 
 
 class AuditLogEntry(UUIDMixin, Base):

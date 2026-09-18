@@ -310,4 +310,12 @@ class AuditEvent(StrEnum):
     #: themselves and cost nothing: this one leaves the platform, and on a
     #: paid channel it is billed.
     PROVIDER_SEARCH_RUN = "provider_search_run"
+    #: Credential and security-state changes. A pilot customer asking "who
+    #: changed what about access to this account" is asking about these.
+    PASSWORD_CHANGED = "password_changed"  # noqa: S105 - an event name, not a password
+    MFA_ENABLED = "mfa_enabled"
+    MFA_DISABLED = "mfa_disabled"
+    MFA_CHALLENGE_FAILED = "mfa_challenge_failed"
+    MFA_RECOVERY_CODE_USED = "mfa_recovery_code_used"
+    ANALYST_DECISION_WITHDRAWN = "analyst_decision_withdrawn"
     RATE_LIMIT_TRIGGERED = "rate_limit_triggered"

@@ -22,12 +22,32 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Request, Response, status
 
-from app.api.deps import AppSettings, CurrentUser, DbSession, enforce_csrf
+from app.api.deps import (
+    AppSettings,
+    CurrentUser,
+    DbSession,
+    PendingUser,
+    Principal,
+    enforce_csrf,
+)
 from app.core import throttle
-from app.core.errors import AuthenticationRequired, ThrottledError, ValidationError
+from app.core.errors import (
+    AuthenticationRequired,
+    ConflictError,
+    NotFoundError,
+    ThrottledError,
+    ValidationError,
+)
 from app.core.logging import get_logger
 from app.core.permissions import permissions_for
-from app.core.security import PasswordPolicyError, csrf_token, verify_password
+from app.core.security import (
+    MfaError,
+    PasswordPolicyError,
+    csrf_token,
+    totp_provisioning_uri,
+    verify_password,
+    verify_totp,
+)
 from app.core.settings import Settings
 from app.models.enums import AuditEvent
 from app.schemas.auth import (
@@ -37,6 +57,14 @@ from app.schemas.auth import (
     UserRead,
     WorkspaceRead,
     WorkspaceSummary,
+)
+from app.schemas.mfa import (
+    MfaChallenge,
+    MfaConfirm,
+    MfaEnabledRead,
+    MfaEnrollmentRead,
+    MfaStatusRead,
+    PasswordConfirmation,
 )
 from app.services import accounts, audit
 
@@ -103,9 +131,12 @@ def _clear_session_cookies(response: Response, settings: Settings) -> None:
         )
 
 
-def _session_info(session, user, *, csrf: str, expires_at: datetime) -> SessionInfo:
+def _session_info(
+    session, user, *, csrf: str, expires_at: datetime, mfa_required: bool = False
+) -> SessionInfo:
     memberships = accounts.memberships_for_user(session, user.id)
     return SessionInfo(
+        mfa_required=mfa_required,
         user=UserRead.model_validate(user),
         workspaces=[
             WorkspaceSummary(
@@ -188,23 +219,28 @@ def login(
         settings=settings,
     )
     csrf = csrf_token(str(row.id), settings.session_secret_value())
+    pending = row.mfa_pending
     audit.record(
         session,
         event=AuditEvent.USER_LOGIN_SUCCESS,
         actor_user_id=user.id,
         object_type="user",
         object_id=user.id,
+        # A password-stage session is not a completed sign-in. Recording the
+        # stage keeps "who got in" answerable: a PASSWORD entry with no matching
+        # MFA one is somebody who had the password and not the phone.
+        metadata={"stage": "password", "mfa_required": pending},
     )
     session.commit()
     _set_session_cookies(response, token=token, csrf=csrf, settings=settings)
-    return _session_info(session, user, csrf=csrf, expires_at=row.expires_at)
+    return _session_info(session, user, csrf=csrf, expires_at=row.expires_at, mfa_required=pending)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, summary="Sign out")
 def logout(
     request: Request,
     response: Response,
-    principal: CurrentUser,
+    principal: PendingUser,
     session: DbSession,
     settings: AppSettings,
 ) -> None:
@@ -273,5 +309,309 @@ def change_password(
         accounts.set_password(session, principal.user, payload.new_password)
     except PasswordPolicyError as exc:
         raise ValidationError(str(exc)) from exc
+    audit.record(
+        session,
+        event=AuditEvent.PASSWORD_CHANGED,
+        actor_user_id=principal.user_id,
+        object_type="user",
+        object_id=principal.user_id,
+        # Neither password goes near this. `safe_metadata` would drop them by
+        # key, and they are not put in front of it.
+        metadata={"by": "self", "sessions_revoked": True},
+    )
     session.commit()
     _clear_session_cookies(response, settings)
+
+
+# ------------------------------------------------------------------- factors
+#
+# Five routes, and the invariants they exist to hold:
+#
+# * enrolment writes a secret but changes nothing about sign-in until a code
+#   proves the authenticator holds the same secret;
+# * turning the factor on or off requires the password again, because an
+#   unlocked browser is the threat this factor exists to survive;
+# * the challenge is throttled, because six digits is a small space;
+# * a recovery code works once;
+# * the secret is returned by exactly one route, once.
+
+
+def _mfa_throttle_key(user_id) -> str:
+    return throttle.principal_key("mfa:verify", str(user_id))
+
+
+def _reauthenticate(principal: Principal, password: str) -> None:
+    """Require the account's password again, or refuse."""
+    if not verify_password(password, principal.user.password_hash):
+        log.info("mfa.reauthentication_failed")
+        raise AuthenticationRequired("Your password is not correct")
+
+
+@router.get("/mfa", response_model=MfaStatusRead, summary="Two-factor status")
+def mfa_status(principal: CurrentUser, session: DbSession) -> MfaStatusRead:
+    """Whether a second factor is active. Carries no secret material."""
+    row = accounts.mfa_for(session, principal.user_id)
+    remaining = len(accounts.unused_recovery_codes(session, principal.user_id))
+    return MfaStatusRead(
+        enabled=row is not None and row.is_active,
+        confirmed_at=row.confirmed_at if row is not None else None,
+        recovery_codes_remaining=remaining,
+    )
+
+
+@router.post(
+    "/mfa/enroll",
+    response_model=MfaEnrollmentRead,
+    summary="Begin two-factor enrolment",
+)
+def enroll_mfa(
+    payload: PasswordConfirmation,
+    request: Request,
+    principal: CurrentUser,
+    session: DbSession,
+    settings: AppSettings,
+) -> MfaEnrollmentRead:
+    """Generate a secret to scan. Nothing about sign-in changes yet.
+
+    Deliberately does **not** activate the factor. A user who scans this into an
+    app and then loses the phone before confirming still signs in with their
+    password; a factor that started gating sign-in here would lock them out of
+    their own account with something they never proved they had.
+    """
+    enforce_csrf(request, principal, settings)
+    _reauthenticate(principal, payload.password)
+
+    existing = accounts.mfa_for(session, principal.user_id)
+    if existing is not None and existing.is_active:
+        raise ConflictError(
+            "Two-factor authentication is already enabled. Disable it first if you "
+            "want to enrol a different authenticator."
+        )
+
+    row, secret = accounts.begin_mfa_enrollment(session, principal.user)
+    session.commit()
+    # Not audited: nothing has changed about the account's security yet, and an
+    # entry here would read as "MFA was set up" for an enrolment that may be
+    # abandoned. MFA_ENABLED is written when it becomes true.
+    return MfaEnrollmentRead(
+        secret=secret,
+        otpauth_uri=totp_provisioning_uri(
+            secret, account=principal.user.email, issuer=settings.app_name
+        ),
+        confirmed=row.is_active,
+    )
+
+
+@router.post(
+    "/mfa/confirm",
+    response_model=MfaEnabledRead,
+    summary="Confirm enrolment and receive recovery codes",
+)
+def confirm_mfa(
+    payload: MfaConfirm,
+    request: Request,
+    principal: CurrentUser,
+    session: DbSession,
+    settings: AppSettings,
+) -> MfaEnabledRead:
+    """Prove the authenticator holds the secret, and turn the factor on."""
+    enforce_csrf(request, principal, settings)
+    row = accounts.mfa_for(session, principal.user_id)
+    if row is None:
+        raise ValidationError("Start enrolment before confirming it.")
+    if row.is_active:
+        raise ConflictError("Two-factor authentication is already enabled.")
+
+    verdict = throttle.check(
+        _mfa_throttle_key(principal.user_id),
+        limit=settings.mfa_max_attempts,
+        window_seconds=settings.mfa_attempt_window_seconds,
+        settings=settings,
+    )
+    if verdict.refused:
+        raise ThrottledError(
+            "Too many codes tried. Wait a moment and try again.",
+            retry_after=verdict.retry_after,
+        )
+
+    try:
+        step = verify_totp(row.secret, payload.code, last_used_step=row.last_used_step)
+    except MfaError as exc:
+        audit.record(
+            session,
+            event=AuditEvent.MFA_CHALLENGE_FAILED,
+            actor_user_id=principal.user_id,
+            object_type="user",
+            object_id=principal.user_id,
+            metadata={"stage": "enrollment"},
+        )
+        session.commit()
+        raise ValidationError(str(exc)) from exc
+
+    codes = accounts.confirm_mfa_enrollment(session, row, step)
+    throttle.forget(_mfa_throttle_key(principal.user_id), settings=settings)
+    # This session proved the factor just now, so it is not sent back to a
+    # challenge it has already passed.
+    accounts.satisfy_mfa(session, principal.session)
+    audit.record(
+        session,
+        event=AuditEvent.MFA_ENABLED,
+        actor_user_id=principal.user_id,
+        object_type="user",
+        object_id=principal.user_id,
+        metadata={"codes_issued": len(codes)},
+    )
+    session.commit()
+    return MfaEnabledRead(enabled=True, recovery_codes=codes)
+
+
+@router.post(
+    "/mfa/verify",
+    response_model=SessionInfo,
+    summary="Answer the sign-in challenge",
+)
+def verify_mfa(
+    payload: MfaChallenge,
+    request: Request,
+    principal: PendingUser,
+    session: DbSession,
+    settings: AppSettings,
+) -> SessionInfo:
+    """Complete sign-in for a session that has passed the password stage.
+
+    Reached with a session that can do nothing else. Throttled per account:
+    six digits is 10^6, and a challenge that could be retried without limit
+    would be a factor in name only.
+    """
+    enforce_csrf(request, principal, settings)
+    if not principal.session.mfa_pending:
+        # Already satisfied. Not an error — a double-submitted form should not
+        # look like a failure — but nothing is re-verified.
+        csrf = csrf_token(str(principal.session.id), settings.session_secret_value())
+        return _session_info(
+            session, principal.user, csrf=csrf, expires_at=principal.session.expires_at
+        )
+
+    key = _mfa_throttle_key(principal.user_id)
+    standing = throttle.peek(key, limit=settings.mfa_max_attempts, settings=settings)
+    if standing.refused:
+        audit.record(
+            session,
+            event=AuditEvent.RATE_LIMIT_TRIGGERED,
+            actor_user_id=principal.user_id,
+            object_type="mfa",
+            object_id=principal.user_id,
+            metadata={"reason": "too_many_mfa_attempts"},
+        )
+        session.commit()
+        raise ThrottledError(
+            "Too many codes tried. Wait a few minutes and try again.",
+            retry_after=max(standing.retry_after, settings.mfa_lockout_seconds),
+        )
+
+    row = accounts.mfa_for(session, principal.user_id)
+    if row is None or not row.is_active:
+        # Nothing to verify. Rather than leaving the session stuck forever,
+        # promote it: the account owes no factor.
+        accounts.satisfy_mfa(session, principal.session)
+        session.commit()
+        csrf = csrf_token(str(principal.session.id), settings.session_secret_value())
+        return _session_info(
+            session, principal.user, csrf=csrf, expires_at=principal.session.expires_at
+        )
+
+    used_recovery = False
+    if payload.recovery_code:
+        used_recovery = accounts.consume_recovery_code(
+            session, principal.user_id, payload.recovery_code
+        )
+        accepted = used_recovery
+    elif payload.code:
+        try:
+            step = verify_totp(row.secret, payload.code, last_used_step=row.last_used_step)
+        except MfaError:
+            accepted = False
+        else:
+            row.last_used_step = step
+            row.last_verified_at = datetime.now(UTC)
+            accepted = True
+    else:
+        raise ValidationError("Supply an authenticator code or a recovery code.")
+
+    if not accepted:
+        throttle.check(
+            key,
+            limit=settings.mfa_max_attempts,
+            window_seconds=settings.mfa_attempt_window_seconds,
+            settings=settings,
+        )
+        audit.record(
+            session,
+            event=AuditEvent.MFA_CHALLENGE_FAILED,
+            actor_user_id=principal.user_id,
+            object_type="user",
+            object_id=principal.user_id,
+            # Never the code that was tried, nor the secret it was checked
+            # against: the ledger records that a challenge failed, not what was
+            # guessed.
+            metadata={"stage": "login", "method": "recovery" if payload.recovery_code else "totp"},
+        )
+        session.commit()
+        log.info("mfa.challenge_failed")
+        raise AuthenticationRequired("That code is not valid.")
+
+    throttle.forget(key, settings=settings)
+    accounts.satisfy_mfa(session, principal.session)
+    if used_recovery:
+        remaining = len(accounts.unused_recovery_codes(session, principal.user_id))
+        audit.record(
+            session,
+            event=AuditEvent.MFA_RECOVERY_CODE_USED,
+            actor_user_id=principal.user_id,
+            object_type="user",
+            object_id=principal.user_id,
+            metadata={"codes_remaining": remaining},
+        )
+    audit.record(
+        session,
+        event=AuditEvent.USER_LOGIN_SUCCESS,
+        actor_user_id=principal.user_id,
+        object_type="user",
+        object_id=principal.user_id,
+        metadata={"stage": "mfa", "method": "recovery" if used_recovery else "totp"},
+    )
+    session.commit()
+    csrf = csrf_token(str(principal.session.id), settings.session_secret_value())
+    return _session_info(
+        session, principal.user, csrf=csrf, expires_at=principal.session.expires_at
+    )
+
+
+@router.post(
+    "/mfa/disable",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Turn two-factor authentication off",
+)
+def disable_mfa(
+    payload: PasswordConfirmation,
+    request: Request,
+    principal: CurrentUser,
+    session: DbSession,
+    settings: AppSettings,
+) -> None:
+    """Remove the factor and every recovery code, after re-authentication."""
+    enforce_csrf(request, principal, settings)
+    _reauthenticate(principal, payload.password)
+
+    existed = accounts.disable_mfa(session, principal.user_id)
+    if not existed:
+        raise NotFoundError("Two-factor authentication is not enabled on this account.")
+    audit.record(
+        session,
+        event=AuditEvent.MFA_DISABLED,
+        actor_user_id=principal.user_id,
+        object_type="user",
+        object_id=principal.user_id,
+        metadata={"by": "self"},
+    )
+    session.commit()

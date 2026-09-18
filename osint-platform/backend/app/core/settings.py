@@ -132,6 +132,20 @@ class Settings(BaseSettings):
     login_attempt_window_seconds: int = 900
     #: Bounded, so a wrong password cannot be used to lock somebody out for good.
     login_lockout_seconds: int = 900
+    #: Wrong authenticator codes before a cooldown. Lower than the sign-in limit
+    #: because the space is smaller: six digits is 10^6, and an unlimited
+    #: challenge would make the second factor a formality. Bounded like the
+    #: sign-in cooldown, for the same reason — it must not become a way to lock
+    #: somebody out of their own account.
+    mfa_max_attempts: int = 5
+    mfa_attempt_window_seconds: int = 900
+    mfa_lockout_seconds: int = 900
+    #: An operator's explicit acceptance that this production deployment runs a
+    #: single worker, so per-process rate limiting is sufficient. Without it,
+    #: production requires a reachable Redis: counters that live in one worker's
+    #: memory are per-worker, which silently multiplies every limit by the worker
+    #: count. Set this only if you actually run one worker.
+    single_worker_deployment: bool = False
     #: Per-user ceilings on the expensive operations. Generous enough that normal
     #: analyst work never notices them.
     rate_limit_case_create_per_hour: int = 60
@@ -433,8 +447,61 @@ class Settings(BaseSettings):
             )
 
         problems.extend(self._search_provider_problems())
+        problems.extend(self._rate_limit_backend_problems())
 
         return problems
+
+    def _rate_limit_backend_problems(self) -> list[str]:
+        """Whether inbound throttling will actually hold across workers.
+
+        The in-memory backend counts in one process. Behind a proxy with four
+        workers that is four separate counters, so a limit of eight sign-in
+        attempts is really thirty-two — and nothing anywhere says so. That is the
+        failure mode this refuses: not a missing feature, a limit quietly worth
+        less than its number.
+
+        Two supported production modes, and no third:
+
+        * a reachable Redis, so every worker counts into the same place; or
+        * ``SINGLE_WORKER_DEPLOYMENT=true``, an operator stating that there is
+          only one process and per-process counting is therefore exact.
+
+        Reachability is checked here rather than trusted from the URL being
+        non-empty, because a Redis that is configured and down is the case that
+        would otherwise degrade silently at start-up.
+        """
+        if self.single_worker_deployment:
+            return []
+        if not (self.redis_url or "").strip():
+            return [
+                "REDIS_URL is not set, so inbound rate limits would be counted "
+                "per worker process rather than per deployment — a limit of N "
+                "becomes N times the worker count. Point REDIS_URL at a reachable "
+                "Redis, or set SINGLE_WORKER_DEPLOYMENT=true if this deployment "
+                "really does run exactly one worker."
+            ]
+        reachable, detail = self._redis_reachable()
+        if not reachable:
+            return [
+                f"REDIS_URL is set but the server could not be reached ({detail}). "
+                f"Inbound rate limits would silently fall back to per-worker "
+                f"counting. Fix the connection, or set "
+                f"SINGLE_WORKER_DEPLOYMENT=true if one worker is the intent."
+            ]
+        return []
+
+    def _redis_reachable(self) -> tuple[bool, str]:
+        """Whether the configured Redis answers a PING, with a short timeout."""
+        try:
+            import redis
+
+            client = redis.Redis.from_url(
+                self.redis_url, socket_connect_timeout=2, socket_timeout=2
+            )
+            client.ping()
+            return True, ""
+        except Exception as exc:  # pragma: no cover - needs a Redis outage
+            return False, type(exc).__name__
 
     def _search_provider_problems(self) -> list[str]:
         """Whether the selected search provider could actually run.
