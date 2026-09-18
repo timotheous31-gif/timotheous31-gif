@@ -106,11 +106,13 @@ class TestInjection:
         assert response.status_code == 200
         assert response.json()["total"] == 0
 
-    async def test_html_in_collected_data_is_escaped_in_the_report(self, api_client, db_session):
+    async def test_html_in_collected_data_is_escaped_in_the_report(
+        self, api_client, db_session, workspace_id
+    ):
         from app.models import Case, Finding
         from app.models.enums import FindingKind
 
-        case = Case(name="XSS case")
+        case = Case(name="XSS case", workspace_id=workspace_id)
         db_session.add(case)
         db_session.flush()
         db_session.add(
@@ -317,6 +319,17 @@ class TestSecurityHeaders:
         # server, which returns the handler's response instead of re-raising.
         transport = httpx.ASGITransport(app=create_app(), raise_app_exceptions=False)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            # The handler under test runs after authentication, so the request has
+            # to get past it first — an anonymous 401 would never reach the code
+            # that is supposed to swallow the connection string.
+            from tests.conftest import TEST_PASSWORD, _bootstrap_account
+
+            _bootstrap_account(email="leaky@example.com")
+            signin = await client.post(
+                "/api/v1/auth/login",
+                json={"email": "leaky@example.com", "password": TEST_PASSWORD},
+            )
+            assert signin.status_code == 200, signin.text
             response = await client.get("/api/v1/cases")
 
         assert response.status_code == 500

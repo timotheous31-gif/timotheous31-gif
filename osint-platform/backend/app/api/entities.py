@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 
-from app.api.deps import CaseId, DbSession, parse_uuid
+from app.api.deps import CaseContext, DbSession, parse_uuid, require
+from app.core.permissions import Permission
 from app.graph import build_graph, graph_summary
 from app.models import Entity, Relationship, TimelineEvent
 from app.models.enums import EntityType, RelationshipType
@@ -17,7 +20,6 @@ from app.schemas.finding import (
     TimelineEventRead,
     TimelineResponse,
 )
-from app.services import cases as case_service
 from app.services.timeline import timeline_summary
 
 router = APIRouter(prefix="/cases/{case_id}", tags=["entities"])
@@ -25,16 +27,15 @@ router = APIRouter(prefix="/cases/{case_id}", tags=["entities"])
 
 @router.get("/entities", response_model=Page[EntityRead], summary="List resolved entities")
 def list_entities(
-    case_id: CaseId,
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
     session: DbSession,
     entity_type: EntityType | None = Query(default=None, alias="type"),
     min_confidence: float = Query(default=0.0, ge=0.0, le=1.0),
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> Page[EntityRead]:
-    case_service.get_case(session, case_id)
-    stmt = select(Entity).where(Entity.case_id == case_id)
-    count_stmt = select(func.count()).select_from(Entity).where(Entity.case_id == case_id)
+    stmt = select(Entity).where(Entity.case_id == ctx.case_id)
+    count_stmt = select(func.count()).select_from(Entity).where(Entity.case_id == ctx.case_id)
     if entity_type is not None:
         stmt = stmt.where(Entity.type == entity_type)
         count_stmt = count_stmt.where(Entity.type == entity_type)
@@ -55,12 +56,16 @@ def list_entities(
 
 
 @router.get("/entities/{entity_id}", response_model=EntityRead, summary="Fetch one entity")
-def get_entity(case_id: CaseId, entity_id: str, session: DbSession) -> EntityRead:
+def get_entity(
+    entity_id: str,
+    session: DbSession,
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
+) -> EntityRead:
     from app.core.errors import NotFoundError
 
     entity = session.get(Entity, parse_uuid(entity_id, "entity_id"))
-    if entity is None or entity.case_id != case_id:
-        raise NotFoundError(f"Entity {entity_id} does not exist in case {case_id}")
+    if entity is None or entity.case_id != ctx.case_id:
+        raise NotFoundError(f"Entity {entity_id} does not exist in case {ctx.case_id}")
     return EntityRead.from_entity(entity)
 
 
@@ -70,17 +75,16 @@ def get_entity(case_id: CaseId, entity_id: str, session: DbSession) -> EntityRea
     summary="List relationships with their evidence",
 )
 def list_relationships(
-    case_id: CaseId,
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
     session: DbSession,
     relationship_type: RelationshipType | None = Query(default=None, alias="type"),
     min_confidence: float = Query(default=0.0, ge=0.0, le=1.0),
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> Page[RelationshipRead]:
-    case_service.get_case(session, case_id)
-    stmt = select(Relationship).where(Relationship.case_id == case_id)
+    stmt = select(Relationship).where(Relationship.case_id == ctx.case_id)
     count_stmt = (
-        select(func.count()).select_from(Relationship).where(Relationship.case_id == case_id)
+        select(func.count()).select_from(Relationship).where(Relationship.case_id == ctx.case_id)
     )
     if relationship_type is not None:
         stmt = stmt.where(Relationship.type == relationship_type)
@@ -103,7 +107,7 @@ def list_relationships(
 
 @router.get("/graph", response_model=GraphResponse, summary="Relationship graph")
 def get_graph(
-    case_id: CaseId,
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
     session: DbSession,
     min_confidence: float = Query(
         default=0.0, ge=0.0, le=1.0, description="Hide edges below this confidence."
@@ -112,10 +116,9 @@ def get_graph(
     relationship_types: list[RelationshipType] | None = Query(default=None),
 ) -> GraphResponse:
     """The graph as nodes and edges, ready for Cytoscape or React Flow."""
-    case_service.get_case(session, case_id)
-    entities = list(session.scalars(select(Entity).where(Entity.case_id == case_id)))
+    entities = list(session.scalars(select(Entity).where(Entity.case_id == ctx.case_id)))
     relationships = list(
-        session.scalars(select(Relationship).where(Relationship.case_id == case_id))
+        session.scalars(select(Relationship).where(Relationship.case_id == ctx.case_id))
     )
     graph = build_graph(entities, relationships)
     if min_confidence > 0 or types or relationship_types:
@@ -135,13 +138,12 @@ def get_graph(
 
 @router.get("/timeline", response_model=TimelineResponse, summary="Investigation timeline")
 def get_timeline(
-    case_id: CaseId,
+    ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
     session: DbSession,
     kind: str | None = Query(default=None),
     order: str = Query(default="asc", pattern="^(asc|desc)$"),
 ) -> TimelineResponse:
-    case_service.get_case(session, case_id)
-    stmt = select(TimelineEvent).where(TimelineEvent.case_id == case_id)
+    stmt = select(TimelineEvent).where(TimelineEvent.case_id == ctx.case_id)
     if kind:
         stmt = stmt.where(TimelineEvent.kind == kind)
     stmt = stmt.order_by(

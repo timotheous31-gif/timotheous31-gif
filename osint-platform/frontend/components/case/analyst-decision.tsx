@@ -3,7 +3,9 @@
 import { useState } from "react";
 
 import { Badge, Button } from "@/components/ui/primitives";
+import { useSession } from "@/components/session";
 import { api } from "@/lib/api";
+import { PERMISSION, can, deniedMessage } from "@/lib/permissions";
 import { DECISIONS, decisionLabel, decisionTone } from "@/lib/social";
 import type { AnalystDecisionRecord, AnalystDecisionValue, DecisionSubject } from "@/types/api";
 
@@ -31,6 +33,10 @@ export function AnalystDecisionControl({
   const [note, setNote] = useState(current?.note ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { workspace } = useSession();
+  // A VIEWER still *sees* the standing decision — it is part of the record — but
+  // cannot change what the case concludes. POST /decisions enforces that.
+  const mayDecide = can(workspace, PERMISSION.analystDecide);
 
   async function choose(decision: AnalystDecisionValue) {
     setBusy(true);
@@ -70,13 +76,19 @@ export function AnalystDecisionControl({
       <Badge tone={decisionTone(current?.decision)} title={current?.note ?? undefined}>
         Analyst: {decisionLabel(current?.decision)}
       </Badge>
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="rounded-md border border-line px-1.5 py-0.5 text-[11px] text-muted hover:bg-line"
-      >
-        {open ? "Close" : "Review"}
-      </button>
+      {mayDecide ? (
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className="rounded-md border border-line px-1.5 py-0.5 text-[11px] text-muted hover:bg-line"
+        >
+          {open ? "Close" : "Review"}
+        </button>
+      ) : (
+        <span className="text-[10px] text-muted" title={deniedMessage(workspace, "record a decision")}>
+          read-only
+        </span>
+      )}
 
       {open ? (
         <div className="basis-full space-y-1.5 rounded-md border border-line p-2">

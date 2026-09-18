@@ -1,0 +1,31 @@
+# Dependency advisories this repository has consciously accepted.
+#
+# An entry here suppresses a build failure, so each one is a decision somebody
+# signed rather than a flag somebody passed. Every waiver needs:
+#
+#   id      the advisory identifier exactly as the tool reports it
+#   reason  why it does not apply here, in a sentence a reviewer can check
+#   review  a date to look at it again
+#
+# See osint-platform/scripts/triage_audit.py for the policy these are exceptions
+# to. An empty list is the intended steady state.
+
+[[waiver]]
+id = "1117015"
+package = "postcss"
+reason = """
+Next.js 15.5.25 pins postcss 8.4.31 inside its own node_modules. The project's
+direct postcss is 8.5.28 and is not affected; only the copy nested under
+next/ is, and the only published fix is next 16, a major upgrade that is out of
+scope for a security-hardening change and is tracked separately.
+
+The four advisories all require attacker-controlled CSS: XSS via an unescaped
+</style> in stringify output, and arbitrary .map file reads via a
+sourceMappingURL in a CSS comment. This application compiles only stylesheets
+committed to this repository, at build time, in CI. No user-supplied CSS reaches
+postcss at any point, and the compiled output ships as static assets with no
+source maps. The attack has no input.
+
+Re-check when Next.js 16 is adopted, which removes the nested copy entirely.
+"""
+review = "2026-12-01"

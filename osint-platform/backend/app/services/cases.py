@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import false, func, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
 
 from app.core.errors import ConflictError, NotFoundError
@@ -59,18 +59,32 @@ def get_or_create_tags(session: Session, names: Sequence[str]) -> list[Tag]:
 # ----------------------------------------------------------------------- cases
 
 
-def create_case(session: Session, payload: CaseCreate) -> Case:
-    """Create an investigation."""
+def create_case(
+    session: Session, payload: CaseCreate, *, workspace_id: uuid.UUID | None = None
+) -> Case:
+    """Create an investigation inside a workspace.
+
+    ``workspace_id`` is keyword-only and defaults to ``None`` for one reason: the
+    CLI and the seed script create cases outside any request, and forcing them to
+    invent a workspace would be worse than letting them create an unclaimed case
+    that an operator adopts deliberately. Every API path supplies it.
+    """
     case = Case(
         name=payload.name.strip(),
         description=payload.description,
         notes=payload.notes,
         status=CaseStatus.NEW,
+        workspace_id=workspace_id,
         tags=get_or_create_tags(session, payload.tags),
     )
     session.add(case)
     session.flush()
-    log.info("case.created", case_id=str(case.id), name=case.name)
+    log.info(
+        "case.created",
+        case_id=str(case.id),
+        name=case.name,
+        workspace_id=str(workspace_id) if workspace_id else None,
+    )
     return case
 
 
@@ -90,10 +104,22 @@ def list_cases(
     tag: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    workspace_ids: Sequence[uuid.UUID] | None = None,
 ) -> tuple[list[Case], int]:
-    """List cases with optional filters. Returns ``(items, total)``."""
+    """List cases with optional filters. Returns ``(items, total)``.
+
+    ``workspace_ids`` restricts the listing to workspaces the caller belongs to.
+    Applied as a ``WHERE`` rather than by filtering the results afterwards: a
+    forgotten filter returns nothing, a forgotten discard returns someone else's
+    cases. An empty sequence therefore means "no workspaces" and matches nothing,
+    which is different from ``None`` (an unscoped call, used only by the CLI).
+    """
     stmt = select(Case)
     count_stmt = select(func.count()).select_from(Case)
+    if workspace_ids is not None:
+        scope = Case.workspace_id.in_(list(workspace_ids)) if workspace_ids else false()
+        stmt = stmt.where(scope)
+        count_stmt = count_stmt.where(scope)
 
     if status is not None:
         stmt = stmt.where(Case.status == status)

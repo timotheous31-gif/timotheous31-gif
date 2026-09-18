@@ -88,6 +88,10 @@ TEST_DNS = {
 #: exercised on the name rather than short-circuited by a literal.
 TEST_DNS_BLOCKED = {
     "metadata.google.internal": "169.254.169.254",
+    # Not a valid IPv4 literal as far as :mod:`ipaddress` is concerned, so the
+    # guard resolves it — which is the point: a shorthand that a resolver expands
+    # to loopback must be blocked on the *resolved* address, not on its spelling.
+    "127.1": "127.0.0.1",
 }
 
 #: A documented public address, used for every allowed host.
@@ -149,12 +153,23 @@ def _cache() -> Iterator[None]:
 
 
 @pytest.fixture
-def db_session():
-    """A transactional SQLite session with the full schema created."""
+def db_session(request):
+    """A transactional SQLite session with the full schema created.
+
+    Reuses the engine when a client fixture has already configured one.
+    ``configure_engine`` *rebinds* the global engine to a brand-new in-memory
+    database, so a test taking both ``api_client`` and ``db_session`` used to have
+    the second silently destroy the first's data. That was survivable while the
+    API was anonymous; now it deletes the signed-in user mid-test, and every
+    request answers 401 for reasons that have nothing to do with what is being
+    tested.
+    """
+    from app.core import db as db_module
     from app.core.db import configure_engine, get_session_factory
     from app.models import Base
 
-    engine = configure_engine("sqlite+pysqlite:///:memory:")
+    borrowed = db_module._engine is not None and "anonymous_client" in request.fixturenames
+    engine = db_module._engine if borrowed else configure_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     session = get_session_factory()()
     try:
@@ -162,12 +177,65 @@ def db_session():
     finally:
         session.rollback()
         session.close()
-        Base.metadata.drop_all(engine)
+        if not borrowed:
+            # The client fixture owns the schema it created and drops it itself.
+            Base.metadata.drop_all(engine)
+
+
+#: The password every test account uses. Long enough to pass the policy, and
+#: obviously not a credential anybody could reuse anywhere.
+TEST_PASSWORD = "an example test passphrase"
+
+
+def _bootstrap_account(
+    email: str = "analyst@example.com", role=None, workspace: str = "Test Workspace"
+):
+    """Create a user and a workspace directly, the way the CLI would.
+
+    Not through the API, because there is no API route that creates the first
+    account — that is the whole point of the bootstrap CLI, and a test fixture
+    that could do it would mean the route existed.
+    """
+    from app.core.db import get_session_factory
+    from app.models.enums import WorkspaceRole
+    from app.services import accounts
+
+    with get_session_factory()() as session:
+        user = accounts.create_user(session, email=email, password=TEST_PASSWORD)
+        space = accounts.create_workspace(session, name=workspace, owner=user)
+        if role is not None and role is not WorkspaceRole.OWNER:
+            membership = accounts.membership_for(session, user_id=user.id, workspace_id=space.id)
+            # A workspace always has an owner, so a non-owner test subject gets a
+            # separate owner rather than leaving the workspace ownerless.
+            keeper = accounts.create_user(
+                session, email=f"owner-of-{space.slug}@example.com", password=TEST_PASSWORD
+            )
+            accounts.add_member(session, workspace=space, user=keeper, role=WorkspaceRole.OWNER)
+            membership.role = role
+        session.commit()
+        return str(user.id), str(space.id)
+
+
+async def _sign_in(client, email: str = "analyst@example.com") -> str:
+    """Sign ``client`` in and arm it with the CSRF header. Returns the token."""
+    response = await client.post(
+        "/api/v1/auth/login", json={"email": email, "password": TEST_PASSWORD}
+    )
+    assert response.status_code == 200, response.text
+    token = response.json()["csrf_token"]
+    # Every state-changing request needs the header; setting it on the client
+    # means a test exercises the same path the frontend does.
+    client.headers["X-CSRF-Token"] = token
+    return token
 
 
 @pytest.fixture
-async def api_client():
-    """An httpx client bound to the ASGI app with a fresh in-memory database."""
+async def anonymous_client():
+    """An httpx client bound to the ASGI app with a fresh in-memory database.
+
+    Signed out. Used by the tests that are *about* authentication; everything else
+    wants :func:`api_client`, which is signed in.
+    """
     import httpx
 
     from app.core.db import configure_engine
@@ -181,6 +249,37 @@ async def api_client():
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
         yield client
     Base.metadata.drop_all(engine)
+
+
+@pytest.fixture
+async def api_client(anonymous_client):
+    """The same client, signed in as an ANALYST-equivalent owner of one workspace.
+
+    Authentication is the default for the suite rather than an opt-in, so a test
+    written without thinking about it exercises the authorized path — and a route
+    that accidentally became anonymous is caught by the tests that check for it,
+    not missed by the hundreds that do not.
+    """
+    _bootstrap_account()
+    await _sign_in(anonymous_client)
+    return anonymous_client
+
+
+@pytest.fixture
+def workspace_id():
+    """The signed-in caller's workspace.
+
+    For tests that build rows straight through the ORM: a case created with no
+    workspace is *unclaimed* and invisible to every API route, which is the
+    intended behaviour and not what those tests are trying to exercise.
+    """
+    from app.core.db import get_session_factory
+    from app.models.auth import Workspace
+
+    with get_session_factory()() as session:
+        space = session.query(Workspace).order_by(Workspace.created_at).first()
+        assert space is not None, "sign in through api_client before using workspace_id"
+        return space.id
 
 
 @pytest.fixture

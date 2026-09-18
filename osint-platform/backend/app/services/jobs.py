@@ -13,11 +13,12 @@ which path it took.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import false, select
 from sqlalchemy.orm import Session
 
 from app.core.errors import ConflictError, NotFoundError
@@ -148,10 +149,26 @@ def get_job(session: Session, job_id: uuid.UUID) -> Job:
     return job
 
 
-def list_jobs(session: Session, case_id: uuid.UUID | None = None, limit: int = 50) -> list[Job]:
+def list_jobs(
+    session: Session,
+    case_id: uuid.UUID | None = None,
+    limit: int = 50,
+    *,
+    workspace_ids: Sequence[uuid.UUID] | None = None,
+) -> list[Job]:
+    """Recent jobs, newest first.
+
+    ``workspace_ids`` restricts the listing to workspaces the caller belongs to,
+    applied as a join rather than a post-filter. An empty sequence means "no
+    workspaces" and matches nothing; ``None`` means unscoped and is used only by
+    the CLI, which has no caller to scope to.
+    """
     stmt = select(Job).order_by(Job.created_at.desc()).limit(min(limit, 200))
     if case_id is not None:
         stmt = stmt.where(Job.case_id == case_id)
+    if workspace_ids is not None:
+        stmt = stmt.join(Case, Case.id == Job.case_id)
+        stmt = stmt.where(Case.workspace_id.in_(list(workspace_ids)) if workspace_ids else false())
     return list(session.scalars(stmt))
 
 

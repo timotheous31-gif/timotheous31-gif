@@ -9,12 +9,16 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.errors import (
     AmbiguousTargetError,
+    AuthenticationRequired,
     ConfigurationError,
     ConflictError,
+    CsrfError,
     NotFoundError,
     OsintError,
+    PermissionDenied,
     PolicyError,
     SSRFError,
+    ThrottledError,
     TooManyRedirects,
     ValidationError,
 )
@@ -33,6 +37,10 @@ _STATUS_BY_ERROR: dict[type[OsintError], int] = {
     PolicyError: status.HTTP_403_FORBIDDEN,
     SSRFError: status.HTTP_400_BAD_REQUEST,
     TooManyRedirects: status.HTTP_502_BAD_GATEWAY,
+    AuthenticationRequired: status.HTTP_401_UNAUTHORIZED,
+    PermissionDenied: status.HTTP_403_FORBIDDEN,
+    CsrfError: status.HTTP_403_FORBIDDEN,
+    ThrottledError: status.HTTP_429_TOO_MANY_REQUESTS,
 }
 
 
@@ -52,8 +60,19 @@ def register_exception_handlers(app: FastAPI) -> None:
             log.error("api.error", code=exc.code, message=exc.message)
         else:
             log.info("api.client_error", code=exc.code, message=exc.message)
+        headers: dict[str, str] = {}
+        if isinstance(exc, ThrottledError):
+            # An explicit 429 with a Retry-After, so a client backs off by the
+            # number the server chose rather than a number it guessed.
+            headers["Retry-After"] = str(exc.retry_after)
+        if isinstance(exc, AuthenticationRequired):
+            # Names the scheme without inviting a browser password box, which
+            # would fight the application's own login form.
+            headers["WWW-Authenticate"] = "Cookie"
         return JSONResponse(
-            status_code=status_code, content=_envelope(exc.code, exc.message, exc.detail)
+            status_code=status_code,
+            content=_envelope(exc.code, exc.message, exc.detail),
+            headers=headers or None,
         )
 
     @app.exception_handler(StarletteHTTPException)

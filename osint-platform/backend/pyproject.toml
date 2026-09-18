@@ -27,6 +27,10 @@ dependencies = [
     "python-dateutil>=2.9",
     "idna>=3.10",
     "email-validator>=2.2",
+    # Argon2id password verifiers. A mature, audited implementation of a
+    # memory-hard KDF: this platform hashes passwords, it does not invent
+    # cryptography.
+    "argon2-cffi>=23.1",
 ]
 
 [project.optional-dependencies]

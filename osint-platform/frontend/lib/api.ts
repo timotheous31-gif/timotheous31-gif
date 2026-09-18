@@ -16,6 +16,7 @@ import type {
   PublicContactRecord,
   SocialProfileRecord,
   ApiErrorBody,
+  AuditEntry,
   Case,
   CaseSummary,
   CollectorInfo,
@@ -34,11 +35,14 @@ import type {
   ReconQueryPlan,
   SearchIngestResult,
   StagedReconPlan,
+  Membership,
   Relationship,
   RunResponse,
+  SessionInfo,
   Target,
   TargetType,
   TimelineResponse,
+  WorkspaceSummary,
 } from "@/types/api";
 
 export const API_BASE =
@@ -90,11 +94,40 @@ function buildUrl(path: string, query?: Query): string {
   return url.toString();
 }
 
+/**
+ * Read the CSRF token the API set alongside the session.
+ *
+ * The session cookie itself is `HttpOnly` and deliberately unreadable here — that
+ * is what stops a cross-site-scripting bug from becoming an account takeover. The
+ * CSRF cookie is readable precisely because it has to be copied into a header,
+ * and on its own it authorises nothing.
+ */
+export function csrfToken(): string {
+  if (typeof document === "undefined") return "";
+  const match = document.cookie.match(/(?:^|;\s*)osint_csrf=([^;]+)/);
+  return match?.[1] ? decodeURIComponent(match[1]) : "";
+}
+
+/** Methods the API requires a CSRF token on. */
+const UNSAFE = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/**
+ * Called when the API answers 401. Set by the session provider so the client
+ * stays free of React imports; a module-level hook is simpler than threading a
+ * callback through every call site.
+ */
+let onUnauthenticated: (() => void) | null = null;
+
+export function setUnauthenticatedHandler(handler: (() => void) | null): void {
+  onUnauthenticated = handler;
+}
+
 async function request<T>(
   path: string,
   options: RequestInit & { query?: Query } = {},
 ): Promise<T> {
   const { query, ...init } = options;
+  const method = (init.method ?? "GET").toUpperCase();
   let response: Response;
   try {
     response = await fetch(buildUrl(path, query), {
@@ -102,12 +135,23 @@ async function request<T>(
       headers: {
         Accept: "application/json",
         ...(init.body ? { "Content-Type": "application/json" } : {}),
+        ...(UNSAFE.has(method) ? { "X-CSRF-Token": csrfToken() } : {}),
         ...init.headers,
       },
+      // The session is a cookie, so it has to be sent on cross-origin calls —
+      // which is the normal development setup (:3000 talking to :8000). The API
+      // allows credentials only from origins it lists explicitly.
+      credentials: "include",
       cache: "no-store",
     });
   } catch (cause) {
     throw new NetworkError(cause);
+  }
+
+  if (response.status === 401 && !path.startsWith("/auth/")) {
+    // The session expired or was revoked. Tell the provider so the app can show
+    // the login screen instead of a page full of failed panels.
+    onUnauthenticated?.();
   }
 
   if (response.status === 204) return undefined as T;
@@ -132,10 +176,37 @@ async function request<T>(
 export const api = {
   health: () => request<{ status: string; version: string; environment: string }>("/../../health"),
 
+  // --- authentication ------------------------------------------------------
+  login: (email: string, password: string) =>
+    request<SessionInfo>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+  logout: () => request<void>("/auth/logout", { method: "POST" }),
+  me: () => request<SessionInfo>("/auth/me"),
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<void>("/auth/password", {
+      method: "POST",
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    }),
+
+  // --- workspaces ----------------------------------------------------------
+  listWorkspaces: () => request<WorkspaceSummary[]>("/workspaces"),
+  listMembers: (workspaceId: string) =>
+    request<Membership[]>(`/workspaces/${workspaceId}/members`),
+  readAudit: (workspaceId: string, query?: Query) =>
+    request<AuditEntry[]>(`/workspaces/${workspaceId}/audit`, { query }),
+
   listCases: (query?: Query) => request<Page<Case>>("/cases", { query }),
   getCase: (id: string) => request<Case>(`/cases/${id}`),
   caseSummary: (id: string) => request<CaseSummary>(`/cases/${id}/summary`),
-  createCase: (payload: { name: string; description?: string; tags?: string[] }) =>
+  createCase: (payload: {
+    name: string;
+    description?: string;
+    tags?: string[];
+    /** Required when the signed-in user belongs to more than one workspace. */
+    workspace_id?: string;
+  }) =>
     request<Case>("/cases", { method: "POST", body: JSON.stringify(payload) }),
   updateCase: (id: string, payload: Record<string, unknown>) =>
     request<Case>(`/cases/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),

@@ -21,6 +21,10 @@ class CaseCreate(BaseModel):
     """Payload for creating an investigation."""
 
     name: str = Field(min_length=1, max_length=200, examples=["Example Domain Investigation"])
+    #: Which workspace owns the case. Optional only when the caller belongs to
+    #: exactly one workspace; with several it must be named, because guessing
+    #: which workspace a case belongs to is guessing who may read it.
+    workspace_id: uuid.UUID | None = Field(default=None)
     description: str | None = Field(default=None, max_length=5000)
     notes: str | None = Field(default=None, max_length=20000)
     tags: list[str] = Field(default_factory=list, max_length=32)

@@ -2,6 +2,9 @@
 
 import { useState } from "react";
 
+import { useSession } from "@/components/session";
+import { PERMISSION, can } from "@/lib/permissions";
+
 import { Button, ErrorNotice } from "@/components/ui/primitives";
 import { api } from "@/lib/api";
 
@@ -31,6 +34,7 @@ export function DeleteCase({
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<Error | null>(null);
+  const { workspace } = useSession();
 
   async function confirm() {
     setBusy(true);
@@ -44,6 +48,13 @@ export function DeleteCase({
     } finally {
       setBusy(false);
     }
+  }
+
+  // Deleting a case destroys an investigation, so the control is not offered at
+  // all below ADMIN rather than offered and refused. DELETE /cases/{id} enforces
+  // the same rule server-side.
+  if (!can(workspace, PERMISSION.caseDelete)) {
+    return null;
   }
 
   if (!open) {
