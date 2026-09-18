@@ -115,13 +115,32 @@ export default function SettingsPage() {
                 {search.configuration.detail || search.unavailable_reason}
               </p>
               {!search.available ? (
-                <p className="text-xs text-muted sm:col-span-3">
-                  Set <Mono>SEARCH_PROVIDER</Mono> to <Mono>brave</Mono>, <Mono>bing</Mono> or{" "}
-                  <Mono>serper</Mono> and supply the matching key (<Mono>BRAVE_API_KEY</Mono>,{" "}
-                  <Mono>BING_API_KEY</Mono> or <Mono>SERPER_API_KEY</Mono>) in the backend&apos;s
-                  environment, then restart it. Investigations still run without search; the
-                  collector is recorded as SKIPPED with this reason rather than returning nothing.
-                </p>
+                <>
+                  <p className="text-xs text-muted sm:col-span-3">
+                    Set <Mono>SEARCH_PROVIDER</Mono> to <Mono>anthropic_web_search</Mono>,{" "}
+                    <Mono>brave</Mono>, <Mono>bing</Mono> or <Mono>serper</Mono> and supply the
+                    matching credential (<Mono>ANTHROPIC_API_KEY</Mono>,{" "}
+                    <Mono>BRAVE_API_KEY</Mono>, <Mono>BING_API_KEY</Mono> or{" "}
+                    <Mono>SERPER_API_KEY</Mono>) in the backend&apos;s environment, then restart
+                    it. Investigations still run without search; the collector is recorded as
+                    SKIPPED with this reason rather than returning nothing.
+                  </p>
+                  {/* The Anthropic channel is genuinely different from the others, and an
+                      operator choosing between them needs to know how before they enable it. */}
+                  <p className="text-xs text-muted sm:col-span-3">
+                    <Mono>anthropic_web_search</Mono> is a secondary channel, not a drop-in
+                    search API: it chooses its own queries, returns no page description and no
+                    ranking, and bills per search (capped by{" "}
+                    <Mono>ANTHROPIC_WEB_SEARCH_MAX_USES</Mono>). Whether its results may be
+                    stored or displayed in a commercial product is not established by
+                    Anthropic&apos;s documentation — read{" "}
+                    <Mono>docs/search-provider-compliance.md</Mono> first.
+                  </p>
+                  <p className="text-xs text-muted sm:col-span-3">
+                    <Mono>google_wss</Mono> is configured but not activated
+                    (PENDING_PARTNER_ACCESS): it issues no request whatever credentials are set.
+                  </p>
+                </>
               ) : null}
             </dl>
           ) : (

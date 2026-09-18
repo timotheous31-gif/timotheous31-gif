@@ -86,7 +86,7 @@ changed which collectors the next investigation would plan.
 | `wayback` | Internet Archive CDX | — | Bounded limit, collapsed timestamps. Never a bulk download. |
 | `github` | api.github.com | optional | Public only. Commit *metadata*; no message bodies, no diffs. |
 | `username` | curated platforms | — | Presence only; confidence capped at 0.60. |
-| `search` | Brave / Bing / Serper | required | Provider APIs only — never engine HTML scraping. |
+| `search` | Anthropic web search / Brave / Bing / Serper | required | Provider APIs only — never engine HTML scraping. `google_wss` is configured but PENDING_PARTNER_ACCESS. See [search-provider-compliance.md](search-provider-compliance.md). |
 | `email` | structure, Gravatar, HIBP | optional | Breach *names and dates* only. |
 
 ## The username platform list

@@ -562,6 +562,156 @@ class ExecutionSummary:
 
 
 @dataclass(slots=True)
+class SearchChannelItem:
+    """How the public-web channel behaved in one execution, and what it cost.
+
+    Built from what the execution *recorded* rather than from what the settings
+    say now, so a historical report cannot inherit a later run's provider.
+
+    Every money figure is an estimate derived from a published unit price and a
+    count the provider reported. The flags that say so travel with the numbers
+    rather than sitting in a renderer, because a figure separated from that
+    qualification reads as a bill.
+    """
+
+    provider: str
+    configured: bool
+    reason: str | None = None
+    #: The plan, and the execution. Never the same field.
+    queries_planned: int = 0
+    searches_executed: int = 0
+    executed_queries: list[str] = field(default_factory=list)
+    queries_as_planned: bool = True
+    search_budget: int | None = None
+    budget_exhausted: bool = False
+    outcome: str = "ok"
+    results_stored: int = 0
+    low_context_results: int = 0
+    estimated_search_cost_usd: float | None = None
+    unit_cost_usd: float | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    model: str | None = None
+    enrichment_fetches: int = 0
+    enrichment_limit: int = 0
+    enrichment_candidates: int = 0
+    failures: list[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def budget_label(self) -> str:
+        """``3 / 4`` when a budget exists, ``3`` when none was set."""
+        if self.search_budget is None:
+            return str(self.searches_executed)
+        return f"{self.searches_executed} / {self.search_budget}"
+
+    @property
+    def cost_label(self) -> str:
+        if self.estimated_search_cost_usd is None:
+            return "not priced"
+        return f"${self.estimated_search_cost_usd:.2f} (estimated)"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "configured": self.configured,
+            "reason": self.reason,
+            "queries_planned": self.queries_planned,
+            "searches_executed": self.searches_executed,
+            "executed_queries": list(self.executed_queries),
+            "queries_as_planned": self.queries_as_planned,
+            "search_budget": self.search_budget,
+            "budget_label": self.budget_label,
+            "budget_exhausted": self.budget_exhausted,
+            "outcome": self.outcome,
+            "results_stored": self.results_stored,
+            "low_context_results": self.low_context_results,
+            "cost": {
+                "estimated_search_cost_usd": self.estimated_search_cost_usd,
+                "unit_cost_usd": self.unit_cost_usd,
+                "label": self.cost_label,
+                "is_estimate": True,
+                "is_invoice": False,
+                "token_cost_included": False,
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
+                "model": self.model,
+                "note": (
+                    "Estimated from a published unit price and the count the provider "
+                    "reported. Not a billed total. Token costs are billed separately "
+                    "and are not included in this figure."
+                ),
+            },
+            "enrichment": {
+                "fetches_used": self.enrichment_fetches,
+                "limit": self.enrichment_limit,
+                "candidates_considered": self.enrichment_candidates,
+            },
+            "failures": list(self.failures),
+            "query_attribution": (
+                "This provider ran the queries the plan asked for."
+                if self.queries_as_planned
+                else "This provider chose its own queries from the plan. The searches "
+                "listed are the ones it reported executing; the plan is recorded "
+                "separately and is not a record of work."
+            ),
+        }
+
+
+def _search_channel(recorded: dict[str, Any] | None) -> SearchChannelItem | None:
+    """The search-channel summary for one execution, from its own record."""
+    if not isinstance(recorded, dict):
+        return None
+    accounting = recorded.get("accounting")
+    accounting = accounting if isinstance(accounting, dict) else {}
+    enrichment = recorded.get("enrichment")
+    enrichment = enrichment if isinstance(enrichment, dict) else {}
+    executed = recorded.get("executed_queries")
+    return SearchChannelItem(
+        provider=str(recorded.get("provider") or "unknown"),
+        configured=bool(recorded.get("configured")),
+        reason=str(recorded.get("reason") or "") or None,
+        queries_planned=int(recorded.get("queries_planned") or 0),
+        searches_executed=int(recorded.get("queries_run") or 0),
+        executed_queries=[item for item in (executed or []) if isinstance(item, str)],
+        queries_as_planned=bool(recorded.get("queries_as_planned", True)),
+        search_budget=(
+            int(accounting["search_budget"])
+            if isinstance(accounting.get("search_budget"), int)
+            else None
+        ),
+        budget_exhausted=bool(accounting.get("budget_exhausted")),
+        outcome=str(recorded.get("outcome") or "ok"),
+        results_stored=int(recorded.get("results_stored") or 0),
+        low_context_results=int(recorded.get("low_context_results") or 0),
+        estimated_search_cost_usd=(
+            float(accounting["estimated_search_cost_usd"])
+            if isinstance(accounting.get("estimated_search_cost_usd"), int | float)
+            else None
+        ),
+        unit_cost_usd=(
+            float(accounting["unit_cost_usd"])
+            if isinstance(accounting.get("unit_cost_usd"), int | float)
+            else None
+        ),
+        input_tokens=(
+            int(accounting["input_tokens"])
+            if isinstance(accounting.get("input_tokens"), int)
+            else None
+        ),
+        output_tokens=(
+            int(accounting["output_tokens"])
+            if isinstance(accounting.get("output_tokens"), int)
+            else None
+        ),
+        model=str(accounting.get("model") or "") or None,
+        enrichment_fetches=int(enrichment.get("fetches_used") or 0),
+        enrichment_limit=int(enrichment.get("limit") or 0),
+        enrichment_candidates=int(enrichment.get("candidates_considered") or 0),
+        failures=[item for item in (recorded.get("failures") or []) if isinstance(item, dict)],
+    )
+
+
+@dataclass(slots=True)
 class SourceAgreementItem:
     """Two sources publishing the same identifier, and what that is worth.
 
@@ -681,6 +831,9 @@ class ReportModel:
     citizenship_claims: list[CitizenshipClaimItem] = field(default_factory=list)
     #: Identifier agreements between sources, corroborating or not.
     source_agreements: list[SourceAgreementItem] = field(default_factory=list)
+    #: What the public-web channel did in this execution, and what it cost.
+    #: ``None`` when no execution recorded a search stage.
+    search_channel: SearchChannelItem | None = None
     execution: ExecutionSummary = field(default_factory=lambda: ExecutionSummary())
     graph: dict[str, Any] = field(default_factory=dict)
     confidence: dict[str, Any] = field(default_factory=dict)
@@ -722,6 +875,7 @@ class ReportModel:
             "coverage_gaps": self.coverage_gaps,
             "citizenship_claims": [item.to_dict() for item in self.citizenship_claims],
             "source_agreements": [item.to_dict() for item in self.source_agreements],
+            "search_channel": self.search_channel.to_dict() if self.search_channel else None,
             "execution": self.execution.to_dict(),
             "graph": self.graph,
             "methodology": self.methodology,
@@ -1144,6 +1298,7 @@ def build_report(
         # never merged into it.
         analyst_decisions=_decision_items(session, case_id),
         sources=_sources(runs, findings),
+        search_channel=_search_channel(_recorded_ingest(session, case_id, execution=execution)),
         coverage=_coverage_items(
             session,
             case_id,
@@ -1715,6 +1870,12 @@ def _ingest_coverage(
     if recorded is None:
         recorded = _recorded_ingest(session, case_id, execution=execution)
     if isinstance(recorded, dict):
+        from app.services.search_ingest import BLOCKED_OUTCOMES
+
+        outcome = str(recorded.get("outcome") or "ok")
+        accounting = recorded.get("accounting")
+        accounting = accounting if isinstance(accounting, dict) else {}
+        budget = accounting.get("search_budget")
         return web_search_coverage(
             provider=str(recorded.get("provider", "unknown")),
             configured=bool(recorded.get("configured")),
@@ -1722,6 +1883,13 @@ def _ingest_coverage(
             results_stored=int(recorded.get("results_stored", 0)),
             reason=str(recorded.get("reason") or ""),
             failures=len(recorded.get("failures") or []),
+            # A channel that was stopped is never an absence. Passing the outcome
+            # through is what keeps a rate-limited or budget-exhausted run from
+            # being rendered as "searched, nothing found".
+            blocked=outcome in BLOCKED_OUTCOMES,
+            outcome=outcome,
+            queries_as_planned=bool(recorded.get("queries_as_planned", True)),
+            search_budget=budget if isinstance(budget, int) else None,
         )
     try:
         provider = get_search_provider()

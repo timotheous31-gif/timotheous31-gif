@@ -254,6 +254,65 @@
 </table></div>
 {% else %}<p>No evidence was stored.</p>{% endif %}
 
+{% if model.search_channel %}
+{% set channel = model.search_channel %}
+<h2 id="search-channel">Public web search channel</h2>
+{% if not channel.configured %}
+<p>
+  No public web search ran: <span class="mono">{{ channel.provider }}</span>.
+  {{ channel.reason or 'No search provider is configured.' }}
+  Every free structured source still ran, and the recon plan can be run by hand.
+</p>
+{% else %}
+<div class="scroll"><table>
+  <tbody>
+    <tr><th>Channel</th><td class="mono">{{ channel.provider }}</td></tr>
+    {% if channel.model %}<tr><th>Model</th><td class="mono">{{ channel.model }}</td></tr>{% endif %}
+    <tr><th>Queries the plan offered</th><td>{{ channel.queries_planned }}</td></tr>
+    <tr><th>Searches executed</th><td>{{ channel.budget_label }}</td></tr>
+    <tr><th>Results stored</th><td>{{ channel.results_stored }}</td></tr>
+    {% if channel.low_context_results %}
+    <tr><th>Stored with no provider description</th><td>{{ channel.low_context_results }}</td></tr>
+    {% endif %}
+    {% if channel.enrichment_limit %}
+    <tr><th>Pages read directly</th>
+        <td>{{ channel.enrichment_fetches }} of {{ channel.enrichment_limit }} permitted</td></tr>
+    {% endif %}
+    <tr><th>Estimated search-tool cost</th><td>{{ channel.cost_label }}</td></tr>
+    <tr><th>Token cost</th><td>not included — billed separately by the provider</td></tr>
+  </tbody>
+</table></div>
+<p>
+  The cost above is an <strong>estimate</strong>, computed from a published unit price and the
+  count the provider reported. It is not an invoice and has not been reconciled against billing.
+</p>
+{% if not channel.queries_as_planned %}
+<p>
+  This provider has no parameter that submits an exact query: it chooses its own searches from
+  the plan it is given. The searches below are the ones it reported running. The plan is
+  recorded separately and is not a record of work.
+</p>
+{% if channel.executed_queries %}
+<ul>
+  {% for query in channel.executed_queries[:20] %}<li class="mono">{{ query }}</li>{% endfor %}
+</ul>
+{% endif %}
+{% endif %}
+{% if channel.budget_exhausted %}
+<p>
+  <strong>The search budget was exhausted.</strong> The channel stopped before it finished, so
+  the public web was examined incompletely. This is not an absence of results.
+</p>
+{% elif channel.outcome != 'ok' %}
+<p>
+  <strong>The channel did not finish cleanly</strong>
+  (<span class="mono">{{ channel.outcome }}</span>). {{ channel.reason or '' }}
+  Coverage is partial.
+</p>
+{% endif %}
+{% endif %}
+{% endif %}
+
 <h2 id="sources">Sources</h2>
 {% if model.sources %}
 <div class="scroll"><table>

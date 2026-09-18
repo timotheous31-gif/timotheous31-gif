@@ -348,6 +348,8 @@ def render_markdown(model: ReportModel, *, embed_images: bool = False) -> str:
         for line in model.coverage_gaps:
             add(f"- {line}")
 
+    _render_search_channel(add, model)
+
     add("")
     add("## Investigation executions")
     add("")
@@ -448,6 +450,109 @@ CORRELATION_BANDS: dict[str, str] = {
 def correlation_band(strength: str) -> str:
     """The reader-facing name for a stored match-strength band."""
     return CORRELATION_BANDS.get(str(strength), str(strength).replace("_", " ").title())
+
+
+def _render_search_channel(add: Any, model: ReportModel) -> None:
+    """What the public-web channel did, what it was allowed, and what it cost.
+
+    Three things this section exists to keep straight.
+
+    The *plan* and the *execution* are printed as separate numbers, because on one
+    supported provider they differ: it chooses its own queries from the brief, and
+    printing the plan as though it had run would make this section a fiction.
+
+    The cost is labelled an estimate everywhere it appears, and the token half is
+    named as excluded rather than silently omitted. A figure that looks like a
+    bill will be read as one.
+
+    A channel that was *stopped* says so. A budget that ran out or a rate limit is
+    incomplete coverage, and the sentence says that rather than letting the
+    coverage table's count of stored results speak for it.
+    """
+    channel = model.search_channel
+    if channel is None:
+        return
+    add("")
+    add("## Public web search channel")
+    add("")
+    if not channel.configured:
+        add(
+            f"No public web search ran: `{channel.provider}`. "
+            f"{channel.reason or 'No search provider is configured.'} Every free "
+            f"structured source still ran, and the recon plan is available to run by "
+            f"hand."
+        )
+        return
+
+    add(f"- Channel: `{channel.provider}`")
+    if channel.model:
+        add(f"- Model driving the channel: `{channel.model}`")
+    add(f"- Queries the plan offered: {channel.queries_planned}")
+    add(f"- Searches the provider reported executing: {channel.budget_label}")
+    add(f"- Results stored: {channel.results_stored}")
+    if channel.low_context_results:
+        add(
+            f"- Of those, {channel.low_context_results} came with no provider "
+            f"description. They are correlated on the name the page displays unless "
+            f"the page's own text was read."
+        )
+    if channel.enrichment_limit:
+        add(
+            f"- Pages read directly to recover public text: "
+            f"{channel.enrichment_fetches} of {channel.enrichment_limit} permitted "
+            f"({channel.enrichment_candidates} candidate(s) considered)"
+        )
+    add(f"- Estimated search-tool cost: {channel.cost_label}")
+    add(
+        "- Token cost: **not included** in the figure above. Tokens are billed "
+        "separately by the provider."
+    )
+    if channel.input_tokens is not None or channel.output_tokens is not None:
+        add(
+            f"- Tokens the provider reported: {channel.input_tokens or 0} in, "
+            f"{channel.output_tokens or 0} out"
+        )
+    add("")
+    add(
+        "The cost above is an **estimate**, computed from a published unit price and "
+        "the count the provider reported. It is not an invoice and has not been "
+        "reconciled against billing."
+    )
+    if not channel.queries_as_planned:
+        add("")
+        add(
+            "This provider has no parameter that submits an exact query: it chooses "
+            "its own searches from the plan it is given. The searches listed below are "
+            "the ones it reported running. The plan is recorded separately and is not "
+            "a record of work."
+        )
+        if channel.executed_queries:
+            add("")
+            for query in channel.executed_queries[:20]:
+                add(f"- Executed: `{query}`")
+    if channel.budget_exhausted:
+        add("")
+        add(
+            "**The search budget was exhausted.** The channel stopped before it "
+            "finished, so the public web was examined incompletely. This is not an "
+            "absence of results."
+        )
+    if channel.outcome != "ok" and not channel.budget_exhausted:
+        add("")
+        add(
+            f"**The channel did not finish cleanly** (`{channel.outcome}`). "
+            f"{channel.reason or ''} Coverage is partial, and nothing here should be "
+            f"read as the public web holding nothing.".strip()
+        )
+    if channel.failures:
+        add("")
+        add("Searches that failed or were refused:")
+        for failure in channel.failures[:10]:
+            label = str(failure.get("error_type") or "error")
+            detail = str(failure.get("error") or "")[:200]
+            query = str(failure.get("query") or "")
+            prefix = f"`{query}` — " if query else ""
+            add(f"- {prefix}`{label}`: {detail}")
 
 
 def _render_source_agreements(add: Any, model: ReportModel) -> None:

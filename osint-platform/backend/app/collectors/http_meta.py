@@ -13,7 +13,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urljoin, urlsplit
-from urllib.robotparser import RobotFileParser
 
 from selectolax.parser import HTMLParser
 
@@ -30,6 +29,7 @@ from app.core.errors import PolicyError
 from app.core.logging import get_logger
 from app.core.ratelimit import RateLimit
 from app.models.enums import Classification, FindingKind, TargetType
+from app.services.enrichment import robots_allows
 from app.services.normalization import NormalizedTarget
 
 log = get_logger(__name__)
@@ -134,28 +134,18 @@ class HTTPMetadataCollector(BaseCollector):
         return result
 
     async def _robots_allows(self, url: str) -> tuple[bool, str]:
-        """Check robots.txt for our user agent. Unreachable robots means allowed."""
-        parts = urlsplit(url)
-        robots_url = f"{parts.scheme}://{parts.netloc}/robots.txt"
-        try:
-            response = await http.get(
-                robots_url,
-                provider=self.name,
-                timeout=min(self.timeout, 8.0),
-                max_bytes=512_000,
-                cache_ttl=self.settings.cache_ttl_seconds,
-            )
-        except Exception as exc:
-            log.info("http_meta.robots_unreachable", url=robots_url, error_type=type(exc).__name__)
-            return True, f"unreachable ({type(exc).__name__})"
-        if response.status_code >= 400:
-            return True, f"absent (HTTP {response.status_code})"
+        """Check robots.txt for our user agent.
 
-        parser = RobotFileParser()
-        parser.parse(response.text.splitlines())
-        agent = self.settings.http_user_agent.split("/")[0]
-        allowed = parser.can_fetch(agent, url) and parser.can_fetch("*", url)
-        return allowed, "present"
+        Delegates to the shared implementation. The rule is now applied in two
+        places — here and by search-result enrichment — and one politeness check
+        written twice is one of them eventually being wrong.
+        """
+        return await robots_allows(
+            url,
+            provider=self.name,
+            settings=self.settings,
+            timeout=min(self.timeout, 8.0),
+        )
 
     async def _probe_well_known(self, base_url: str) -> list[tuple[str, bool, str]]:
         """HEAD robots.txt and sitemap.xml — presence only, contents not stored."""

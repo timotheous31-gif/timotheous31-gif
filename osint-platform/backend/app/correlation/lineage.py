@@ -197,10 +197,10 @@ LINEAGE: tuple[SourceLineage, ...] = (
         note="The same GitHub API as the `github` collector, so never independent of it.",
     ),
     # --- Retrieval channels that originate nothing -------------------------
-    # provider_search and manual_search_recon are channels over third-party
-    # pages. A page can copy another page, and an index can carry both. They are
-    # deliberately absent from this table: every agreement involving them is
-    # UNKNOWN, which is the truth.
+    # provider_search, anthropic_web_search and manual_search_recon are channels
+    # over third-party pages. A page can copy another page, and an index can
+    # carry both. They are deliberately absent from this table: every agreement
+    # involving them is UNKNOWN, which is the truth.
 )
 
 _BY_KEY: dict[tuple[str, str], SourceLineage] = {
@@ -208,8 +208,24 @@ _BY_KEY: dict[tuple[str, str], SourceLineage] = {
 }
 
 #: Sources that only relay other people's pages. Named so a reason can say so.
+#:
+#: ``anthropic_web_search`` belongs here for a reason worth stating. Anthropic
+#: does not disclose which search index answered a query, so two pages reached
+#: through it could have come from the same upstream index as two pages reached
+#: through any other provider — or through each other. A second discovery path to
+#: the same source is a second route, not a second party, and it earns no
+#: amplification. Adding a provider to this platform therefore cannot silently
+#: create corroboration that did not exist.
 RELAY_SOURCES: frozenset[str] = frozenset(
-    {"provider_search", "manual_search_recon", "search", "http_meta", "wayback"}
+    {
+        "provider_search",
+        "anthropic_web_search",
+        "google_wss",
+        "manual_search_recon",
+        "search",
+        "http_meta",
+        "wayback",
+    }
 )
 
 

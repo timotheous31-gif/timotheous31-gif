@@ -62,9 +62,10 @@ def result(url: str, title: str, snippet: str = "", **kwargs) -> SearchResult:
     return SearchResult(
         title=title,
         url=url,
+        provider=kwargs.pop("provider", "fake"),
         snippet=snippet,
-        rank=kwargs.pop("rank", 1),
-        provider="fake",
+        provider_position=kwargs.pop("provider_position", 1),
+        position_is_rank=kwargs.pop("position_is_rank", True),
         **kwargs,
     )
 
@@ -308,11 +309,17 @@ async def test_provenance_records_the_query_variant_and_family(api_client, case_
         item for item in _findings(case_id) if item.data["url"].endswith("tabitha-example")
     )
     search = finding.data["searches"][0]
-    assert search["query"]
+    # A provider that runs what it is handed records the same text twice and says
+    # so. The two fields exist precisely so a provider that does *not* can record
+    # an executed query with no planned one.
+    assert search["executed_query"]
+    assert search["planned_query"] == search["executed_query"]
+    assert search["query_executed_as_planned"] is True
     assert search["search_variant"]
     assert search["variant_type"]
     assert search["query_family"]
     assert search["provider"] == "fake"
+    assert search["retrieval_channel"] == "fake"
     assert finding.data["canonical_target"] == CANONICAL
 
 
@@ -559,3 +566,79 @@ async def test_the_ingest_report_counts_the_image_queries_it_actually_ran(api_cl
 
     unconfigured = await _ingest(case_id, target_id, FakeProvider(available=False))
     assert unconfigured.image_queries_run == 0
+
+
+class TestProviderSearchIsAudited:
+    """A provider search leaves the platform, and on a paid channel it is billed.
+
+    That makes it the one recon action a customer will ask about afterwards — how
+    many searches were run, against which target, by whom, and at what estimated
+    cost. Importing a result by hand is already audited; this closes the gap on
+    the side that costs money.
+    """
+
+    @staticmethod
+    def _searches():
+        from app.core.db import get_session_factory
+        from app.models.auth import AuditLogEntry
+        from app.models.enums import AuditEvent
+
+        with get_session_factory()() as session:
+            return list(
+                session.query(AuditLogEntry)
+                .filter(AuditLogEntry.event_type == AuditEvent.PROVIDER_SEARCH_RUN)
+                .all()
+            )
+
+    async def test_running_a_search_is_recorded(self, api_client, case_id, workspace_id):
+        target_id = await _person(api_client, case_id)
+        response = await api_client.post(f"/api/v1/cases/{case_id}/targets/{target_id}/search")
+        assert response.status_code == 200, response.text
+
+        (entry,) = self._searches()
+        assert entry.actor_user_id is not None
+        assert entry.workspace_id == workspace_id
+        assert entry.object_type == "target"
+        assert entry.object_id == str(target_id)
+        assert entry.metadata_["case_id"] == str(case_id)
+        # Which channel, and whether it was configured at all.
+        assert entry.metadata_["provider"] == "none"
+        assert entry.metadata_["configured"] is False
+        # The cost figure is always marked an estimate, never a bill.
+        assert entry.metadata_["cost_is_estimate"] is True
+
+    async def test_the_entry_never_carries_the_query_text_or_a_credential(
+        self, api_client, case_id
+    ):
+        """An audit entry is a record of an action, not a copy of the case."""
+        target_id = await _person(api_client, case_id)
+        await api_client.post(f"/api/v1/cases/{case_id}/targets/{target_id}/search")
+
+        (entry,) = self._searches()
+        stored = str(entry.metadata_)
+        assert CANONICAL not in stored
+        assert "executed_queries" not in entry.metadata_
+        for forbidden in ("api_key", "anthropic_api_key", "authorization", "token"):
+            assert forbidden not in stored.lower()
+
+    async def test_a_throttled_search_is_not_recorded_as_a_search_that_ran(
+        self, api_client, case_id
+    ):
+        """It never happened, so it is not in the ledger as though it had."""
+        from app.core import throttle
+        from app.core.settings import get_settings
+
+        target_id = await _person(api_client, case_id)
+        backend = throttle.MemoryThrottle()
+        throttle.set_throttle(backend)
+        try:
+            object.__setattr__(get_settings(), "rate_limit_recon_per_hour", 1)
+            first = await api_client.post(f"/api/v1/cases/{case_id}/targets/{target_id}/search")
+            assert first.status_code == 200
+            second = await api_client.post(f"/api/v1/cases/{case_id}/targets/{target_id}/search")
+            assert second.status_code == 429
+        finally:
+            throttle.set_throttle(None)
+
+        # One search ran; one was refused. Exactly one entry.
+        assert len(self._searches()) == 1

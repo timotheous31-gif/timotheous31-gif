@@ -167,8 +167,10 @@ def test_search_skip_reason_is_preserved_verbatim():
     available, reason = SearchCollector(settings()).is_available()
     assert available is False
     assert reason == (
-        "No search provider is configured. Set SEARCH_PROVIDER to brave, bing or "
-        "serper and supply the matching API key."
+        "No search provider is configured. Set SEARCH_PROVIDER to "
+        "anthropic_web_search, brave, bing or serper and supply the matching "
+        "credential. Every free structured source and the manual search "
+        "workflow keep working with no provider at all."
     )
 
 

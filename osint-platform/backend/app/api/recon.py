@@ -181,6 +181,9 @@ def recon_plan(
         search_provider=provider.key,
         search_provider_configured=configured,
         search_provider_note=note,
+        search_provider_runs_requested_query=provider.runs_requested_query,
+        search_provider_search_budget=provider.search_budget(),
+        search_provider_provenance_note=provider.provenance_note,
     )
 
 
@@ -233,8 +236,35 @@ async def run_provider_search(
             target=target,
             candidate_entity_id=None,
         )
-    session.commit()
     payload = report.to_dict()
+    accounting = payload.get("accounting") or {}
+    audit.record(
+        session,
+        event=AuditEvent.PROVIDER_SEARCH_RUN,
+        actor_user_id=ctx.principal.user_id,
+        workspace_id=ctx.workspace_id,
+        object_type="target",
+        object_id=target.id,
+        # Counts and identities, never the query text: the findings already carry
+        # what was searched for, and an audit entry is a record of an action, not
+        # a second copy of the investigation. The credential is not here either —
+        # `safe_metadata` would drop it, and it is never put in front of it.
+        metadata={
+            "case_id": str(ctx.case_id),
+            "provider": payload.get("provider"),
+            "configured": payload.get("configured"),
+            "outcome": payload.get("outcome"),
+            "queries_planned": payload.get("queries_planned"),
+            # What the provider reported running, which is also what it bills.
+            "searches_executed": accounting.get("searches_executed"),
+            "search_budget": accounting.get("search_budget"),
+            "budget_exhausted": accounting.get("budget_exhausted"),
+            "estimated_search_cost_usd": accounting.get("estimated_search_cost_usd"),
+            "cost_is_estimate": True,
+            "results_stored": payload.get("results_stored"),
+        },
+    )
+    session.commit()
     return SearchIngestRead(**payload)
 
 

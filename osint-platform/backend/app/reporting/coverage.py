@@ -155,12 +155,23 @@ def web_search_coverage(
     results_stored: int,
     reason: str = "",
     failures: int = 0,
+    blocked: bool = False,
+    outcome: str = "ok",
+    queries_as_planned: bool = True,
+    search_budget: int | None = None,
 ) -> CoverageItem:
     """The public-web channel, stated honestly.
 
-    The four outcomes are different facts and get different states: no provider
+    Each outcome is a different fact and gets a different state: no provider
     configured, a provider that ran and found things, a provider that ran and
-    found nothing, and a provider that broke.
+    found nothing, a provider that broke, and — the case this platform had to
+    learn — a provider that was *stopped*.
+
+    ``blocked`` is the last of those. A budget that ran out, a rate limit, or an
+    upstream error arriving inside an HTTP 200 all mean the public web was not
+    fully examined. None of them is an absence, so none of them may become
+    ``NO_MATCH_RETURNED``: with nothing stored they are ``SKIPPED``, and with
+    something stored the coverage is partial and says so.
     """
     if not configured:
         return CoverageItem(
@@ -170,6 +181,16 @@ def web_search_coverage(
             detail=reason or "SEARCH_PROVIDER is not set.",
         )
     if queries_run == 0:
+        if blocked:
+            return CoverageItem(
+                source="public_web",
+                display_name="Public web search",
+                state=CoverageState.SKIPPED,
+                detail=(
+                    f"{provider} was configured but ran no search: {reason or outcome}. "
+                    f"Nothing is known about what the public web holds."
+                ),
+            )
         return CoverageItem(
             source="public_web",
             display_name="Public web search",
@@ -180,11 +201,34 @@ def web_search_coverage(
                 else f"{provider} was configured but no query ran."
             ),
         )
+
+    noun = "search(es)" if not queries_as_planned else "query(ies)"
+    detail = f"{queries_run} {noun} through {provider}; {results_stored} result(s) stored."
+    if not queries_as_planned:
+        detail += (
+            " This provider chooses its own queries from the recon plan rather than "
+            "running them verbatim, so the searches recorded are the ones it ran."
+        )
+    if search_budget is not None:
+        detail += f" Search budget for this execution: {queries_run} of {search_budget}."
+    if blocked:
+        detail += (
+            f" Coverage is partial: the channel was stopped before it finished "
+            f"({reason or outcome})."
+        )
+        return CoverageItem(
+            source="public_web",
+            display_name="Public web search",
+            state=CoverageState.FOUND if results_stored else CoverageState.SKIPPED,
+            detail=detail,
+            findings=results_stored,
+            runs=queries_run,
+        )
     return CoverageItem(
         source="public_web",
         display_name="Public web search",
         state=CoverageState.FOUND if results_stored else CoverageState.NO_MATCH_RETURNED,
-        detail=f"{queries_run} query(ies) through {provider}; {results_stored} result(s) stored.",
+        detail=detail,
         findings=results_stored,
         runs=queries_run,
     )
@@ -268,8 +312,24 @@ def summarise_gaps(items: list[CoverageItem]) -> list[str]:
             f"negative result."
         )
     declined = [item for item in gaps if item.state is CoverageState.SKIPPED]
-    if declined:
-        names = ", ".join(sorted(item.display_name for item in declined))
+    # The public-web channel is separated out because the generic sentence is
+    # wrong for it. A search provider that hit its budget or was rate-limited did
+    # not "decline an anonymous request" — it was stopped part-way, and the
+    # honest remedy is the manual plan rather than a silent switch to another
+    # paid provider.
+    web = [item for item in declined if item.source == "public_web"]
+    if web:
+        detail = next((item.detail for item in web if item.detail), "")
+        lines.append(
+            "The public web channel was stopped before it finished, so the public web was "
+            "examined incompletely. "
+            + (f"{detail} " if detail else "")
+            + "No other paid provider was substituted. The generated queries remain "
+            "available to run by hand and import."
+        )
+    rest = [item for item in declined if item.source != "public_web"]
+    if rest:
+        names = ", ".join(sorted(item.display_name for item in rest))
         lines.append(
             f"{names} declined an anonymous automated request. Nothing follows about the "
             f"subject from that."
