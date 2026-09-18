@@ -52,6 +52,7 @@ TEST_DNS = {
     "api.search.brave.com": "93.184.215.14",
     "api.bing.microsoft.com": "93.184.215.14",
     "google.serper.dev": "93.184.215.14",
+    "api.anthropic.com": "93.184.215.14",
     "unrelated.test": "93.184.215.14",
     # Free PERSON sources.
     "pub.orcid.org": "93.184.215.14",

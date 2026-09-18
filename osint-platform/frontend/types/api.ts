@@ -555,7 +555,32 @@ export interface StagedReconPlan {
   search_provider: string;
   search_provider_configured: boolean;
   search_provider_note: string;
+  /**
+   * False where the provider decides its own queries from the plan rather than
+   * running them verbatim. When false, this plan is a brief, not a list of
+   * searches that will be executed.
+   */
+  search_provider_runs_requested_query: boolean;
+  search_provider_search_budget: number | null;
+  search_provider_provenance_note: string;
   execution: string;
+}
+
+/** What a search channel consumed. Every money figure is an estimate. */
+export interface ProviderAccounting {
+  searches_executed: number;
+  search_budget: number | null;
+  budget_exhausted: boolean;
+  unit_cost_usd: number | null;
+  estimated_search_cost_usd: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  model: string | null;
+  /** Always true. Present in the payload so no client can render this as a bill. */
+  is_estimate: boolean;
+  /** Always false: tokens are billed separately and are not in the figure above. */
+  token_cost_included: boolean;
+  note: string;
 }
 
 /** What one automated ingestion run did. */
@@ -563,11 +588,32 @@ export interface SearchIngestResult {
   provider: string;
   configured: boolean;
   reason: string | null;
+  /**
+   * Queries the plan offered, and searches the provider reported running. Kept
+   * apart because one supported provider chooses its own queries: showing the
+   * plan where the execution belongs would misstate what happened.
+   */
+  queries_planned: number;
   queries_run: number;
+  executed_queries: string[];
+  queries_as_planned: boolean;
   results_seen: number;
   results_stored: number;
   duplicates: number;
   rejected_urls: number;
+  /** Stored with no provider description at all. Name-level correlation only. */
+  low_context_results: number;
+  outcome: string;
+  accounting: ProviderAccounting | null;
+  enrichment: {
+    limit?: number;
+    fetches_used?: number;
+    candidates_considered?: number;
+    eligible_candidates?: number;
+    policy?: string;
+    note?: string;
+    outcomes?: Record<string, unknown>[];
+  };
   failures: Record<string, string>[];
   findings: string[];
 }

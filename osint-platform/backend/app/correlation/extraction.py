@@ -903,8 +903,13 @@ def _handle_person_candidate(finding: Any, result: ExtractionResult) -> None:
             collector=finding.collector,
             source_url=finding.source_url,
             attributes={
-                "rank": data.get("rank"),
+                # Where the provider sat it in its own list, and whether that
+                # order means anything. "rank" is kept for records written before
+                # the distinction existed; nothing new writes it.
+                "provider_position": data.get("provider_position", data.get("rank")),
+                "position_is_rank": bool(data.get("position_is_rank", "rank" in data)),
                 "provider": data.get("provider") or source,
+                "retrieval_channel": data.get("retrieval_channel") or source,
                 "source": source,
                 "evidence_class": data.get("evidence_class") or evidence_class(source),
             },

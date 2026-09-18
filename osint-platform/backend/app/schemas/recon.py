@@ -108,10 +108,39 @@ class StagedReconPlan(BaseModel):
     search_provider: str = "none"
     search_provider_configured: bool = False
     search_provider_note: str = ""
+    #: False where the provider decides its own queries from the plan rather than
+    #: running them verbatim. Surfaced because it changes what the plan *is*: a
+    #: brief rather than a list of searches that will be executed.
+    search_provider_runs_requested_query: bool = True
+    #: A hard ceiling on searches per investigation, where the provider has one.
+    search_provider_search_budget: int | None = None
+    #: What the reader should know about this channel's provenance.
+    search_provider_provenance_note: str = ""
     execution: str = (
         "Queries in this plan are for you to run in your own browser unless a search "
         "provider is configured. The platform never scrapes a search result page."
     )
+
+
+class ProviderAccountingRead(BaseModel):
+    """What a search channel consumed, as an estimate.
+
+    ``is_estimate`` and ``token_cost_included`` are part of the payload rather
+    than a footnote in the UI, so a client cannot render these figures as a bill
+    without first being told that they are not one.
+    """
+
+    searches_executed: int = 0
+    search_budget: int | None = None
+    budget_exhausted: bool = False
+    unit_cost_usd: float | None = None
+    estimated_search_cost_usd: float | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    model: str | None = None
+    is_estimate: bool = True
+    token_cost_included: bool = False
+    note: str = ""
 
 
 class SearchIngestRead(BaseModel):
@@ -120,11 +149,21 @@ class SearchIngestRead(BaseModel):
     provider: str
     configured: bool
     reason: str | None = None
+    #: Queries the plan offered, and searches the provider reported running.
+    #: Separate fields because on one provider they are different numbers, and
+    #: presenting a plan as an execution record is the failure this avoids.
+    queries_planned: int = 0
     queries_run: int = 0
+    executed_queries: list[str] = Field(default_factory=list)
+    queries_as_planned: bool = True
     results_seen: int = 0
     results_stored: int = 0
     duplicates: int = 0
     rejected_urls: int = 0
+    low_context_results: int = 0
+    outcome: str = "ok"
+    accounting: ProviderAccountingRead | None = None
+    enrichment: dict = Field(default_factory=dict)
     failures: list[dict] = Field(default_factory=list)
     findings: list[str] = Field(default_factory=list)
 

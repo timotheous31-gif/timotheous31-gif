@@ -789,6 +789,115 @@ class TestProductionConfigurationGate:
             assert (await client.get("/health")).status_code == 200
         Base.metadata.drop_all(engine)
 
+    # ----------------------------------------------------- search providers
+    #
+    # SEARCH_PROVIDER=none is the supported default and never a problem. But a
+    # deployment that names a provider has said it wants the public web searched,
+    # and on a paid channel that costs money — so in production it must be usable
+    # on the day it starts, not discovered later from a report saying the web was
+    # never searched.
+
+    def test_no_provider_is_never_a_production_problem(self):
+        """The zero-cost path stays a first-class deployment."""
+        settings = Settings(
+            environment="production",
+            session_secret="a" * 48,
+            cors_origins=["https://app.example.com"],
+            docs_enabled=False,
+            search_provider="none",
+        )
+        assert settings.production_problems() == []
+
+    @pytest.mark.parametrize(
+        ("kwargs", "expected"),
+        [
+            ({"search_provider": "anthropic_web_search"}, "ANTHROPIC_API_KEY"),
+            ({"search_provider": "brave"}, "BRAVE_API_KEY"),
+            ({"search_provider": "bing"}, "BING_API_KEY"),
+            ({"search_provider": "serper"}, "SERPER_API_KEY"),
+            ({"search_provider": "google_wss"}, "PENDING_PARTNER_ACCESS"),
+        ],
+    )
+    def test_a_selected_provider_that_cannot_run_refuses_production(self, kwargs, expected):
+        settings = Settings(
+            environment="production",
+            session_secret="a" * 48,
+            cors_origins=["https://app.example.com"],
+            docs_enabled=False,
+            **kwargs,
+        )
+        problems = settings.production_problems()
+        assert any(expected in problem for problem in problems), problems
+        assert any("SEARCH_PROVIDER" in problem for problem in problems), problems
+        with pytest.raises(UnsafeProductionConfig):
+            settings.require_safe_production()
+
+    def test_a_credentialled_provider_is_allowed(self):
+        settings = Settings(
+            environment="production",
+            session_secret="a" * 48,
+            cors_origins=["https://app.example.com"],
+            docs_enabled=False,
+            search_provider="anthropic_web_search",
+            anthropic_api_key="sk-ant-example",
+        )
+        assert settings.production_problems() == []
+
+    def test_the_mutually_exclusive_domain_lists_refuse_production(self):
+        """Anthropic rejects a request carrying both, so shipping both is a
+        configuration error that should surface at start-up."""
+        settings = Settings(
+            environment="production",
+            session_secret="a" * 48,
+            cors_origins=["https://app.example.com"],
+            docs_enabled=False,
+            search_provider="anthropic_web_search",
+            anthropic_api_key="sk-ant-example",
+            anthropic_web_search_allowed_domains=["example.com"],
+            anthropic_web_search_blocked_domains=["example.org"],
+        )
+        problems = settings.production_problems()
+        assert any("mutually exclusive" in problem for problem in problems), problems
+
+    def test_a_search_budget_below_one_refuses_production(self):
+        settings = Settings(
+            environment="production",
+            session_secret="a" * 48,
+            cors_origins=["https://app.example.com"],
+            docs_enabled=False,
+            search_provider="anthropic_web_search",
+            anthropic_api_key="sk-ant-example",
+            anthropic_web_search_max_uses=0,
+        )
+        problems = settings.production_problems()
+        assert any("MAX_USES" in problem for problem in problems), problems
+
+    def test_development_is_not_held_to_provider_readiness(self):
+        """A developer may select a provider before they have its key."""
+        settings = Settings(environment="development", search_provider="anthropic_web_search")
+        assert settings.production_problems() == []
+        settings.require_safe_production()
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("example.com,example.org", ["example.com", "example.org"]),
+            ('["example.com","example.org"]', ["example.com", "example.org"]),
+            ("example.com", ["example.com"]),
+            ("", []),
+        ],
+    )
+    def test_the_provider_domain_lists_accept_either_written_form(self, raw, expected, monkeypatch):
+        """Regression: these used to die before the validator could see them.
+
+        They are list-typed, so without ``NoDecode`` pydantic-settings JSON-decodes
+        the environment variable first and a comma-separated value raises a parse
+        error naming neither the variable nor the expected format — the same bug
+        ``CORS_ORIGINS`` had.
+        """
+        monkeypatch.setenv("ANTHROPIC_WEB_SEARCH_ALLOWED_DOMAINS", raw)
+        assert Settings().anthropic_web_search_allowed_domains == expected
+
     def test_nothing_is_repaired_silently(self):
         """The setting keeps the dangerous value; the process refuses instead."""
         settings = Settings(

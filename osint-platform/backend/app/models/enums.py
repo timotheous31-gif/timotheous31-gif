@@ -305,4 +305,9 @@ class AuditEvent(StrEnum):
     REPORT_DOWNLOADED = "report_downloaded"
     ANALYST_DECISION_CREATED = "analyst_decision_created"
     MANUAL_RESULT_IMPORTED = "manual_result_imported"
+    #: A search was run through a configured provider. Distinct from
+    #: MANUAL_RESULT_IMPORTED, which records what an investigator found
+    #: themselves and cost nothing: this one leaves the platform, and on a
+    #: paid channel it is billed.
+    PROVIDER_SEARCH_RUN = "provider_search_run"
     RATE_LIMIT_TRIGGERED = "rate_limit_triggered"
