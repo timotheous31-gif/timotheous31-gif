@@ -9,6 +9,7 @@ line, never a silent adoption of somebody else's data.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -36,6 +37,26 @@ def database():
 def run():
     runner = CliRunner()
     return lambda *args, **kwargs: runner.invoke(admin_app, list(args), **kwargs)
+
+
+#: ANSI colour/style escapes, as Rich emits them.
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def plain(output: str) -> str:
+    """CLI output with colour escapes removed.
+
+    Typer renders errors through Rich, and Rich emits colour whenever it thinks
+    it has a terminal — which on GitHub Actions it does, via ``FORCE_COLOR``.
+    That wraps individual words in escape sequences, so ``"--yes" in output`` is
+    false against coloured output even though the word is plainly there, and
+    ``json.loads`` chokes on styling around a JSON document.
+
+    Asserting on the text rather than on the styling is the point: these tests
+    are about what the CLI tells an operator, not about how it paints it. Found
+    the hard way — the suite passed locally and failed in CI on exactly this.
+    """
+    return _ANSI.sub("", output)
 
 
 def _unclaimed_case(name: str = "Legacy case") -> str:
@@ -244,7 +265,7 @@ class TestClaimCases:
         _unclaimed_case()
         result = run("claim-cases", "--workspace", workspace_slug, "--json")
         assert result.exit_code != 0
-        assert "--yes" in result.output
+        assert "--yes" in plain(result.output)
 
 
 class TestClaimAudit:
@@ -435,7 +456,7 @@ class TestListUnclaimed:
 
         _unclaimed_case("Legacy")
         result = run("list-unclaimed", "--json")
-        payload = json.loads(result.output)
+        payload = json.loads(plain(result.output))
         assert payload["unclaimed"] == 1
         assert payload["cases"][0]["name"] == "Legacy"
 
