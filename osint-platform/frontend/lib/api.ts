@@ -8,6 +8,9 @@
  */
 
 import type {
+  MfaEnabled,
+  MfaEnrollment,
+  MfaStatus,
   AnalystDecisionRecord,
   AnalystDecisionValue,
   CandidateGroup,
@@ -188,6 +191,33 @@ export const api = {
     request<void>("/auth/password", {
       method: "POST",
       body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    }),
+
+  // --- two-factor authentication -------------------------------------------
+  //
+  // `mfaEnroll` is the only call in this module whose response contains a
+  // secret. Nothing here stores one: the value is passed to a component, held
+  // in React state for the length of the enrolment, and gone on unmount.
+  mfaStatus: () => request<MfaStatus>("/auth/mfa"),
+  mfaEnroll: (password: string) =>
+    request<MfaEnrollment>("/auth/mfa/enroll", {
+      method: "POST",
+      body: JSON.stringify({ password }),
+    }),
+  mfaConfirm: (code: string) =>
+    request<MfaEnabled>("/auth/mfa/confirm", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    }),
+  mfaVerify: (answer: { code?: string; recovery_code?: string }) =>
+    request<SessionInfo>("/auth/mfa/verify", {
+      method: "POST",
+      body: JSON.stringify(answer),
+    }),
+  mfaDisable: (password: string) =>
+    request<void>("/auth/mfa/disable", {
+      method: "POST",
+      body: JSON.stringify({ password }),
     }),
 
   // --- workspaces ----------------------------------------------------------

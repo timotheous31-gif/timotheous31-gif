@@ -419,6 +419,35 @@ The secret is returned by exactly one route, once. It does not appear in
 metadata — `safe_metadata` drops `secret`, `totp`, `otpauth`, `recovery_code` and
 `hash` keys before anything is written.
 
+### In the browser
+
+The interface draws the flow; it does not enforce it. The API refuses a session
+that has passed the password stage and owes a factor everything but
+`/auth/mfa/verify`, `/auth/logout` and `/auth/session`, so a browser that skipped
+the challenge screen would render a dashboard of 401s rather than data.
+
+Three things about the client side are load-bearing rather than cosmetic:
+
+* **The QR code is generated in the page.** The provisioning URI contains the
+  secret, so an `<img>` pointing at a QR service — or at this API — would put it
+  through a request, a log and a cache that nothing here controls. The browser
+  encodes it from the enrolment response instead.
+* **Nothing secret is stored.** Neither the secret nor the recovery codes are
+  written to `localStorage`, `sessionStorage`, a cookie or the console. They live
+  in the component state of the step that shows them and are dropped when it
+  ends — leaving the one-time recovery-code display clears them, and there is a
+  test that reads the three files involved and fails if a `localStorage`,
+  `document.cookie` or `console.*` call ever appears in them.
+* **Sign-out is reachable from the challenge**, including while the account is
+  locked out. A user who cannot produce a code — wrong phone, shared machine, an
+  account under attack — must be able to end the session without closing the
+  browser.
+
+One refusal is deliberately made locally: resubmitting the same code the API just
+refused is answered from the page rather than sent, so a user tapping the button
+twice does not spend two of their five attempts. It is a courtesy on top of the
+server's limit, never in place of it.
+
 ### Limits
 
 | | |

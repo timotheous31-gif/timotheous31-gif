@@ -1,15 +1,18 @@
 "use client";
 
+import { MfaSettings } from "@/components/mfa-settings";
 import { Badge, Card, CardHeader, ErrorNotice, Mono, Spinner } from "@/components/ui/primitives";
 import { useAsync } from "@/hooks/useApi";
 import { API_BASE, api } from "@/lib/api";
 
 /**
- * Settings is deliberately read-only.
+ * Settings: the account's own security, then a read-only view of the deployment.
  *
- * Every credential lives in the backend's environment, and the API never
- * returns one. Editing keys through the browser would mean transporting and
- * storing secrets in a place they do not belong.
+ * The deployment half is read-only on purpose. Every credential lives in the
+ * backend's environment and the API never returns one; editing keys through the
+ * browser would mean transporting and storing secrets in a place they do not
+ * belong. Two-factor authentication is the exception that proves it — it is the
+ * user's own factor, not the server's, so it is set up here.
  */
 export default function SettingsPage() {
   const health = useAsync(
@@ -40,10 +43,16 @@ export default function SettingsPage() {
       <header>
         <h1 className="text-xl font-semibold">Settings</h1>
         <p className="mt-1 text-sm text-muted">
-          Configuration lives in the backend&apos;s environment. This page reports what is
-          configured; it never displays or accepts a credential.
+          Your own sign-in security is below. Everything else lives in the backend&apos;s
+          environment: this page reports what is configured, and never displays or
+          accepts a deployment credential.
         </p>
       </header>
+
+      <section className="space-y-2">
+        <h2 className="text-sm font-semibold">Your account</h2>
+        <MfaSettings />
+      </section>
 
       {health.error ? <ErrorNotice error={health.error} retry={health.reload} /> : null}
 

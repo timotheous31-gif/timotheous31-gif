@@ -738,11 +738,46 @@ export interface WorkspaceSummary {
   permissions: string[];
 }
 
+/**
+ * Two-factor status. Deliberately carries no secret material: the secret exists
+ * in exactly one response shape, `MfaEnrollment`, and nowhere else.
+ */
+export interface MfaStatus {
+  enabled: boolean;
+  confirmed_at: string | null;
+  recovery_codes_remaining: number;
+}
+
+/**
+ * The one response that carries the secret, returned once when enrolment starts.
+ *
+ * Both fields are secret — `otpauth_uri` contains the secret too, which is why
+ * the QR code is generated in the browser rather than fetched as an image.
+ * Nothing in this app writes either to storage.
+ */
+export interface MfaEnrollment {
+  secret: string;
+  otpauth_uri: string;
+  confirmed: boolean;
+}
+
+/** Recovery codes, in plaintext, exactly once. */
+export interface MfaEnabled {
+  enabled: boolean;
+  recovery_codes: string[];
+}
+
 export interface SessionInfo {
   user: User;
   workspaces: WorkspaceSummary[];
   /** Echoed in `X-CSRF-Token` on every state-changing request. */
   csrf_token: string;
+  /**
+   * True between the password stage and the authenticator code. While it is
+   * true the session can reach nothing but the challenge and sign-out — the API
+   * enforces that, this flag only lets the UI show the right screen.
+   */
+  mfa_required?: boolean;
   expires_at: string;
 }
 
