@@ -13,6 +13,14 @@ from typing import Annotated, ClassVar, Literal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+#: Default for :attr:`Settings.candidate_suppression_threshold`.
+#:
+#: Lives here rather than beside the rule that uses it because settings may not
+#: import from :mod:`app.correlation` — that package pulls in the logging setup,
+#: which reads settings, and the cycle closes. :mod:`app.correlation.suppression`
+#: imports this name, so there is still exactly one value.
+DEFAULT_SUPPRESSION_THRESHOLD = 0.10
+
 
 class UnsafeProductionConfig(RuntimeError):
     """A production deployment whose configuration would be unsafe to serve.
@@ -161,6 +169,21 @@ class Settings(BaseSettings):
     collector_concurrency: int = 6
     #: Hard ceiling on a single collector run.
     collector_timeout_seconds: float = 60.0
+
+    # --- candidate presentation ----------------------------------------------
+    #: The correlation score above which a candidate with no corroborating
+    #: anchor is still shown in the primary analyst view and report.
+    #:
+    #: Presentation only. It never changes a score, never deletes a candidate
+    #: and never touches evidence — below it, a name-only candidate folds into a
+    #: collapsed "low-confidence" section that says how many are in there. See
+    #: :mod:`app.correlation.suppression` for why 0.10 and not a rounder number.
+    #:
+    #: Set it to 0 to show every candidate in the primary view, which is the
+    #: behaviour this platform had before the setting existed.
+    candidate_suppression_threshold: float = Field(
+        default=DEFAULT_SUPPRESSION_THRESHOLD, ge=0.0, le=1.0
+    )
 
     # --- search-result enrichment -------------------------------------------
     #: Some providers return a URL and a title and no description at all. Rather

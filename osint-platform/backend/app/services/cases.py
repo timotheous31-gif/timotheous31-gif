@@ -338,6 +338,25 @@ def add_target(session: Session, case_id: uuid.UUID, payload: TargetCreate) -> T
     return target
 
 
+def anchors_supplied(session: Session, case_id: uuid.UUID) -> bool:
+    """Whether any PERSON target in this case carries investigator context.
+
+    Read from what :func:`add_target` already stored rather than recomputed: the
+    ``context`` key exists on a target only when the supplied context was
+    non-empty, so its presence *is* the answer.
+
+    Presentation needs this because "nothing corroborates this candidate" means
+    two different things. When anchors were supplied and none matched, that is a
+    fact about the record. When none were supplied, nothing *could* have
+    matched, and folding every candidate away on that basis would report the
+    investigator's own missing input as a property of the results.
+    """
+    targets = session.scalars(
+        select(Target).where(Target.case_id == case_id, Target.type == TargetType.PERSON)
+    )
+    return any(target.attributes.get("context") for target in targets)
+
+
 def get_target(session: Session, case_id: uuid.UUID, target_id: uuid.UUID) -> Target:
     target = session.get(Target, target_id)
     if target is None or target.case_id != case_id:

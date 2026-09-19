@@ -485,6 +485,8 @@ export interface ImageEvidenceRecord {
   decision: AnalystDecisionRecord | null;
 }
 
+export type CandidatePresentation = "PRIMARY" | "LOW_CONFIDENCE" | "REJECTED";
+
 export interface CandidateGroup {
   entity_id: string | null;
   display_name: string;
@@ -494,6 +496,18 @@ export interface CandidateGroup {
   match_reasons: string[];
   mismatch_reasons: string[];
   corroborated_by: string[];
+  /**
+   * Where the backend placed this candidate: `PRIMARY`, `LOW_CONFIDENCE` or
+   * `REJECTED`.
+   *
+   * Computed server-side from the score, the anchors and the analyst's
+   * decision. The browser groups by it and never re-derives it — one rule,
+   * applied in one place, so a screen and a report cannot disagree about what
+   * an analyst is looking at.
+   */
+  presentation: CandidatePresentation;
+  /** The sentence explaining that placement, shown when a group is expanded. */
+  presentation_reason: string;
   identity_established: boolean;
   social_profiles: SocialProfileRecord[];
   images: ImageEvidenceRecord[];

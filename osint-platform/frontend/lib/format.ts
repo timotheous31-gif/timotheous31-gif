@@ -20,6 +20,21 @@ export function formatConfidence(value: number): string {
   return value.toFixed(2);
 }
 
+/**
+ * What the number is called on screen.
+ *
+ * "Correlation score", never "confidence" and never a percentage. The value is
+ * the combination of named rules, uncalibrated against any measured outcome, so
+ * calling it confidence invites a reader to treat it as a probability that the
+ * association is real — which nobody computed and which it is not.
+ *
+ * The persisted column and the API field are still named `confidence`. Renaming
+ * them would touch the database, the report JSON and every existing export for
+ * a wording change, so the label moved and the field did not. This constant is
+ * where the two are reconciled.
+ */
+export const SCORE_LABEL = "Correlation score";
+
 /** The band a score falls into. Mirrors the backend's documented thresholds. */
 export function confidenceBand(score: number): MatchStrength {
   if (score >= 0.9) return "LIKELY_MATCH";

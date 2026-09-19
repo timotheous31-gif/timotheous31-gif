@@ -160,11 +160,16 @@
 {% else %}<p>No findings met the report's confidence threshold.</p>{% endif %}
 
 <h2 id="entities">Entities</h2>
-{% if model.entities %}
+{% set folded = model.low_confidence_candidates | map(attribute='id') | list %}
+{% set shown = model.entities | rejectattr('id', 'in', folded) | list %}
+{% if shown %}
 <div class="scroll"><table>
-  <thead><tr><th>Type</th><th>Name</th><th>Canonical value</th><th>Confidence</th><th>Supported by</th></tr></thead>
+  {# "Correlation score", not "confidence": this is how strongly the platform's
+     rules associate the record with the subject, not a probability that they
+     are the same person. #}
+  <thead><tr><th>Type</th><th>Name</th><th>Canonical value</th><th>Correlation score</th><th>Supported by</th></tr></thead>
   <tbody>
-  {% for entity in model.entities %}
+  {% for entity in shown %}
     <tr id="entity-{{ entity.id }}">
       <td>{{ entity.type }}</td>
       <td>{{ entity.display_name }}</td>
@@ -176,6 +181,30 @@
   </tbody>
 </table></div>
 {% else %}<p>No entities were derived.</p>{% endif %}
+
+{% if model.low_confidence_candidates %}
+<details id="low-confidence-candidates">
+  <summary><strong>Low-confidence candidates ({{ model.low_confidence_candidates | length }})</strong>
+    — name-only matches, folded out of the list above. Click to review.</summary>
+  <p>These records carry the searched name, or part of it, and nothing else that
+     connects them to the subject. They are kept, scored and exported exactly as
+     any other candidate; they are listed here rather than above because a name
+     is shared by many people and is not an identifier.</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Name</th><th>Canonical value</th><th>Correlation score</th><th>Why it is here</th></tr></thead>
+    <tbody>
+    {% for entity in model.low_confidence_candidates %}
+      <tr id="entity-{{ entity.id }}">
+        <td>{{ entity.display_name }}</td>
+        <td class="mono">{{ entity.canonical_value }}</td>
+        <td>{{ '%.2f' | format(entity.confidence) }}</td>
+        <td>{{ entity.presentation_reason }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+</details>
+{% endif %}
 
 <h2 id="relationships">Relationships</h2>
 {% if model.relationships %}

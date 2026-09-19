@@ -7,7 +7,7 @@
  * the collector actually wrote, not a second opinion invented in the browser.
  */
 
-import type { CollectorRun, Entity } from "@/types/api";
+import type { CandidateGroup, CandidatePresentation, CollectorRun, Entity } from "@/types/api";
 
 /** Collector names that need no API key. Kept in step with the backend. */
 export const FREE_PERSON_COLLECTORS = [
@@ -55,6 +55,14 @@ export interface PersonCandidate {
    * not have to guess which kind of claim a list is making.
    */
   sharedIdentifiers: SharedIdentifier[];
+  /**
+   * Where the backend placed this candidate. `PRIMARY` until the server says
+   * otherwise, so a page that has not loaded the placements yet shows
+   * everything rather than silently hiding it.
+   */
+  presentation: CandidatePresentation;
+  /** The backend's sentence explaining that placement. */
+  presentationReason: string;
 }
 
 export interface SharedIdentifier {
@@ -129,7 +137,73 @@ export function toCandidate(entity: Entity): PersonCandidate {
       ? String(attributes["citizenship_interpretation"])
       : null,
     sharedIdentifiers: sharedIdentifiers(attributes["shared_identifiers"]),
+    presentation: "PRIMARY",
+    presentationReason: "",
   };
+}
+
+/**
+ * Attach the server's placement to each candidate.
+ *
+ * The entity rows carry the score and the reasons; the candidate-groups
+ * endpoint carries the placement and the analyst's decision. Joining them here
+ * is the whole of the browser's involvement — it does not decide anything.
+ *
+ * A candidate with no matching group keeps `PRIMARY`. That default matters: if
+ * the groups request fails, or races, the page shows every candidate rather
+ * than hiding the ones it could not classify. Failing open is right here,
+ * because the failure mode of failing closed is an investigator not being shown
+ * a lead and having no way to know.
+ */
+export function withPlacements(
+  candidates: PersonCandidate[],
+  groups: CandidateGroup[] | null | undefined,
+): PersonCandidate[] {
+  const byId = new Map(
+    (groups ?? []).filter((group) => group.entity_id).map((group) => [group.entity_id!, group]),
+  );
+  return candidates.map((candidate) => {
+    const group = byId.get(candidate.id);
+    if (!group) return candidate;
+    return {
+      ...candidate,
+      presentation: group.presentation ?? "PRIMARY",
+      presentationReason: group.presentation_reason ?? "",
+    };
+  });
+}
+
+export interface CandidatePartition {
+  /** Corroborated, above the threshold, or analyst-confirmed. */
+  primary: PersonCandidate[];
+  /** Name-only and weak. Kept, counted, and one click away. */
+  lowConfidence: PersonCandidate[];
+  /** Ruled out by an analyst. Out of the primary list, kept for review. */
+  rejected: PersonCandidate[];
+}
+
+/**
+ * Split candidates by the placement the server already computed.
+ *
+ * Deliberately a `switch` over a value and nothing else. The moment this
+ * function starts comparing a score to a number, there are two rules in the
+ * product and they will drift.
+ */
+export function partitionCandidates(candidates: PersonCandidate[]): CandidatePartition {
+  const partition: CandidatePartition = { primary: [], lowConfidence: [], rejected: [] };
+  for (const candidate of candidates) {
+    switch (candidate.presentation) {
+      case "LOW_CONFIDENCE":
+        partition.lowConfidence.push(candidate);
+        break;
+      case "REJECTED":
+        partition.rejected.push(candidate);
+        break;
+      default:
+        partition.primary.push(candidate);
+    }
+  }
+  return partition;
 }
 
 /**
