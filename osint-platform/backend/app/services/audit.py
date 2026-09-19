@@ -66,6 +66,19 @@ FORBIDDEN_KEY_PARTS: frozenset[str] = frozenset(
         "private_key",
         "hash",
         "csrf",
+        # Second-factor material. "secret" and "hash" already cover `mfa_secret`
+        # and `code_hash`; these name what they do not. Deliberately specific
+        # rather than a bare "mfa": this list matches on substrings, so "mfa"
+        # would also drop `mfa_left_enabled` and `mfa_required` — facts an
+        # operator needs, carrying nothing secret.
+        "totp",
+        "otpauth",
+        # The code itself. Note this also matches `recovery_codes_issued`-style
+        # names by substring, which is why the counters recorded alongside these
+        # events are named `codes_issued` / `codes_remaining` instead: erring
+        # wide here is correct, so the caller adapts rather than the filter.
+        "recovery_code",
+        "recovery-code",
     }
 )
 

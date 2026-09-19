@@ -24,6 +24,13 @@ interface SessionState {
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
   refresh: () => Promise<void>;
+  /**
+   * Adopt the session the challenge handed back once a second factor was
+   * accepted. The API promoted the session server-side; this replaces the
+   * pending copy the UI was rendering from, which is what stops the app
+   * drawing the challenge over an already-complete session.
+   */
+  completeMfa: (info: SessionInfo) => void;
 }
 
 const SessionContext = createContext<SessionState | null>(null);
@@ -96,6 +103,10 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
     setLoading(false);
   }, []);
 
+  const completeMfa = useCallback((info: SessionInfo) => {
+    setSession(info);
+  }, []);
+
   const signOut = useCallback(async () => {
     try {
       await api.logout();
@@ -107,8 +118,17 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ session, workspace, loading, selectWorkspace, signIn, signOut, refresh }),
-    [session, workspace, loading, selectWorkspace, signIn, signOut, refresh],
+    () => ({
+      session,
+      workspace,
+      loading,
+      selectWorkspace,
+      signIn,
+      signOut,
+      refresh,
+      completeMfa,
+    }),
+    [session, workspace, loading, selectWorkspace, signIn, signOut, refresh, completeMfa],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

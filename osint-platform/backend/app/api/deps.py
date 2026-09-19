@@ -37,7 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.errors import AuthenticationRequired, CsrfError, PermissionDenied
+from app.core.errors import AuthenticationRequired, CsrfError, MfaRequired, PermissionDenied
 from app.core.logging import get_logger
 from app.core.permissions import Permission, allows
 from app.core.security import csrf_token, tokens_match
@@ -121,10 +121,67 @@ def current_principal(request: Request, session: DbSession, settings: AppSetting
             accounts.revoke_session(session, row)
         raise AuthenticationRequired("Sign in to continue")
     request.state.user_id = str(user.id)
+
+    # The second-factor gate, here rather than on each route.
+    #
+    # A session exists as soon as the password is accepted, because the MFA
+    # challenge itself needs something to authenticate against. That session must
+    # not be able to do anything else. Putting the check in the one dependency
+    # every route already depends on means a route added later inherits it; a
+    # per-route check would be a list somebody eventually forgets to add to.
+    #
+    # Two paths are open to a pending session, and only two: the challenge it is
+    # waiting on, and signing out. Matched on the resolved route rather than the
+    # raw path so a prefix cannot be talked into looking like one of them.
+    if row.mfa_pending:
+        allowed = _MFA_PENDING_ROUTES
+        route = request.scope.get("route")
+        template = getattr(route, "path", "") if route is not None else ""
+        if template not in allowed:
+            raise MfaRequired(
+                "This session has not completed two-factor authentication. "
+                "Submit your authenticator code to continue."
+            )
     return Principal(user=user, session=row)
 
 
+#: Route templates a password-stage session may reach. Deliberately short, and
+#: deliberately the full template (the API prefix is applied by the router, so
+#: these are matched against ``route.path``).
+_MFA_PENDING_ROUTES = frozenset(
+    {
+        "/auth/mfa/verify",
+        "/auth/logout",
+        "/auth/session",
+    }
+)
+
+
 CurrentUser = Annotated[Principal, Depends(current_principal)]
+
+
+def current_principal_pending_ok(
+    request: Request, session: DbSession, settings: AppSettings
+) -> Principal:
+    """The caller, accepting a session that still owes its second factor.
+
+    Used only by the MFA challenge and by sign-out. Everything else goes through
+    :func:`current_principal`, which refuses a pending session.
+    """
+    token = _session_token(request, settings)
+    row = accounts.resolve_session(session, token, settings=settings)
+    if row is None:
+        raise AuthenticationRequired("Sign in to continue")
+    user = row.user
+    if user is None or not user.is_active:
+        if row is not None:
+            accounts.revoke_session(session, row)
+        raise AuthenticationRequired("Sign in to continue")
+    request.state.user_id = str(user.id)
+    return Principal(user=user, session=row)
+
+
+PendingUser = Annotated[Principal, Depends(current_principal_pending_ok)]
 
 
 def enforce_csrf(request: Request, principal: CurrentUser, settings: AppSettings) -> None:

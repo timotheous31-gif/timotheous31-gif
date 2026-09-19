@@ -19,7 +19,7 @@ everything is handled is a document nobody can act on.
 | Cross-site request forgery | Double-submit token bound to the session by HMAC |
 | Brute force | Per-account **and** per-address throttling with a bounded cooldown |
 | Resource exhaustion | Per-user hourly ceilings on the expensive operations |
-| Audit | Append-only ledger, 17 event types, no edit or delete route |
+| Audit | Append-only ledger, 24 event types, no edit or delete route |
 | Outbound requests | Existing SSRF guard, unchanged, `ALLOW_PRIVATE_NETWORKS=false` |
 | Secrets | `SecretStr`, scrubbed logs, filtered audit metadata, no secret in any response |
 | Unsafe production config | Refuses to start, naming every problem |
@@ -360,3 +360,103 @@ The model assumes all of the following. Any one of them failing weakens it:
 See [pilot-deployment.md](pilot-deployment.md) for how to satisfy them, and
 [threat-model.md](threat-model.md) for what each control is actually defending
 against.
+
+---
+
+## Two-factor authentication
+
+Standards-based TOTP (RFC 6238) via `pyotp`, six digits, 30-second period, ±1
+step of drift tolerance. Off per account until its owner enrols.
+
+### The session is what enforces it
+
+A session row exists as soon as the password is accepted — the challenge itself
+needs something to authenticate against — and carries `mfa_satisfied_at`. Null
+means *password stage only*. `app.api.deps.current_principal` refuses a null
+session everywhere except the challenge and sign-out, so every route inherits the
+gate and a route added later inherits it too. A per-route check would be a list
+somebody eventually forgets to add to.
+
+Accounts with no confirmed factor are stamped at session creation, so "is this
+session authenticated" stays one column read.
+
+### Enrolment is two steps, deliberately
+
+`POST /auth/mfa/enroll` writes a secret and returns it once, with the
+`otpauth://` URI the client renders as a QR code. **Nothing about sign-in changes
+at this point.** `POST /auth/mfa/confirm` requires a code generated from that
+secret, and only then does the factor become real and recovery codes get issued.
+
+Without the split, a user who scanned a QR code into an app they then deleted
+would be locked out by a factor they never proved they had.
+
+Both enrolling and disabling require the account password again. An unlocked
+browser somebody walked up to is precisely the threat a second factor exists to
+survive; without re-authentication it would be enough to turn it off.
+
+### Replay is rejected, not just arithmetic checked
+
+A TOTP code is valid for its whole window, so the same six digits — read over a
+shoulder, captured by a phishing proxy — would otherwise work again for up to a
+minute. Every accepted step is recorded in `user_mfa.last_used_step` and nothing
+at or below it is accepted again, even when the arithmetic is correct.
+
+### Recovery codes
+
+Ten codes, issued once at confirmation, shown once, stored as **Argon2
+verifiers**. Unlike session tokens — which get SHA-256 because they have full
+machine entropy — a recovery code is short enough to be typed off paper and
+therefore short enough to be worth grinding in a stolen database.
+
+Each works exactly once. A spent code is marked `used_at` and kept, not deleted:
+"was a recovery code used on this account, and when" is a question an operator
+will ask, and a deleted row cannot answer it.
+
+### What never leaves
+
+The secret is returned by exactly one route, once. It does not appear in
+`/auth/me`, in the status endpoint, in any error body, in a log line, or in audit
+metadata — `safe_metadata` drops `secret`, `totp`, `otpauth`, `recovery_code` and
+`hash` keys before anything is written.
+
+### In the browser
+
+The interface draws the flow; it does not enforce it. The API refuses a session
+that has passed the password stage and owes a factor everything but
+`/auth/mfa/verify`, `/auth/logout` and `/auth/session`, so a browser that skipped
+the challenge screen would render a dashboard of 401s rather than data.
+
+Three things about the client side are load-bearing rather than cosmetic:
+
+* **The QR code is generated in the page.** The provisioning URI contains the
+  secret, so an `<img>` pointing at a QR service — or at this API — would put it
+  through a request, a log and a cache that nothing here controls. The browser
+  encodes it from the enrolment response instead.
+* **Nothing secret is stored.** Neither the secret nor the recovery codes are
+  written to `localStorage`, `sessionStorage`, a cookie or the console. They live
+  in the component state of the step that shows them and are dropped when it
+  ends — leaving the one-time recovery-code display clears them, and there is a
+  test that reads the three files involved and fails if a `localStorage`,
+  `document.cookie` or `console.*` call ever appears in them.
+* **Sign-out is reachable from the challenge**, including while the account is
+  locked out. A user who cannot produce a code — wrong phone, shared machine, an
+  account under attack — must be able to end the session without closing the
+  browser.
+
+One refusal is deliberately made locally: resubmitting the same code the API just
+refused is answered from the page rather than sent, so a user tapping the button
+twice does not spend two of their five attempts. It is a courtesy on top of the
+server's limit, never in place of it.
+
+### Limits
+
+| | |
+| --- | --- |
+| Attempts | `MFA_MAX_ATTEMPTS` (5) per `MFA_ATTEMPT_WINDOW_SECONDS` (900), bounded cooldown |
+| Not covered | SMS or email factors, WebAuthn/passkeys, per-workspace enforcement policy, admin-initiated reset of a user's factor |
+
+An administrator cannot currently clear a locked-out user's factor through the
+API. That is deliberate for this pass — an admin who could would be an admin who
+could take any account — but it means a user who loses both their phone and every
+recovery code needs a database change an operator can be held accountable for.
+

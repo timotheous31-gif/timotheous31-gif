@@ -114,6 +114,18 @@ class AuthenticationRequired(OsintError):
     code = "authentication_required"
 
 
+class MfaRequired(OsintError):
+    """The session passed the password stage but still owes its second factor.
+
+    Distinct from :class:`AuthenticationRequired` on purpose. The credentials
+    were correct and the session is real — the client should present the
+    authenticator challenge, not throw the session away and show a login form.
+    A single 401 for both would make those indistinguishable.
+    """
+
+    code = "mfa_required"
+
+
 class PermissionDenied(OsintError):
     """A signed-in caller whose role does not permit this action.
 

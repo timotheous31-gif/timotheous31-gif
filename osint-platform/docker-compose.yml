@@ -28,6 +28,13 @@ x-backend-env: &backend-env
   RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
   LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-8}
   LOGIN_LOCKOUT_SECONDS: ${LOGIN_LOCKOUT_SECONDS:-900}
+  MFA_MAX_ATTEMPTS: ${MFA_MAX_ATTEMPTS:-5}
+  MFA_ATTEMPT_WINDOW_SECONDS: ${MFA_ATTEMPT_WINDOW_SECONDS:-900}
+  MFA_LOCKOUT_SECONDS: ${MFA_LOCKOUT_SECONDS:-900}
+  # The compose stack runs one backend container, but that container may
+  # run several workers. Redis is wired up below, so the default is the
+  # shared-counter mode; production refuses to start on neither.
+  SINGLE_WORKER_DEPLOYMENT: ${SINGLE_WORKER_DEPLOYMENT:-false}
   SEARCH_PROVIDER: ${SEARCH_PROVIDER:-none}
   BRAVE_API_KEY: ${BRAVE_API_KEY:-}
   BING_API_KEY: ${BING_API_KEY:-}

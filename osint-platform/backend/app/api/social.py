@@ -298,4 +298,13 @@ def clear_decision(
     )
     if not removed:
         raise ValidationError("No decision recorded for that subject")
+    audit.record(
+        session,
+        event=AuditEvent.ANALYST_DECISION_WITHDRAWN,
+        actor_user_id=ctx.principal.user_id,
+        workspace_id=ctx.workspace_id,
+        object_type="decision",
+        object_id=subject_id,
+        metadata={"case_id": str(ctx.case_id), "subject_type": str(subject_type)},
+    )
     session.commit()

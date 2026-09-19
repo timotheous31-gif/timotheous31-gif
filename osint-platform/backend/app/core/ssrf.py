@@ -47,6 +47,16 @@ ALWAYS_BLOCKED_NETWORKS = (
     ipaddress.ip_network("fd00:ec2::254/128"),
 )
 
+#: Ranges the standard library does not call private but which are not the
+#: public internet either. ``is_private`` is the guard's main predicate and it is
+#: right about RFC 1918, loopback and link-local — it is silent about these.
+#:
+#: ``100.64.0.0/10`` is RFC 6598 shared address space, used between a carrier and
+#: its customers and, more to the point here, inside several hosting providers'
+#: internal networks. Python reports ``is_private`` as False for it, so without
+#: this entry a URL pointing into that range resolved and was fetched.
+NON_PUBLIC_NETWORKS = (ipaddress.ip_network("100.64.0.0/10"),)
+
 
 @dataclass(frozen=True)
 class ResolvedTarget:
@@ -67,6 +77,14 @@ def _is_blocked_address(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> 
 
     if get_settings().allow_private_networks:
         return None
+
+    for network in NON_PUBLIC_NETWORKS:
+        if (
+            addr.version == network.version
+            and addr in network
+            and not (get_settings().allow_private_networks)
+        ):
+            return "shared address space (RFC 6598)"
 
     checks = (
         (addr.is_loopback, "loopback address"),

@@ -60,6 +60,15 @@ def create_admin(
     console.print("This account owns a new workspace and can invite the rest of the team.\n")
 
     address = (email or typer.prompt("Email address")).strip()
+    # Judged here rather than at the insert, so an operator is told the address
+    # is wrong before typing a password twice — and by the same validator the
+    # sign-in route uses, so an address this command accepts is one they can
+    # actually sign in with.
+    try:
+        address = accounts.validate_email(address)
+    except ValidationError as exc:
+        raise typer.BadParameter(exc.message, param_hint="--email") from exc
+
     name = (display_name or typer.prompt("Display name", default=address.split("@")[0])).strip()
     space = (workspace or typer.prompt("Workspace name", default="Investigations")).strip()
 
@@ -266,6 +275,32 @@ def reset_password(
             accounts.set_password(session, user, password)
         except PasswordPolicyError as exc:
             raise typer.BadParameter(str(exc)) from exc
+
+        from app.models.enums import AuditEvent
+        from app.services import audit
+
+        operator_user, operator_host = _operator()
+        had_mfa = accounts.mfa_required(session, user.id)
+        audit.record(
+            session,
+            event=AuditEvent.PASSWORD_CHANGED,
+            # The account whose password changed — not the operator, who has no
+            # application identity in a shell.
+            object_type="user",
+            object_id=user.id,
+            metadata={
+                "by": "admin-cli",
+                "subject_email": user.email,
+                "sessions_revoked": True,
+                # Stated explicitly because the alternative — an admin reset that
+                # quietly cleared the second factor — would turn shell access into
+                # account takeover. It does not, and the record says so.
+                "mfa_left_enabled": had_mfa,
+                "via": "cli",
+                "operator_user": operator_user,
+                "operator_host": operator_host,
+            },
+        )
         session.commit()
     success(f"Password changed for {email}. Every session for that account was ended.")
 

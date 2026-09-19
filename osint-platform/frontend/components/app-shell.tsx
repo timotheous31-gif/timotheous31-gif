@@ -1,9 +1,11 @@
 "use client";
 
 import { LoginScreen } from "@/components/login";
+import { MfaChallenge } from "@/components/mfa-challenge";
 import { Nav } from "@/components/nav";
 import { useSession } from "@/components/session";
 import { Spinner } from "@/components/ui/primitives";
+import { needsChallenge } from "@/lib/mfa";
 
 /**
  * Chooses between the application and the login screen.
@@ -27,6 +29,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   if (!session) {
     return <LoginScreen />;
+  }
+
+  // The password was right but the second factor is still owed. The API refuses
+  // this session everything but the challenge and sign-out, so rendering the
+  // application here would draw a dashboard of 401s, not data.
+  if (needsChallenge(session)) {
+    return <MfaChallenge />;
   }
 
   return (

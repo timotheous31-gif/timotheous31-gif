@@ -319,3 +319,71 @@ In the order a pilot customer is most likely to ask for it:
 4. **DNS-rebinding-proof fetching**, by pinning the resolved address into the
    connection (§8).
 5. **A global resource ceiling** in addition to the per-user ones (§12).
+
+---
+
+## T16 — Stolen or phished password
+
+**Before.** A password was the whole of authentication. Anything that produced
+one — reuse from another breach, a phishing page, a keylogger, a shoulder — was a
+complete account takeover, and the audit log would show an ordinary sign-in.
+
+**Now.** A password produces a session that can reach the MFA challenge and sign-out
+and nothing else. The attacker additionally needs the authenticator, and a code
+they observe once cannot be replayed.
+
+**Residual.** Real-time phishing that relays a code within its 30-second window
+still works: the user is typing a valid code into the attacker's page and the
+attacker forwards it immediately. TOTP does not solve this and is not claimed to
+— only origin-bound credentials (WebAuthn/passkeys) do, and they are not in this
+pass. The mitigations that *are* here reduce the window: replay rejection means
+the relayed code is spent, and `MFA_MAX_ATTEMPTS` bounds guessing.
+
+## T17 — Recovery codes as the weak path
+
+**Threat.** Recovery codes exist to be usable when the phone is gone, which makes
+them a second credential that bypasses the factor.
+
+**Mitigated.** Ten codes of 50 bits each, Argon2-hashed, single-use, rate-limited
+through the same counter as the TOTP challenge, and each use written to the audit
+ledger with the number remaining.
+
+**Residual.** A user who stores their recovery codes next to their password has
+re-created a single-factor account, and nothing technical prevents that. The
+codes are shown once with that warning rather than mailed or stored.
+
+## T18 — Administrative reset as a takeover path
+
+**Threat.** If resetting a password cleared the second factor, shell access to
+the deployment would be account takeover of every account.
+
+**Mitigated.** `admin reset-password` changes the password hash and revokes
+sessions. It does not touch `user_mfa` or the recovery codes, and the audit entry
+records `mfa_left_enabled` explicitly so the property is visible rather than
+assumed. Asserted by test.
+
+**Residual.** Anyone with write access to the database can still delete the
+`user_mfa` row directly. The audit log is not tamper-evident, so that change
+would not be provable from within the application — see the note on audit
+integrity above.
+
+## T19 — Rate limits worth less than their number
+
+**Threat.** In-memory throttling counts per process. A four-worker production
+deployment silently multiplies every limit by four, including the sign-in and MFA
+limits that exist to make guessing infeasible.
+
+**Mitigated.** Production refuses to start unless `REDIS_URL` points at a
+*reachable* Redis or the operator sets `SINGLE_WORKER_DEPLOYMENT=true`. A
+configured-but-down Redis is refused too, because that is the case that would
+otherwise degrade silently at start-up.
+
+## T20 — SSRF into carrier-grade NAT space
+
+**Threat.** `100.64.0.0/10` (RFC 6598) is not the public internet, and several
+hosting providers use it for internal addressing. Python's `ipaddress` does not
+report it as private, so the guard's main predicate was silent about it.
+
+**Mitigated.** Named explicitly in `NON_PUBLIC_NETWORKS` and refused, with the
+boundary tested on both sides (`100.63.255.255` is still allowed).
+

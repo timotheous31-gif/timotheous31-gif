@@ -92,6 +92,10 @@ class SessionInfo(BaseModel):
     workspaces: list[WorkspaceSummary] = Field(default_factory=list)
     csrf_token: str
     expires_at: datetime
+    #: True between the password stage and the authenticator code. While it is
+    #: true this session can reach nothing but the challenge and sign-out, so a
+    #: client that ignores it simply gets 401s rather than access.
+    mfa_required: bool = False
 
 
 class MembershipWrite(BaseModel):
