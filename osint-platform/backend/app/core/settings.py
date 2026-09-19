@@ -179,8 +179,10 @@ class Settings(BaseSettings):
     #: collapsed "low-confidence" section that says how many are in there. See
     #: :mod:`app.correlation.suppression` for why 0.10 and not a rounder number.
     #:
-    #: Set it to 0 to show every candidate in the primary view, which is the
-    #: behaviour this platform had before the setting existed.
+    #: Set it to 0 to turn suppression off entirely and show every candidate in
+    #: the primary view — the behaviour this platform had before the setting
+    #: existed. Zero is handled as an explicit off switch rather than as a
+    #: threshold of zero, so a candidate scoring exactly 0.0 is shown too.
     candidate_suppression_threshold: float = Field(
         default=DEFAULT_SUPPRESSION_THRESHOLD, ge=0.0, le=1.0
     )

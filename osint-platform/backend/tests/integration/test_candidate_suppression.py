@@ -131,6 +131,63 @@ class TestTheRule:
             == LOW_CONFIDENCE
         )
 
+    def test_zero_turns_suppression_off_including_for_a_zero_scored_candidate(self):
+        """The off switch, tested at the value that would have slipped through.
+
+        The rule compares ``score > threshold``, which is false at 0.0 — so a
+        zero threshold would still have suppressed a zero-scored candidate, and
+        "0 restores the previous behaviour" would have been very nearly true.
+        Zero is handled as its own branch instead.
+        """
+        for score in (0.0, 0.01, 0.05, 0.15, 0.99):
+            verdict = classify_candidate(score=score, corroborated_by=[], threshold=0.0)
+            assert verdict.presentation == PRIMARY, score
+            assert not verdict.suppressed, score
+
+    def test_the_off_switch_does_not_overturn_an_analyst(self):
+        """Off means the *automated* suppression is off.
+
+        A rejection is a human verdict, not a threshold effect, so turning the
+        threshold off must not drag a ruled-out candidate back into the primary
+        view.
+        """
+        verdict = classify_candidate(
+            score=0.9, corroborated_by=["orcid"], decision="REJECTED", threshold=0.0
+        )
+        assert verdict.presentation == REJECTED
+
+    def test_the_scoring_pipeline_cannot_currently_produce_a_zero_candidate(self):
+        """Why the branch above is belt *and* braces.
+
+        Every candidate is created carrying ``same_person_name`` (0.15), the
+        weakest name rule in the table is 0.05, no rule has weight zero, and
+        :meth:`ConfidenceEngine.score` floors a combination at its highest
+        single signal. So the pipeline cannot mint a 0.0 candidate today.
+
+        This test records that invariant rather than relying on it: it spans
+        extraction, the engine, the resolver and the corroboration pass, and
+        ``Entity.confidence`` is a plain float column with no CHECK constraint,
+        so nothing stops a future path writing one. If this test ever fails, the
+        zero branch in ``classify_candidate`` is the thing keeping the off
+        switch honest.
+        """
+        from app.correlation.confidence import DEFAULT_RULES, default_engine
+        from app.services.name_variants import PARTIAL, confidence_rule_for
+
+        assert not [key for key, rule in DEFAULT_RULES.items() if rule.score <= 0.0]
+
+        weakest = confidence_rule_for(PARTIAL)
+        assert default_engine.score([default_engine.signal(weakest)]).score == pytest.approx(0.05)
+        assert default_engine.score(
+            [default_engine.signal("same_person_name")]
+        ).score == pytest.approx(0.15)
+
+        # A combination never scores below its strongest single signal.
+        combined = default_engine.score(
+            [default_engine.signal(weakest), default_engine.signal("same_person_name")]
+        )
+        assert combined.score >= 0.15
+
     def test_an_analyst_outranks_the_arithmetic_in_both_directions(self):
         assert (
             classify_candidate(score=0.05, corroborated_by=[], decision="CONFIRMED").presentation
@@ -441,11 +498,16 @@ class TestTheThresholdIsConfigurable:
         await _person_target(api_client, case_id, context=ANCHORS)
         _candidate(case_id, workspace_id, name="Sara Samari", score=0.05)
 
+        _candidate(case_id, workspace_id, name="Zero Scored", score=0.0)
+
         current = settings_module.get_settings()
         monkeypatch.setattr(current, "candidate_suppression_threshold", 0.0, raising=False)
 
         groups = await _groups(api_client, case_id)
         assert groups["Sara Samari"]["presentation"] == PRIMARY
+        # The boundary case: `score > threshold` is false here, so this row is
+        # the one an off switch built on that comparison alone would still hide.
+        assert groups["Zero Scored"]["presentation"] == PRIMARY
 
     async def test_raising_it_folds_more_away(self, api_client, case_id, workspace_id, monkeypatch):
         from app.core import settings as settings_module

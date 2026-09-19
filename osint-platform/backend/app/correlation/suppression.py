@@ -80,6 +80,9 @@ CORROBORATING_ANCHORS: frozenset[str] = frozenset(ANCHOR_RULES)
 #: Being in a gap matters: a small change to any name weight cannot silently
 #: move candidates across the line.
 #:
+#: Zero is special-cased to mean *off*, not "a threshold of zero" — see
+#: :func:`classify_candidate`.
+#:
 #: The number itself is defined in :mod:`app.core.settings` and re-exported here
 #: so this module reads as the one place the choice is explained, without two
 #: copies of the value existing.
@@ -145,6 +148,24 @@ def classify_candidate(
             REJECTED,
             "An analyst ruled this candidate out. It is kept for the audit trail "
             "and left out of the primary view.",
+        )
+
+    if threshold <= 0:
+        # Suppression off. Written as its own branch rather than left to
+        # `score > threshold`, because that comparison is false for a candidate
+        # scoring exactly 0.0 — so a zero threshold would still have suppressed
+        # something, and "0 turns this off" would have been very nearly true.
+        #
+        # Nothing in the model forbids a 0.0 candidate: `Entity.confidence` is a
+        # plain float column with no CHECK constraint. The scoring pipeline
+        # cannot currently produce one — every candidate carries at least one
+        # name rule, the weakest is 0.05, and the engine floors a result at the
+        # highest signal it combined — but that is an invariant spanning
+        # extraction, the engine, the resolver and the corroboration pass, and
+        # no single place enforces it. An off switch should not depend on it.
+        return Visibility(
+            PRIMARY,
+            "Suppression is disabled (threshold 0), so every candidate is shown.",
         )
 
     anchors = [kind for kind in (corroborated_by or []) if kind in CORROBORATING_ANCHORS]
