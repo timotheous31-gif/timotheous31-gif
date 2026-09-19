@@ -60,6 +60,15 @@ def create_admin(
     console.print("This account owns a new workspace and can invite the rest of the team.\n")
 
     address = (email or typer.prompt("Email address")).strip()
+    # Judged here rather than at the insert, so an operator is told the address
+    # is wrong before typing a password twice — and by the same validator the
+    # sign-in route uses, so an address this command accepts is one they can
+    # actually sign in with.
+    try:
+        address = accounts.validate_email(address)
+    except ValidationError as exc:
+        raise typer.BadParameter(exc.message, param_hint="--email") from exc
+
     name = (display_name or typer.prompt("Display name", default=address.split("@")[0])).strip()
     space = (workspace or typer.prompt("Workspace name", default="Investigations")).strip()
 

@@ -27,6 +27,8 @@ import re
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from pydantic import EmailStr, TypeAdapter
+from pydantic import ValidationError as SchemaValidationError
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
@@ -58,15 +60,48 @@ from app.models.enums import WorkspaceRole
 log = get_logger(__name__)
 
 _SLUG_STRIP = re.compile(r"[^a-z0-9]+")
-#: Rough shape check only. The authoritative validation is pydantic's EmailStr on
-#: the request schema; this guards the CLI path, which has no schema in front of
-#: it.
-_EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+#: The *same* validator the request schemas use, reached directly.
+#:
+#: ``EmailStr`` is what :mod:`app.schemas.auth` puts in front of every address
+#: the API accepts, so binding it to a ``TypeAdapter`` here gives the CLI —
+#: which has no schema in front of it — the identical verdict rather than a
+#: second opinion. This replaced a regex that only checked for an ``@`` and a
+#: dot, which accepted addresses the API would later refuse: an operator could
+#: bootstrap ``admin@example.test`` and then find that sign-in answered 422,
+#: with nothing pointing back at the command that created it.
+#:
+#: Deliverability is deliberately not checked — pydantic does not ask DNS — so
+#: this stays a syntax-and-reserved-name check and never a network call.
+_EMAIL_VALIDATOR: TypeAdapter[str] = TypeAdapter(EmailStr)
 
 
 def normalize_email(email: str) -> str:
     """Lowercase and trim. The stored form and the lookup form are the same."""
     return (email or "").strip().lower()
+
+
+def validate_email(email: str) -> str:
+    """Return ``email`` normalised, or raise if the API would refuse it.
+
+    The one place an address is judged. Both callers of :func:`create_user` —
+    the invite endpoint and ``admin create-admin`` — end up here, so an address
+    accepted by either is an address the sign-in route will accept too.
+
+    The reason comes from pydantic rather than being reworded, because "the part
+    after the @-sign is a special-use or reserved name" tells an operator what to
+    change and "not a valid email address" does not.
+    """
+    address = normalize_email(email)
+    try:
+        _EMAIL_VALIDATOR.validate_python(address)
+    except SchemaValidationError as exc:
+        reason = exc.errors()[0].get("msg", "")
+        # Pydantic prefixes its own reason; keep the explanation, drop the echo.
+        reason = reason.replace("value is not a valid email address: ", "")
+        detail = f": {reason}" if reason else ""
+        raise ValidationError(f"{email!r} is not a valid email address{detail}") from exc
+    return address
 
 
 def slugify(name: str) -> str:
@@ -90,9 +125,7 @@ def create_user(
     display_name: str = "",
 ) -> User:
     """Create an account. The password is hashed here and never stored."""
-    address = normalize_email(email)
-    if not _EMAIL_SHAPE.match(address):
-        raise ValidationError(f"{email!r} is not a valid email address")
+    address = validate_email(email)
     if get_user_by_email(session, address) is not None:
         raise ConflictError(f"An account already exists for {address}")
     user = User(

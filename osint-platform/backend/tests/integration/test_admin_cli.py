@@ -13,6 +13,7 @@ import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from pydantic import ValidationError as PydanticValidationError
 from typer.testing import CliRunner
 
 from app.cli.admin import admin_app
@@ -21,6 +22,7 @@ from app.models import Base
 from app.models.auth import User, Workspace
 from app.models.case import Case
 from app.models.enums import WorkspaceRole
+from app.schemas.auth import LoginRequest
 from tests.conftest import TEST_PASSWORD
 
 
@@ -192,6 +194,124 @@ class TestCreateAdmin:
         )
         assert "belong to no workspace" in result.output
         assert "claim-cases" in result.output
+
+
+class TestCreateAdminEmailValidation:
+    """The CLI and the API have to agree about what an address is.
+
+    They did not. ``create_user`` checked the address with a regex that wanted an
+    ``@`` and a dot, while every request schema checks it with pydantic's
+    ``EmailStr``, which additionally refuses reserved names like ``.test`` and
+    ``.invalid``. So ``create-admin --email admin@example.test`` succeeded, and
+    then sign-in answered **422** for the account it had just created — an
+    operator locked out of a brand-new deployment by two validators disagreeing,
+    with nothing in the failure pointing back at the command that caused it.
+
+    Exactly the domains somebody setting up a pilot reaches for, too.
+    """
+
+    ARGS = ("--workspace", "Firm", "--display-name", "Chief")
+
+    def _create(self, run, address):
+        return run(
+            "create-admin",
+            "--email",
+            address,
+            *self.ARGS,
+            input=f"{TEST_PASSWORD}\n{TEST_PASSWORD}\n",
+        )
+
+    def test_an_ordinary_address_is_accepted(self, database, run):
+        result = self._create(run, "chief@example.com")
+
+        assert result.exit_code == 0, plain(result.output)
+        with get_session_factory()() as session:
+            assert session.query(User).one().email == "chief@example.com"
+
+    def test_a_malformed_address_is_refused(self, database, run):
+        result = self._create(run, "not-an-email")
+
+        assert result.exit_code != 0
+        assert "not a valid email address" in plain(result.output)
+        with get_session_factory()() as session:
+            assert session.query(User).count() == 0
+            assert session.query(Workspace).count() == 0
+
+    def test_an_address_the_api_refuses_is_refused_here_too(self, database, run):
+        """The specific case that started this: a reserved-use domain."""
+        with pytest.raises(PydanticValidationError):
+            LoginRequest(email="chief@example.test", password=TEST_PASSWORD)
+
+        result = self._create(run, "chief@example.test")
+
+        assert result.exit_code != 0
+        with get_session_factory()() as session:
+            assert session.query(User).count() == 0
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "chief@example.com",
+            "chief@sub.example.co.uk",
+            "chief@example.test",
+            "chief@example.invalid",
+            "chief@localhost",
+            "chief@example",
+            "not-an-email",
+            "two@@example.com",
+            "spaced out@example.com",
+        ],
+    )
+    def test_the_cli_returns_the_same_verdict_as_the_sign_in_schema(self, database, run, address):
+        """The property, rather than a list of examples that can drift apart.
+
+        Whatever ``LoginRequest`` thinks of an address, ``create-admin`` thinks
+        the same — so an account this command creates is always one its owner can
+        sign in to, and an address the API would reject never reaches the
+        database in the first place.
+        """
+        try:
+            LoginRequest(email=address, password=TEST_PASSWORD)
+        except PydanticValidationError:
+            api_accepts = False
+        else:
+            api_accepts = True
+
+        result = self._create(run, address)
+        cli_accepts = result.exit_code == 0
+
+        assert cli_accepts is api_accepts, (
+            f"{address!r}: API accepts={api_accepts}, CLI accepts={cli_accepts}\n"
+            f"{plain(result.output)}"
+        )
+
+    def test_the_refusal_says_what_is_wrong_with_the_address(self, database, run):
+        """A clear error, not just "invalid".
+
+        "The part after the @-sign is a special-use or reserved name" tells an
+        operator what to change. "Not a valid email address" sends them to read
+        this source.
+        """
+        result = self._create(run, "chief@example.test")
+        output = plain(result.output)
+
+        assert "chief@example.test" in output
+        assert "reserved" in output.lower()
+
+    def test_it_refuses_before_asking_for_a_password(self, database, run):
+        """A bad address should cost one line of typing, not a password twice."""
+        result = run("create-admin", "--email", "chief@example.test", *self.ARGS, input="")
+
+        assert result.exit_code != 0
+        assert "Password" not in plain(result.output)
+
+    def test_a_valid_address_is_still_normalised(self, database, run):
+        """Unchanged behaviour: the stored form is trimmed and lower-cased."""
+        result = self._create(run, "  Chief@Example.COM  ")
+
+        assert result.exit_code == 0, plain(result.output)
+        with get_session_factory()() as session:
+            assert session.query(User).one().email == "chief@example.com"
 
 
 class TestClaimCases:
