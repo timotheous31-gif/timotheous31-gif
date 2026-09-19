@@ -145,7 +145,8 @@ describe("awaitingReview", () => {
     return {
       entity_id: "e1", display_name: "Candidate A", canonical_value: "c",
       confidence: 0.2, confidence_reasons: [], match_reasons: [], mismatch_reasons: [],
-      corroborated_by: [], identity_established: false,
+      corroborated_by: [], presentation: "PRIMARY", presentation_reason: "",
+      identity_established: false,
       social_profiles: [], images: [], public_contacts: [], decision: null,
       ...overrides,
     };

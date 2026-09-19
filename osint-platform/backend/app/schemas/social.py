@@ -7,7 +7,13 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.enums import AnalystDecision, ContactClassification, ContactType, DecisionSubject
+from app.correlation import suppression
+from app.models.enums import (
+    AnalystDecision,
+    ContactClassification,
+    ContactType,
+    DecisionSubject,
+)
 
 
 class AnalystDecisionRead(BaseModel):
@@ -150,6 +156,14 @@ class CandidateGroup(BaseModel):
     match_reasons: list[str]
     mismatch_reasons: list[str]
     corroborated_by: list[str]
+    #: Where this candidate belongs in the presentation: ``PRIMARY``,
+    #: ``LOW_CONFIDENCE`` or ``REJECTED``. Computed from the score, the anchors
+    #: and the analyst's decision — never stored, so changing the threshold
+    #: changes the next response and rewrites no history.
+    presentation: str = suppression.PRIMARY
+    #: The sentence explaining that placement, for the analyst who wonders why a
+    #: candidate they expected is folded away.
+    presentation_reason: str = ""
     identity_established: bool = False
     social_profiles: list[SocialProfileRead] = Field(default_factory=list)
     images: list[ImageEvidenceRead] = Field(default_factory=list)
