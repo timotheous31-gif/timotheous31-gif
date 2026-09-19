@@ -7,9 +7,10 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy import select
 
-from app.api.deps import CaseContext, DbSession, parse_uuid, require
+from app.api.deps import AppSettings, CaseContext, DbSession, parse_uuid, require
 from app.core.errors import ValidationError
 from app.core.permissions import Permission
+from app.correlation import suppression
 from app.models import Entity, EntityType, ImageEvidence, ImageFetchState, SocialProfile
 from app.models.enums import AuditEvent, DecisionSubject
 from app.schemas.social import (
@@ -22,6 +23,7 @@ from app.schemas.social import (
     SocialProfileRead,
 )
 from app.services import audit
+from app.services import cases as case_service
 from app.services import decisions as decision_service
 from app.services import images as image_service
 from app.services import promotion as contact_service
@@ -145,6 +147,7 @@ async def fetch_image(
 @router.get("/candidates", response_model=list[CandidateGroup], summary="Candidates and evidence")
 def list_candidates(
     session: DbSession,
+    settings: AppSettings,
     ctx: Annotated[CaseContext, Depends(require(Permission.CASE_READ))],
 ) -> list[CandidateGroup]:
     """Every candidate with the profiles and images attributed to it.
@@ -161,6 +164,10 @@ def list_candidates(
     )
     candidates = [item for item in entities if item.attributes.get("role") == "candidate"]
     decisions = decision_service.decision_map(session, ctx.case_id)
+    # Presentation is computed per request, never stored: changing the threshold
+    # changes what the next response groups where, and rewrites nothing.
+    threshold = settings.candidate_suppression_threshold
+    supplied = case_service.anchors_supplied(session, ctx.case_id)
 
     profiles = profile_service.profiles_for_case(session, ctx.case_id)
     images = image_service.images_for_case(session, ctx.case_id)
@@ -172,6 +179,13 @@ def list_candidates(
         my_images = [item for item in images if item.candidate_entity_id == entity.id]
         my_contacts = [item for item in contacts if item.candidate_entity_id == entity.id]
         found = decisions.get(str(entity.id))
+        placement = suppression.classify_candidate(
+            score=entity.confidence,
+            corroborated_by=list(entity.attributes.get("corroborated_by") or []),
+            decision=str(found.decision) if found else None,
+            threshold=threshold,
+            anchors_supplied=supplied,
+        )
         groups.append(
             CandidateGroup(
                 entity_id=entity.id,
@@ -182,6 +196,8 @@ def list_candidates(
                 match_reasons=list(entity.attributes.get("match_reasons") or []),
                 mismatch_reasons=list(entity.attributes.get("mismatch_reasons") or []),
                 corroborated_by=list(entity.attributes.get("corroborated_by") or []),
+                presentation=placement.presentation,
+                presentation_reason=placement.reason,
                 identity_established=bool(entity.attributes.get("identity_established", False)),
                 social_profiles=_decorate(mine, decisions, SocialProfileRead),
                 images=_decorate(my_images, decisions, ImageEvidenceRead),
@@ -209,6 +225,14 @@ def list_candidates(
                 match_reasons=[],
                 mismatch_reasons=[],
                 corroborated_by=[],
+                # Always primary. This group is evidence nobody has attributed
+                # yet, not a weak match — folding it away is exactly how an
+                # imported profile would silently vanish.
+                presentation=suppression.PRIMARY,
+                presentation_reason=(
+                    "Evidence waiting to be attributed to a candidate. Shown so it "
+                    "cannot be lost, whatever any candidate scores."
+                ),
                 social_profiles=_decorate(orphan_profiles, decisions, SocialProfileRead),
                 images=_decorate(orphan_images, decisions, ImageEvidenceRead),
                 public_contacts=_decorate(orphan_contacts, decisions, PublicContactRead),

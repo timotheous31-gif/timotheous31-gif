@@ -218,16 +218,23 @@ def render_markdown(model: ReportModel, *, embed_images: bool = False) -> str:
     add("")
     add("## Entities")
     add("")
-    if model.entities:
-        add("| Type | Name | Canonical value | Confidence | Supported by |")
+    # "Correlation score", not "confidence": the number is how strongly the
+    # platform's own rules associate this record with the subject, and it is not
+    # a probability that the association is real. See the methodology section.
+    folded_ids = {item.id for item in model.low_confidence_candidates}
+    shown = [entity for entity in model.entities if entity.id not in folded_ids]
+    if shown:
+        add("| Type | Name | Canonical value | Correlation score | Supported by |")
         add("| --- | --- | --- | ---: | ---: |")
-        for entity in model.entities:
+        for entity in shown:
             add(
                 f"| {entity.type} | {entity.display_name} | `{entity.canonical_value}` | "
                 f"{entity.confidence:.2f} | {len(entity.source_finding_ids)} finding(s) |"
             )
     else:
         add("No entities were derived.")
+
+    _low_confidence_candidates(model, add)
 
     add("")
     add("## Relationships")
@@ -416,6 +423,45 @@ def render_markdown(model: ReportModel, *, embed_images: bool = False) -> str:
 #: Mirrors ``app.services.social_profiles.DISCOVERY_LABELS``. A reader weighs
 #: "you supplied this account" very differently from "a name search returned
 #: it", so the method is printed rather than left implicit in the collector name.
+def _low_confidence_candidates(model: ReportModel, add: Any) -> None:
+    """The collapsed section: how many were folded away, and why.
+
+    Rendered as a ``<details>`` block so the default reading of the report is
+    the corroborated candidates, and one click is all it costs to see the rest.
+    Nothing here is hidden from the JSON export, and nothing was deleted to put
+    it here — these rows are in ``entities`` too, with their scores and their
+    reasons intact.
+    """
+    folded = model.low_confidence_candidates
+    if not folded:
+        return
+
+    add("")
+    add(
+        f"<details><summary><strong>Low-confidence candidates ({len(folded)})"
+        "</strong> — name-only matches, folded out of the list above. "
+        "Click to review.</summary>"
+    )
+    add("")
+    add(
+        "These records carry the searched name, or part of it, and nothing else "
+        "that connects them to the subject. They are kept, scored and exported "
+        "exactly as any other candidate; they are listed here rather than above "
+        "because a name is shared by many people and is not an identifier."
+    )
+    add("")
+    add("| Name | Canonical value | Correlation score | Why it is here |")
+    add("| --- | --- | ---: | --- |")
+    for entity in folded:
+        add(
+            f"| {entity.display_name} | `{entity.canonical_value}` | "
+            f"{entity.confidence:.2f} | {entity.presentation_reason or ''} |"
+        )
+    add("")
+    add("</details>")
+    add("")
+
+
 def _anchor_phrase(key: str, value: Any) -> str:
     """One anchor, as the investigator supplied it."""
     listed = ", ".join(str(item) for item in value) if isinstance(value, list) else str(value)

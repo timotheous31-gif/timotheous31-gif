@@ -64,7 +64,7 @@ export default function EntitiesPage() {
                 <Th>Type</Th>
                 <Th>Name</Th>
                 <Th>Canonical value</Th>
-                <Th>Confidence</Th>
+                <Th>Correlation score</Th>
                 <Th>Supported by</Th>
               </tr>
             </thead>
@@ -111,7 +111,7 @@ export default function EntitiesPage() {
                 <Th>From</Th>
                 <Th>Relationship</Th>
                 <Th>To</Th>
-                <Th>Confidence</Th>
+                <Th>Correlation score</Th>
                 <Th>Why</Th>
               </tr>
             </thead>

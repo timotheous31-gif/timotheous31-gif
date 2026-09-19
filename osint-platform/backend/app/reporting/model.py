@@ -24,7 +24,9 @@ from sqlalchemy.orm import Session
 from app import __version__
 from app.core.errors import NotFoundError
 from app.core.logging import get_logger
+from app.core.settings import get_settings
 from app.core.ssrf import is_safe_url
+from app.correlation import suppression
 from app.correlation.confidence import classify
 from app.graph import build_graph, graph_summary
 from app.models import (
@@ -52,6 +54,7 @@ from app.reporting.coverage import (
     summarise_gaps,
     web_search_coverage,
 )
+from app.services import cases as case_service
 from app.services.observations import LEDGER_FLAG, ExecutionSnapshot, execution_snapshot
 from app.services.search_ingest import SEARCH_COLLECTOR
 from app.services.timeline import events_for_findings, timeline_summary
@@ -150,6 +153,14 @@ class EntityItem:
     confidence: float
     confidence_reasons: list[str]
     source_finding_ids: list[str]
+    #: For a person candidate: where it belongs in the presentation. ``None``
+    #: for everything else, which has no such notion.
+    #:
+    #: A label on the item, not a filter over the list. ``entities`` stays
+    #: complete — every candidate the case holds is still in it, with its score
+    #: and its reasons — and this says how prominently to draw each one.
+    presentation: str | None = None
+    presentation_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -162,6 +173,8 @@ class EntityItem:
             "confidence": round(self.confidence, 3),
             "confidence_reasons": self.confidence_reasons,
             "source_finding_ids": self.source_finding_ids,
+            "presentation": self.presentation,
+            "presentation_reason": self.presentation_reason,
         }
 
 
@@ -814,6 +827,16 @@ class ReportModel:
     key_findings: list[FindingItem] = field(default_factory=list)
     findings: list[FindingItem] = field(default_factory=list)
     entities: list[EntityItem] = field(default_factory=list)
+    #: Person candidates the default view folds away: name-only matches that
+    #: nothing corroborates and that score at or below the threshold, plus
+    #: anything an analyst rejected.
+    #:
+    #: These are the *same objects* that are in ``entities``, listed again so a
+    #: renderer can draw a collapsed "low-confidence candidates (N)" section
+    #: without re-deriving the rule. Nothing is removed from ``entities`` to
+    #: populate this, and no evidence or provenance row is touched: an exported
+    #: report still carries every candidate it ever did.
+    low_confidence_candidates: list[EntityItem] = field(default_factory=list)
     relationships: list[RelationshipItem] = field(default_factory=list)
     timeline: list[dict[str, Any]] = field(default_factory=list)
     evidence: list[EvidenceRef] = field(default_factory=list)
@@ -862,6 +885,9 @@ class ReportModel:
             "key_findings": [item.to_dict() for item in self.key_findings],
             "findings": [item.to_dict() for item in self.findings],
             "entities": [item.to_dict() for item in self.entities],
+            "low_confidence_candidates": [
+                item.to_dict() for item in self.low_confidence_candidates
+            ],
             "relationships": [item.to_dict() for item in self.relationships],
             "confidence": self.confidence,
             "timeline": self.timeline,
@@ -1250,6 +1276,9 @@ def build_report(
             item.first_observed_here = item.id in observed.first_seen
             item.observed_by_stage = observed.stages.get(item.id)
     graph = build_graph(entities, relationships)
+    entity_items, folded_candidates = _candidate_items(
+        session, case_id, list(entities), _decision_lookup(session, case_id)
+    )
 
     model = ReportModel(
         case_id=str(case.id),
@@ -1274,7 +1303,8 @@ def build_report(
         ],
         findings=finding_items,
         key_findings=finding_items[:KEY_FINDING_LIMIT],
-        entities=[_entity_item(entity) for entity in entities],
+        entities=entity_items,
+        low_confidence_candidates=folded_candidates,
         relationships=[_relationship_item(edge) for edge in relationships],
         timeline=[_timeline_item(event) for event in events],
         evidence=[_evidence_ref(row) for row in evidence_rows],
@@ -1334,6 +1364,10 @@ def build_report(
         "targets": len(targets),
         "findings": len(finding_items),
         "entities": len(entities),
+        # Folded out of the primary list, not out of the report: the count is
+        # published so a reader can see how much was set aside, and the rows are
+        # still in `entities` and in the export.
+        "low_confidence_candidates": len(folded_candidates),
         "relationships": len(relationships),
         "evidence": len(evidence_rows),
         "timeline_events": len(events),
@@ -1383,7 +1417,7 @@ def _finding_item(
     )
 
 
-def _entity_item(entity: Entity) -> EntityItem:
+def _entity_item(entity: Entity, placement: suppression.Visibility | None = None) -> EntityItem:
     return EntityItem(
         id=str(entity.id),
         type=str(entity.type),
@@ -1394,7 +1428,54 @@ def _entity_item(entity: Entity) -> EntityItem:
         confidence=entity.confidence,
         confidence_reasons=list(entity.confidence_reasons or []),
         source_finding_ids=[str(finding.id) for finding in (entity.sources or [])],
+        presentation=placement.presentation if placement else None,
+        presentation_reason=placement.reason if placement else None,
     )
+
+
+def _is_candidate(entity: Entity) -> bool:
+    """A person candidate, as the resolver marks one."""
+    return bool((entity.attributes or {}).get("role") == "candidate")
+
+
+def _candidate_items(
+    session: Session,
+    case_id: uuid.UUID,
+    entities: list[Any],
+    decisions: dict[str, AnalystDecisionRecord],
+) -> tuple[list[EntityItem], list[EntityItem]]:
+    """Every entity as an item, plus the candidates the default view folds away.
+
+    One pass, one rule — :func:`app.correlation.suppression.classify_candidate`,
+    the same call the candidates API makes. A second implementation here is how
+    a report and a screen come to disagree about what an analyst is looking at.
+
+    The first list is complete and in the order it was given. Nothing is dropped
+    to build the second.
+    """
+    settings = get_settings()
+    threshold = settings.candidate_suppression_threshold
+    supplied = case_service.anchors_supplied(session, case_id)
+
+    items: list[EntityItem] = []
+    folded: list[EntityItem] = []
+    for entity in entities:
+        if not _is_candidate(entity):
+            items.append(_entity_item(entity))
+            continue
+        found = decisions.get(str(entity.id))
+        placement = suppression.classify_candidate(
+            score=float(entity.confidence),
+            corroborated_by=list((entity.attributes or {}).get("corroborated_by") or []),
+            decision=str(found.decision) if found else None,
+            threshold=threshold,
+            anchors_supplied=supplied,
+        )
+        item = _entity_item(entity, placement)
+        items.append(item)
+        if placement.suppressed:
+            folded.append(item)
+    return items, folded
 
 
 def _relationship_item(edge: Relationship) -> RelationshipItem:

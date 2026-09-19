@@ -65,7 +65,7 @@ export default function CaseOverviewPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader
-            title="Confidence distribution"
+            title="Correlation score distribution"
             description="How findings are spread across confidence bands"
           />
           <div className="space-y-3 p-4">
