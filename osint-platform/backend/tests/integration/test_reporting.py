@@ -378,3 +378,112 @@ async def test_report_endpoint_serves_each_format(api_client, db_session):
 async def test_report_endpoint_rejects_an_unknown_format(api_client, case_id):
     response = await api_client.get(f"/api/v1/cases/{case_id}/report", params={"format": "pdf"})
     assert response.status_code == 422
+
+
+class TestReportRequiresTheSessionInEveryFormat:
+    """The contract the browser's report page now depends on.
+
+    Context: an authenticated report request was answering **401** in the live
+    stack, while cases, case detail, runs, graph and summary all returned 200 in
+    the same session. The endpoint was never at fault — the page fetched it with
+    a bare ``fetch(url)``, which defaults to ``credentials: "same-origin"`` and
+    so sent no session cookie across the ``:3000`` / ``:8000`` split.
+
+    The fix is entirely in the frontend. These tests exist so the backend half of
+    the contract is pinned rather than assumed: the endpoint must keep refusing
+    an anonymous caller in *every* format (a fix that "worked" by loosening one
+    of them would be the wrong fix), and must keep serving an authenticated one
+    with the filename the browser saves it under.
+    """
+
+    FORMATS = ("md", "html", "json")
+
+    @staticmethod
+    def _signed_out():
+        """A client over the same app and database, carrying no session.
+
+        The ``anonymous_client`` fixture cannot be used here: ``api_client``
+        signs *that same object* in, so asking for both hands back one
+        authenticated client. This builds a genuinely cookie-less one.
+        """
+        import httpx
+
+        from app.main import create_app
+
+        return httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=create_app()), base_url="http://testserver"
+        )
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("report_format", FORMATS)
+    async def test_an_anonymous_caller_is_refused(self, api_client, case_id, report_format):
+        async with self._signed_out() as signed_out:
+            response = await signed_out.get(
+                f"/api/v1/cases/{case_id}/report", params={"format": report_format}
+            )
+
+        assert response.status_code == 401
+        assert response.json()["code"] == "authentication_required"
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("report_format", FORMATS)
+    async def test_a_signed_in_caller_is_served(self, api_client, case_id, report_format):
+        response = await api_client.get(
+            f"/api/v1/cases/{case_id}/report",
+            params={"format": report_format, "max_classification": "PERSONAL"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.content
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("report_format", FORMATS)
+    async def test_the_response_names_the_file_it_should_be_saved_as(
+        self, api_client, case_id, report_format
+    ):
+        """The download reads this header rather than inventing a name."""
+        response = await api_client.get(
+            f"/api/v1/cases/{case_id}/report", params={"format": report_format}
+        )
+
+        disposition = response.headers.get("content-disposition", "")
+        assert "attachment" in disposition
+        assert f"report.{report_format}" in disposition
+
+    @pytest.mark.anyio
+    async def test_the_filename_header_is_readable_from_the_frontend_origin(
+        self, api_client, case_id
+    ):
+        """Cross-origin script can only read headers the server exposes.
+
+        The browser receives ``Content-Disposition`` either way; without it in
+        ``Access-Control-Expose-Headers`` the page cannot read it, and a download
+        lands under a generic fallback name instead of the one the server chose.
+        Exposing it grants no access — the response still requires the session.
+        """
+        response = await api_client.get(
+            f"/api/v1/cases/{case_id}/report",
+            params={"format": "md"},
+            headers={"Origin": "http://localhost:3000"},
+        )
+
+        exposed = response.headers.get("access-control-expose-headers", "")
+        assert "Content-Disposition" in exposed, exposed
+
+    @pytest.mark.anyio
+    async def test_a_session_cookie_is_what_makes_the_difference(self, api_client, case_id):
+        """The reproduction, as a test.
+
+        Same URL, same server, same moment — the only variable is whether the
+        session cookie travels. That is precisely what ``credentials: "include"``
+        controls in the browser, and precisely what the old bare ``fetch`` left
+        at its default.
+        """
+        url = f"/api/v1/cases/{case_id}/report"
+
+        with_cookie = await api_client.get(url, params={"format": "md"})
+        async with self._signed_out() as signed_out:
+            without_cookie = await signed_out.get(url, params={"format": "md"})
+
+        assert with_cookie.status_code == 200
+        assert without_cookie.status_code == 401

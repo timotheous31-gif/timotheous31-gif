@@ -1,14 +1,25 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, NetworkError, api, buildUrl } from "@/lib/api";
+import { ApiError, NetworkError, api, buildUrl, filenameFrom } from "@/lib/api";
 
-type FetchInit = { method?: string; headers: Record<string, string> };
+type FetchInit = {
+  method?: string;
+  headers: Record<string, string>;
+  credentials?: RequestCredentials;
+};
 
 /** The RequestInit of the most recent fetch call. */
 function lastInit(mock: { mock: { calls: unknown[][] } }): FetchInit {
   const call = mock.mock.calls.at(-1);
   if (!call) throw new Error("fetch was not called");
   return call[1] as FetchInit;
+}
+
+/** The URL of the most recent fetch call. */
+function lastUrl(mock: { mock: { calls: unknown[][] } }): string {
+  const call = mock.mock.calls.at(-1);
+  if (!call) throw new Error("fetch was not called");
+  return String(call[0]);
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -106,9 +117,121 @@ describe("requests", () => {
     expect(lastInit(fetchMock).headers["Content-Type"]).toBeUndefined();
   });
 
-  it("builds report URLs for each format", () => {
-    expect(api.reportUrl("case-1", "html")).toContain("format=html");
-    expect(api.reportUrl("case-1", "json")).toContain("/cases/case-1/report");
+  /**
+   * The bug: an authenticated report request answered 401.
+   *
+   * The endpoint was fine. The page fetched it with a bare `fetch(url)`, which
+   * defaults to `credentials: "same-origin"` — so across the :3000/:8000 split
+   * the session cookie was never sent. Everything else on the page went through
+   * `api` and worked, which is why only the report failed.
+   *
+   * These assert the property that was missing rather than the symptom: the
+   * report goes through the same credentialed path as every other call.
+   */
+  describe("the report is fetched like every other authenticated call", () => {
+    function reportResponse(body = "# Report", type = "text/markdown"): Response {
+      return new Response(body, {
+        status: 200,
+        headers: {
+          "content-type": type,
+          "content-disposition": 'attachment; filename="example-case-report.md"',
+        },
+      });
+    }
+
+    it("sends the session cookie", async () => {
+      const fetchMock = vi.fn(async () => reportResponse());
+      vi.stubGlobal("fetch", fetchMock);
+
+      await api.report("case-1", "md");
+
+      // The one line that was missing. `same-origin` — fetch's default — is the
+      // bug; anything else here means no cookie crosses the origin split.
+      expect(lastInit(fetchMock).credentials).toBe("include");
+    });
+
+    it("requests the format and the classification filter that were chosen", async () => {
+      const fetchMock = vi.fn(async () => reportResponse());
+      vi.stubGlobal("fetch", fetchMock);
+
+      await api.report("case-1", "json", { max_classification: "SENSITIVE" });
+
+      const url = lastUrl(fetchMock);
+      expect(url).toContain("/cases/case-1/report");
+      expect(url).toContain("format=json");
+      expect(url).toContain("max_classification=SENSITIVE");
+    });
+
+    it("works for markdown, HTML and JSON alike", async () => {
+      for (const [format, type] of [
+        ["md", "text/markdown"],
+        ["html", "text/html"],
+        ["json", "application/json"],
+      ] as const) {
+        const fetchMock = vi.fn(async () => reportResponse("body", type));
+        vi.stubGlobal("fetch", fetchMock);
+
+        const document_ = await api.report("case-1", format);
+
+        expect(document_.body).toBe("body");
+        expect(document_.contentType).toBe(type);
+        expect(lastInit(fetchMock).credentials).toBe("include");
+      }
+    });
+
+    it("raises the API's own error rather than a bare status", async () => {
+      // The old code threw `Error("Report request failed (401)")`, which the
+      // session provider cannot recognise — so an expired session showed a
+      // broken panel instead of the login screen.
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response(JSON.stringify({ code: "authentication_required", message: "Sign in" }), {
+              status: 401,
+              headers: { "content-type": "application/json" },
+            }),
+        ),
+      );
+
+      await expect(api.report("case-1", "md")).rejects.toBeInstanceOf(ApiError);
+      await expect(api.report("case-1", "md")).rejects.toMatchObject({
+        status: 401,
+        code: "authentication_required",
+      });
+    });
+
+    it("keeps the filename the server asked for", async () => {
+      vi.stubGlobal("fetch", vi.fn(async () => reportResponse()));
+
+      expect((await api.report("case-1", "md")).filename).toBe("example-case-report.md");
+    });
+
+    it("cannot be reached through a URL-only helper any more", () => {
+      // `reportUrl` returned a bare string, which invited exactly one mistake:
+      // handing it to `fetch`, an anchor or `window.open`, none of which carry
+      // the session. Removing it removes the mistake.
+      expect("reportUrl" in api).toBe(false);
+    });
+  });
+
+  describe("filenameFrom", () => {
+    it("reads the name out of a Content-Disposition header", () => {
+      expect(filenameFrom('attachment; filename="a-report.md"', "x")).toBe("a-report.md");
+      expect(filenameFrom("attachment; filename=a-report.json", "x")).toBe("a-report.json");
+    });
+
+    it("falls back when the server sent nothing usable", () => {
+      expect(filenameFrom(null, "case-report.md")).toBe("case-report.md");
+      expect(filenameFrom("attachment", "case-report.md")).toBe("case-report.md");
+    });
+
+    it("can only ever produce a name, never a path", () => {
+      // The value comes from a response header and ends up in a download.
+      expect(filenameFrom('attachment; filename="../../etc/passwd"', "safe")).toBe("passwd");
+      expect(filenameFrom('attachment; filename="/tmp/evil.md"', "safe")).toBe("evil.md");
+      expect(filenameFrom('attachment; filename=".."', "safe")).toBe("safe");
+    });
   });
 
   it("omits the type from a preview when none was chosen", async () => {

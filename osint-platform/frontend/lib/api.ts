@@ -125,15 +125,20 @@ export function setUnauthenticatedHandler(handler: (() => void) | null): void {
   onUnauthenticated = handler;
 }
 
-async function request<T>(
-  path: string,
-  options: RequestInit & { query?: Query } = {},
-): Promise<T> {
+/**
+ * Send one authenticated request and hand back the raw `Response`.
+ *
+ * The single place that decides *how* this app talks to its API: the session
+ * cookie, the CSRF header, the cache policy. Both `request` and
+ * `requestDocument` go through it, so a caller cannot accidentally reach the
+ * API without credentials by picking the wrong helper — which is exactly how
+ * the report preview came to 401 against a perfectly healthy endpoint.
+ */
+async function send(path: string, options: RequestInit & { query?: Query } = {}): Promise<Response> {
   const { query, ...init } = options;
   const method = (init.method ?? "GET").toUpperCase();
-  let response: Response;
   try {
-    response = await fetch(buildUrl(path, query), {
+    return await fetch(buildUrl(path, query), {
       ...init,
       headers: {
         Accept: "application/json",
@@ -144,12 +149,34 @@ async function request<T>(
       // The session is a cookie, so it has to be sent on cross-origin calls —
       // which is the normal development setup (:3000 talking to :8000). The API
       // allows credentials only from origins it lists explicitly.
+      //
+      // `fetch` defaults to `credentials: "same-origin"`, which sends nothing
+      // across that split. This line is the difference between a request that
+      // is authenticated and one that is not.
       credentials: "include",
       cache: "no-store",
     });
   } catch (cause) {
     throw new NetworkError(cause);
   }
+}
+
+/** Raise the API's error envelope for a failed response. */
+async function refuse(response: Response, text: string): Promise<never> {
+  let body: ApiErrorBody = { code: `http_${response.status}`, message: text || "Request failed" };
+  try {
+    body = { ...body, ...(JSON.parse(text) as ApiErrorBody) };
+  } catch {
+    // The body was not JSON; the status-derived envelope above stands.
+  }
+  throw new ApiError(response.status, body);
+}
+
+async function request<T>(
+  path: string,
+  options: RequestInit & { query?: Query } = {},
+): Promise<T> {
+  const response = await send(path, options);
 
   if (response.status === 401 && !path.startsWith("/auth/")) {
     // The session expired or was revoked. Tell the provider so the app can show
@@ -160,20 +187,83 @@ async function request<T>(
   if (response.status === 204) return undefined as T;
 
   const text = await response.text();
-  if (!response.ok) {
-    let body: ApiErrorBody = { code: `http_${response.status}`, message: text || "Request failed" };
-    try {
-      body = { ...body, ...(JSON.parse(text) as ApiErrorBody) };
-    } catch {
-      // The body was not JSON; the status-derived envelope above stands.
-    }
-    throw new ApiError(response.status, body);
-  }
+  if (!response.ok) await refuse(response, text);
 
   if (!text) return undefined as T;
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("json")) return text as unknown as T;
   return JSON.parse(text) as T;
+}
+
+/** A document the API served, with the name it asked for it to be saved under. */
+export interface ApiDocument {
+  body: string;
+  /** From `Content-Disposition`, so the server names the file, not the browser. */
+  filename: string;
+  contentType: string;
+}
+
+/** The server's suggested filename, or `fallback` when it did not send one. */
+export function filenameFrom(disposition: string | null, fallback: string): string {
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition ?? "");
+  const name = match?.[1]?.trim();
+  if (!name) return fallback;
+  // A filename arrives from the server and ends up in a download. Path
+  // separators and traversal segments are stripped so it can only ever be a
+  // name, never a location.
+  const bare = name.split(/[\\/]/).pop() ?? "";
+  const safe = bare.replace(/[\u0000-\u001f]/g, "").replace(/^\.+/, "").trim();
+  return safe || fallback;
+}
+
+/**
+ * Fetch a document — a report, an export — through the authenticated client.
+ *
+ * Exists because the alternatives all lose the session. A bare `fetch` defaults
+ * to `credentials: "same-origin"` and sends no cookie across the :3000/:8000
+ * split; an `<a href>` or `window.open` leaves the SPA entirely and, on a
+ * genuinely cross-site deployment, a `SameSite=lax` cookie does not follow it.
+ * Both produce a 401 from an endpoint that is working correctly.
+ *
+ * Every report format the API serves is text, so this reads text and leaves the
+ * caller to render it or wrap it in a `Blob` to save.
+ */
+export async function requestDocument(
+  path: string,
+  options: RequestInit & { query?: Query } = {},
+  fallbackName = "download",
+): Promise<ApiDocument> {
+  const response = await send(path, options);
+
+  if (response.status === 401 && !path.startsWith("/auth/")) {
+    onUnauthenticated?.();
+  }
+
+  const body = await response.text();
+  if (!response.ok) await refuse(response, body);
+
+  return {
+    body,
+    filename: filenameFrom(response.headers.get("content-disposition"), fallbackName),
+    contentType: response.headers.get("content-type") ?? "application/octet-stream",
+  };
+}
+
+/**
+ * Hand a document to the browser as a download.
+ *
+ * The object URL is revoked immediately: it is a readable handle on the
+ * investigation file for as long as it exists, and the download has already
+ * taken its copy.
+ */
+export function saveDocument(document_: ApiDocument): void {
+  const blob = new Blob([document_.body], { type: document_.contentType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = document_.filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
 
 export const api = {
@@ -349,10 +439,24 @@ export const api = {
 
   collectors: () => request<CollectorInfo[]>("/collectors"),
 
-  reportUrl: (caseId: string, format: "html" | "md" | "json") =>
-    buildUrl(`/cases/${caseId}/report`, { format }),
-  report: (caseId: string, format: "html" | "md" | "json") =>
-    request<string>(`/cases/${caseId}/report`, { query: { format } }),
+  /**
+   * An investigation report, through the authenticated client.
+   *
+   * There is deliberately no `reportUrl` helper any more. It returned a bare
+   * string, which invited exactly one mistake — handing it to `fetch`, an
+   * `<a href>` or `window.open`, none of which carry the session — and that
+   * mistake is what made an authenticated report request answer 401.
+   */
+  report: (
+    caseId: string,
+    format: "html" | "md" | "json",
+    query: Query = {},
+  ): Promise<ApiDocument> =>
+    requestDocument(
+      `/cases/${caseId}/report`,
+      { query: { format, ...query } },
+      `case-report.${format}`,
+    ),
 };
 
 export { buildUrl };
