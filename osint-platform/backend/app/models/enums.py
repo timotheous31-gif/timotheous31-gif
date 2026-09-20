@@ -220,6 +220,10 @@ class ReportFormat(StrEnum):
     HTML = "html"
     MARKDOWN = "md"
     JSON = "json"
+    #: The investigator/client-facing document: the same report model, arranged
+    #: and captioned for a reader rather than for an engineer. Additive — the
+    #: three formats above are unchanged.
+    DOSSIER = "dossier"
 
 
 class ObservationStage(StrEnum):
