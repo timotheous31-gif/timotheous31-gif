@@ -1,0 +1,280 @@
+{#
+  The investigator-facing report.
+
+  Print-first: @page sets the paper, sections avoid breaking across pages, and
+  the whole document is self-contained — no external stylesheet, font or image
+  request, so opening it discloses nothing about when or from where it was read.
+
+  Autoescaping is on (see renderers._environment). Report content includes text
+  collected from third-party sites and must never execute as markup.
+#}{#
+  Render a section's rows as a table.
+
+  Generic on purpose: each section builds whatever columns it needs, and this
+  draws them in the order the section chose. A per-section table would be
+  fifteen near-identical blocks that drift.
+
+  `basis` is drawn as its badge rather than as raw text, `score` is right-aligned
+  and tabular, `url` becomes a link, and a list becomes a comma-joined string.
+#}
+{% macro render_rows(section) %}
+{% set columns = section.rows[0].keys() | list %}
+{% set headers = {'score': 'Correlation score', 'url': 'Source URL', 'id': 'Evidence id',
+                  'hash': 'SHA-256', 'detail': 'Detail', 'found_by': 'Found by'} %}
+<table>
+  <thead><tr>
+    {% for column in columns %}
+      {% if column not in ('basis', 'basis_label', 'presentation', 'presentation_reason') %}
+      <th{% if column in ('score',) %} class="num"{% endif %}>{{ headers.get(column, column | replace('_', ' ') | capitalize) }}</th>
+      {% endif %}
+    {% endfor %}
+    {% if 'basis' in columns %}<th>Basis</th>{% endif %}
+  </tr></thead>
+  <tbody>
+  {% for row in section.rows %}
+    <tr>
+      {% for column in columns %}
+        {% if column not in ('basis', 'basis_label', 'presentation', 'presentation_reason') %}
+        {% set value = row.get(column) %}
+        <td{% if column in ('score',) %} class="num"{% endif %}>
+          {% if value is none or value == '' or value == [] %}
+            <span class="empty">—</span>
+          {% elif value is mapping and 'href' in value %}
+            <a href="{{ value.href }}" class="link">{{ value.label }}</a>
+          {% elif column in ('hash', 'id', 'normalized') %}
+            <span class="mono">{{ value }}</span>
+          {% elif value is string or value is number %}
+            {{ value }}
+          {% elif value is mapping %}
+            {{ value | tojson }}
+          {% elif value is iterable %}
+            {{ value | join(', ') }}
+          {% else %}
+            {{ value }}
+          {% endif %}
+        </td>
+        {% endif %}
+      {% endfor %}
+      {% if 'basis' in columns %}
+      <td><span class="basis {{ row.get('basis') }}">{{ basis_labels.get(row.get('basis'), row.get('basis')) }}</span></td>
+      {% endif %}
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endmacro %}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ model.case_name }} — Investigation report</title>
+<style>
+  @page { size: A4; margin: 18mm 16mm 20mm; }
+  :root {
+    --ink: #16191d; --muted: #5b6470; --line: #d8dde3; --panel: #f6f8fa;
+    --accent: #1f4e79; --warn: #8a5a00; --danger: #9b1c1c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; color: var(--ink); background: #fff;
+    font: 11pt/1.55 "Iowan Old Style", Georgia, "Times New Roman", serif;
+  }
+  .sheet { max-width: 210mm; margin: 0 auto; padding: 16mm 14mm; }
+  h1, h2, h3, .label, .meta, table, .basis { font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+
+  /* --- cover --- */
+  .cover { padding: 8mm 0 4mm; }
+  .cover h1 { font-size: 26pt; line-height: 1.15; margin: 0 0 6pt; letter-spacing: -0.01em; }
+  .cover .kicker { font-size: 9pt; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); font-weight: 700; margin-bottom: 14pt; }
+  .cover dl { display: grid; grid-template-columns: max-content 1fr; gap: 4pt 16pt; margin: 18pt 0 0; font-size: 10pt; }
+  .cover dt { color: var(--muted); }
+  .cover dd { margin: 0; }
+  .cover .tags span { display: inline-block; border: 1px solid var(--line); border-radius: 3px; padding: 1pt 6pt; margin-right: 4pt; font-size: 8.5pt; }
+
+  .rule { border: 0; border-top: 2px solid var(--accent); margin: 16pt 0; }
+
+  /* --- how to read --- */
+  .legend { background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 10pt 12pt; margin: 14pt 0; page-break-inside: avoid; }
+  .legend h2 { font-size: 11pt; margin: 0 0 6pt; }
+  .legend dl { display: grid; grid-template-columns: max-content 1fr; gap: 4pt 12pt; margin: 0; font-size: 9.5pt; }
+  .legend dt { white-space: nowrap; }
+  .legend dd { margin: 0; color: var(--muted); }
+
+  /* --- sections --- */
+  section { page-break-inside: auto; margin: 0 0 20pt; }
+  section > h2 { font-size: 14pt; margin: 22pt 0 2pt; padding-bottom: 4pt; border-bottom: 1px solid var(--line); page-break-after: avoid; }
+  section > .summary { color: var(--muted); font-size: 9.5pt; margin: 0 0 10pt; page-break-after: avoid; }
+  .empty { color: var(--muted); font-style: italic; font-size: 10pt; }
+
+  .statement { margin: 0 0 9pt; padding-left: 10pt; border-left: 2px solid var(--line); page-break-inside: avoid; }
+  .statement .text { margin: 0; }
+  .statement .detail, .statement .cite { color: var(--muted); font-size: 9pt; margin: 2pt 0 0; }
+  /* `anywhere`, never `break-all`: a citation URL should wrap at a sensible
+     point when it must, not one character per line down a column. */
+  .statement a { color: var(--accent); overflow-wrap: anywhere; }
+
+  .basis { display: inline-block; font-size: 7.5pt; letter-spacing: 0.06em; text-transform: uppercase;
+           border: 1px solid var(--line); border-radius: 2px; padding: 0 4pt; margin-right: 5pt; vertical-align: 1pt; }
+  .basis.SOURCED_FACT { border-color: var(--accent); color: var(--accent); }
+  .basis.CORRELATION { border-color: var(--muted); color: var(--muted); }
+  .basis.ANALYST_DECISION { border-color: #1d6b3a; color: #1d6b3a; }
+  .basis.UNRESOLVED_LEAD { border-color: var(--warn); color: var(--warn); }
+  .basis.CASE_RECORD { border-color: #6b5b95; color: #6b5b95; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 9.5pt; margin: 6pt 0 0; }
+  th { text-align: left; font-size: 8pt; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+       border-bottom: 1px solid var(--line); padding: 4pt 6pt 4pt 0; }
+  td { border-bottom: 1px solid var(--line); padding: 5pt 6pt 5pt 0; vertical-align: top; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tr { page-break-inside: avoid; }
+  .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 8.5pt; overflow-wrap: anywhere; }
+  .link { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; font-size: 8.5pt;
+          color: var(--accent); overflow-wrap: anywhere; }
+  table { table-layout: auto; }
+  td, th { overflow-wrap: break-word; }
+
+  /* --- subject portrait --- */
+  .portrait { display: flex; gap: 14pt; align-items: flex-start; margin: 12pt 0; page-break-inside: avoid; }
+  .portrait img { width: 34mm; height: auto; border: 1px solid var(--line); border-radius: 3px; background: var(--panel); }
+  .portrait.no-image::before { content: "Image not available offline"; display: block; width: 34mm;
+    padding: 12mm 2mm; text-align: center; font-size: 8pt; color: var(--muted);
+    border: 1px dashed var(--line); border-radius: 3px; }
+  .portrait figcaption { font-size: 8.5pt; color: var(--muted); margin: 0; }
+  .portrait .rule-note { border-left: 2px solid var(--warn); padding-left: 8pt; margin-top: 6pt; color: var(--warn); }
+
+  .appendix { page-break-before: always; }
+  .appendix > h2:first-of-type { margin-top: 0; }
+  footer { margin-top: 24pt; padding-top: 8pt; border-top: 1px solid var(--line); color: var(--muted); font-size: 8.5pt; }
+
+  @media print { .sheet { padding: 0; max-width: none; } a { text-decoration: none; } }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+{# ---------- cover / case metadata ---------- #}
+<div class="cover">
+  <p class="kicker">Investigation report</p>
+  <h1>{{ model.case_name }}</h1>
+  {% if model.case_description %}<p class="summary">{{ model.case_description }}</p>{% endif %}
+  <dl>
+    <dt>Case reference</dt><dd class="mono">{{ model.case_id }}</dd>
+    <dt>Status</dt><dd>{{ model.case_status }}</dd>
+    <dt>Opened</dt><dd>{{ model.created_at.strftime('%d %B %Y') }}</dd>
+    <dt>Report generated</dt><dd>{{ model.generated_at.strftime('%d %B %Y %H:%M') }} UTC</dd>
+    <dt>Scope</dt><dd>{{ model.execution.scope if model.execution else 'Case' }}</dd>
+    <dt>Platform</dt><dd>{{ model.platform_version }}</dd>
+    {% if model.case_tags %}
+    <dt>Tags</dt><dd class="tags">{% for tag in model.case_tags %}<span>{{ tag }}</span>{% endfor %}</dd>
+    {% endif %}
+  </dl>
+  {% if model.case_notes %}<p class="summary" style="margin-top:14pt">{{ model.case_notes }}</p>{% endif %}
+</div>
+
+<hr class="rule">
+
+{# ---------- how to read this report ---------- #}
+<div class="legend">
+  <h2>How to read this report</h2>
+  <p class="summary" style="margin-top:0">Every statement carries a label saying what kind of claim it is. They are not interchangeable.</p>
+  <dl>
+    {% for key, meaning in basis_meanings.items() %}
+    <dt><span class="basis {{ key }}">{{ basis_labels[key] }}</span></dt><dd>{{ meaning }}</dd>
+    {% endfor %}
+  </dl>
+  <p class="summary" style="margin-bottom:0">
+    A <strong>correlation score</strong> is this platform's combination of named rules, uncalibrated
+    against any measured outcome. It is not a probability, and two records are never
+    &ldquo;70% the same person&rdquo;. Automated correlation and analyst decisions are stored
+    separately and shown separately throughout.
+  </p>
+</div>
+
+{# ---------- body sections ---------- #}
+{% for section in dossier.sections %}
+<section id="{{ section.key }}">
+  <h2>{{ loop.index }}. {{ section.title }}</h2>
+  <p class="summary">{{ section.summary }}</p>
+
+  {% if section.key == 'subject_profile' and dossier.profile_image %}
+  <figure class="portrait">
+    {# Drawn from its source URL. `render_safe` was checked when the model was
+       built; the template does not re-decide it. #}
+    <img src="{{ dossier.profile_image.image_url }}" alt=""
+         onerror="this.style.display='none'; this.closest('figure').classList.add('no-image');">
+    <figcaption>
+      <strong>Public image{% if dossier.profile_image.candidate_name %} filed against {{ dossier.profile_image.candidate_name }}{% endif %}</strong><br>
+      Source: {% if dossier.profile_image.platform_label %}{{ dossier.profile_image.platform_label }} — {% endif %}
+      <a href="{{ dossier.profile_image.source_page_url }}">{{ dossier.profile_image.source_page_url }}</a><br>
+      Retrieved: {{ dossier.profile_image.retrieved_at.strftime('%d %B %Y %H:%M') ~ ' UTC' if dossier.profile_image.retrieved_at else 'not recorded' }}<br>
+      Origin: {{ dossier.profile_image.origin }}
+      <span class="rule-note">{{ dossier.profile_image.caption_rule }}</span>
+    </figcaption>
+  </figure>
+  {% endif %}
+
+  {% if section.is_empty %}
+    <p class="empty">{{ section.empty_note }}</p>
+  {% else %}
+    {% for statement in section.statements %}
+    <div class="statement">
+      <p class="text"><span class="basis {{ statement.basis }}">{{ statement.basis_label }}</span>{{ statement.text }}</p>
+      {% if statement.detail %}<p class="detail">{{ statement.detail }}</p>{% endif %}
+      {% if statement.source or statement.source_url %}
+      <p class="cite">
+        {% if statement.source %}Source: {{ statement.source }}{% endif %}
+        {% if statement.source_url %} — <a href="{{ statement.source_url }}">{{ statement.source_url }}</a>{% endif %}
+        {% if statement.retrieved_at %} · {{ statement.retrieved_at.strftime('%d %b %Y') }}{% endif %}
+      </p>
+      {% endif %}
+    </div>
+    {% endfor %}
+
+    {% if section.rows %}{{ render_rows(section) }}{% endif %}
+  {% endif %}
+</section>
+{% endfor %}
+
+{# ---------- appendix ---------- #}
+<div class="appendix">
+  <h2>Appendix</h2>
+  <p class="summary">
+    Retained detail. Nothing here was deleted or excluded from the machine-readable
+    export — it is held back from the body so the findings above stay readable.
+  </p>
+  {% for section in dossier.appendix %}
+  <section id="{{ section.key }}">
+    <h2>A{{ loop.index }}. {{ section.title }}</h2>
+    <p class="summary">{{ section.summary }}</p>
+    {% if section.is_empty %}
+      <p class="empty">{{ section.empty_note }}</p>
+    {% else %}
+      {% for statement in section.statements %}
+      <div class="statement">
+        <p class="text"><span class="basis {{ statement.basis }}">{{ statement.basis_label }}</span>{{ statement.text }}</p>
+        {% if statement.detail %}<p class="detail">{{ statement.detail }}</p>{% endif %}
+      </div>
+      {% endfor %}
+      {% if section.rows %}{{ render_rows(section) }}{% endif %}
+    {% endif %}
+  </section>
+  {% endfor %}
+</div>
+
+<footer>
+  <p>
+    Case {{ model.case_id }} · generated {{ model.generated_at.strftime('%d %B %Y %H:%M') }} UTC ·
+    {{ model.counts.get('evidence', 0) }} stored artefact(s) ·
+    {{ model.counts.get('findings', 0) }} finding(s).
+  </p>
+  <p>
+    This document reports what public sources published and what this platform computed from
+    them. It identifies nobody, performs no biometric matching of any kind, and is not a
+    background check. Read the Limitations section before acting on anything in it.
+  </p>
+</footer>
+
+</div>
+</body>
+</html>
