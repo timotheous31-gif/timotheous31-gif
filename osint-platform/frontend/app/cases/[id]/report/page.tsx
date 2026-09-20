@@ -6,15 +6,31 @@ import { useCaseId } from "@/components/case/shell";
 import { Button, Card, CardHeader, ErrorNotice, Select, Spinner } from "@/components/ui/primitives";
 import { useAsync } from "@/hooks/useApi";
 import { api, saveDocument } from "@/lib/api";
+import type { ReportRenderFormat } from "@/lib/api";
 import type { Classification } from "@/types/api";
 
-type Format = "html" | "md" | "json";
+type Format = ReportRenderFormat;
+
+/** What each format is, in the words an investigator chooses between. */
+const FORMATS: { value: Format; label: string; hint: string }[] = [
+  {
+    value: "dossier",
+    label: "Investigation report",
+    hint: "Client-facing document, print/PDF-ready. Every statement labelled with its basis.",
+  },
+  { value: "md", label: "Markdown", hint: "Plain text, for working notes." },
+  { value: "html", label: "HTML", hint: "The full case, ordered by data structure." },
+  { value: "json", label: "JSON", hint: "Machine-readable export. Complete." },
+];
+
+/** Formats that are a rendered document rather than source text. */
+const RENDERED: ReadonlySet<Format> = new Set<Format>(["dossier", "html"]);
 
 const CLASSIFICATIONS: Classification[] = ["PUBLIC", "PERSONAL", "SENSITIVE", "RESTRICTED"];
 
 export default function ReportPage() {
   const caseId = useCaseId();
-  const [format, setFormat] = useState<Format>("md");
+  const [format, setFormat] = useState<Format>("dossier");
   const [maxClassification, setMaxClassification] = useState<Classification>("PERSONAL");
 
   // Through the authenticated client, like every other panel in this app.
@@ -65,9 +81,11 @@ export default function ReportPage() {
           <label className="flex items-center gap-2 text-xs text-muted">
             Format
             <Select value={format} onChange={(event) => setFormat(event.target.value as Format)}>
-              <option value="md">Markdown</option>
-              <option value="html">HTML</option>
-              <option value="json">JSON</option>
+              {FORMATS.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
             </Select>
           </label>
           <label className="flex items-center gap-2 text-xs text-muted">
@@ -84,7 +102,8 @@ export default function ReportPage() {
             </Select>
           </label>
           <p className="text-xs text-muted">
-            A stricter policy lets the report be circulated more widely than the case database.
+            {FORMATS.find((item) => item.value === format)?.hint} A stricter policy lets the
+            report be circulated more widely than the case database.
           </p>
         </div>
       </Card>
@@ -95,7 +114,7 @@ export default function ReportPage() {
       <Card>
         {report.loading ? (
           <Spinner label="Rendering report" />
-        ) : format === "html" ? (
+        ) : RENDERED.has(format) ? (
           <iframe
             // The report contains text collected from third-party sites. It is
             // escaped at render time, and sandboxed here as a second defence.

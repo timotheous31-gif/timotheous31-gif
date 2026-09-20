@@ -313,6 +313,61 @@ class TestWeakCandidatesAreSummarisedNotDropped:
         assert "Retained" in html or "retained" in html
 
 
+class TestARejectedCandidateStopsSpeakingForTheSubject:
+    """Found in the rendered PDF, not in the code.
+
+    The geography section read *"Toronto, Canada — Yes — matches an anchor you
+    supplied"*, two sections above the analyst decision rejecting the only
+    record that claimed it. The aggregate is the louder of the two, and a
+    reader would carry away the place.
+    """
+
+    @pytest.fixture
+    def with_a_rejected_place(self, db_session, person_case):
+        case, _strong, _weak, rejected = person_case
+        attributes = dict(rejected.attributes)
+        attributes["locations"] = ["Toronto, Canada"]
+        attributes["affiliations"] = ["Rejected Institute"]
+        rejected.attributes = attributes
+        db_session.add(rejected)
+        db_session.commit()
+        return build_dossier(build_report(db_session, case.id))
+
+    def test_its_place_is_not_aggregated_into_the_body(self, with_a_rejected_place):
+        geography = next(s for s in with_a_rejected_place.sections if s.key == "geography")
+        assert "Toronto, Canada" not in {row["place"] for row in geography.rows}
+
+    def test_its_affiliation_is_not_aggregated_into_the_body(self, with_a_rejected_place):
+        affiliations = next(s for s in with_a_rejected_place.sections if s.key == "affiliations")
+        assert "Rejected Institute" not in {row["name"] for row in affiliations.rows}
+
+    def test_a_live_candidates_place_is_still_aggregated(self, with_a_rejected_place):
+        """The exclusion is the rejection, not the section."""
+        geography = next(s for s in with_a_rejected_place.sections if s.key == "geography")
+        assert "Amman, Jordan" in {row["place"] for row in geography.rows}
+
+    def test_nothing_is_deleted_it_is_only_unasserted(self, db_session, person_case):
+        """The rejected record keeps everything, everywhere it is reported."""
+        case, _strong, _weak, rejected = person_case
+        attributes = dict(rejected.attributes)
+        attributes["locations"] = ["Toronto, Canada"]
+        rejected.attributes = attributes
+        db_session.add(rejected)
+        db_session.commit()
+
+        model = build_report(db_session, case.id)
+        exported = json.loads(render_json(model))
+
+        entity = next(item for item in exported["entities"] if item["id"] == str(rejected.id))
+        assert entity["attributes"]["locations"] == ["Toronto, Canada"]
+        assert entity["confidence"] == pytest.approx(0.55)
+
+        appendix = next(
+            s for s in build_dossier(model).appendix if s.key == "low_confidence_candidates"
+        )
+        assert [row for row in appendix.rows if row["score"] == "0.55"]
+
+
 # --- the picture ------------------------------------------------------------
 
 

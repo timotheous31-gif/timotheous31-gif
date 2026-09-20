@@ -110,7 +110,9 @@
   .statement { margin: 0 0 9pt; padding-left: 10pt; border-left: 2px solid var(--line); page-break-inside: avoid; }
   .statement .text { margin: 0; }
   .statement .detail, .statement .cite { color: var(--muted); font-size: 9pt; margin: 2pt 0 0; }
-  .statement a { color: var(--accent); word-break: break-all; }
+  /* `anywhere`, never `break-all`: a citation URL should wrap at a sensible
+     point when it must, not one character per line down a column. */
+  .statement a { color: var(--accent); overflow-wrap: anywhere; }
 
   .basis { display: inline-block; font-size: 7.5pt; letter-spacing: 0.06em; text-transform: uppercase;
            border: 1px solid var(--line); border-radius: 2px; padding: 0 4pt; margin-right: 5pt; vertical-align: 1pt; }

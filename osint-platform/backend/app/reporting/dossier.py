@@ -33,6 +33,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
+from app.correlation.suppression import REJECTED
 from app.reporting.model import (
     AnalystDecisionItem,
     EntityItem,
@@ -236,6 +237,24 @@ def _is_candidate(entity: EntityItem) -> bool:
 
 def _is_subject(entity: EntityItem) -> bool:
     return entity.attributes.get("role") == "subject"
+
+
+def _counts_toward_the_body(entity: EntityItem) -> bool:
+    """Whether a candidate's attributes may speak for the subject in the body.
+
+    A candidate an analyst ruled out must not keep contributing. Without this,
+    a rejected record's city appeared under "Geographic associations" as
+    *"Yes — matches an anchor you supplied"*, two sections above the decision
+    rejecting the only record that claimed it. The reader is told a place is
+    corroborated and, separately, that it is not the subject's — and the
+    aggregate is the louder of the two.
+
+    Rejected candidates keep their attributes everywhere they are already
+    reported: their own appendix row, the analyst-decisions section, and the
+    JSON export. Nothing is deleted; it stops being asserted on the subject's
+    behalf.
+    """
+    return _is_candidate(entity) and entity.presentation != REJECTED
 
 
 def _candidate_name(entity: EntityItem) -> str:
@@ -534,7 +553,7 @@ def _affiliations(model: ReportModel) -> Section:
     )
     seen: dict[str, dict[str, Any]] = {}
     for entity in model.entities:
-        if not _is_candidate(entity):
+        if not _counts_toward_the_body(entity):
             continue
         anchors = {str(item) for item in (entity.attributes.get("corroborated_by") or [])}
         for name in entity.attributes.get("affiliations") or []:
@@ -571,7 +590,7 @@ def _geography(model: ReportModel) -> Section:
     )
     seen: dict[str, dict[str, Any]] = {}
     for entity in model.entities:
-        if not _is_candidate(entity):
+        if not _counts_toward_the_body(entity):
             continue
         anchors = {str(item) for item in (entity.attributes.get("corroborated_by") or [])}
         for place in entity.attributes.get("locations") or []:
