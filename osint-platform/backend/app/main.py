@@ -116,7 +116,13 @@ def create_app() -> FastAPI:
         # Named rather than "*", because with credentials enabled a wildcard is
         # both refused by browsers and a wider grant than anything here needs.
         allow_headers=["Content-Type", "X-CSRF-Token", "X-Request-ID", "Accept"],
-        expose_headers=["X-Request-ID", "Retry-After"],
+        # `Content-Disposition` carries the filename a report should be saved
+        # under. The browser already receives it; without naming it here, script
+        # on the frontend origin cannot *read* it, and a cross-origin download
+        # falls back to a generic name. Exposing a filename grants no access —
+        # the response itself still requires the session — it only lets the page
+        # save the file under the name the server chose.
+        expose_headers=["X-Request-ID", "Retry-After", "Content-Disposition"],
         max_age=600,
     )
 
