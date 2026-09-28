@@ -84,6 +84,16 @@ export class NetworkError extends Error {
 
 type Query = Record<string, string | number | boolean | string[] | undefined | null>;
 
+/**
+ * The report formats the API serves.
+ *
+ * `dossier` is the investigator/client-facing document — the same report model
+ * as the other three, arranged for a reader. Kept in one place so a format the
+ * backend serves cannot be unreachable from the interface, which is how
+ * `dossier` shipped invisible.
+ */
+export type ReportRenderFormat = "dossier" | "html" | "md" | "json";
+
 function buildUrl(path: string, query?: Query): string {
   const url = new URL(`${PREFIX}${path}`, `${API_BASE}/`);
   for (const [key, value] of Object.entries(query ?? {})) {
@@ -449,7 +459,7 @@ export const api = {
    */
   report: (
     caseId: string,
-    format: "html" | "md" | "json",
+    format: ReportRenderFormat,
     query: Query = {},
   ): Promise<ApiDocument> =>
     requestDocument(

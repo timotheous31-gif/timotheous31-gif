@@ -8,9 +8,11 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import ValidationError
 from app.models.enums import Classification, ReportFormat
+from app.reporting.dossier import Basis, Dossier, build_dossier
 from app.reporting.model import ReportModel, build_report
 from app.reporting.renderers import (
     RENDERERS,
+    render_dossier,
     render_html,
     render_json,
     render_markdown,
@@ -18,8 +20,12 @@ from app.reporting.renderers import (
 
 __all__ = [
     "RENDERERS",
+    "Basis",
+    "Dossier",
     "ReportModel",
+    "build_dossier",
     "build_report",
+    "render_dossier",
     "render_html",
     "render_json",
     "render_markdown",

@@ -13,6 +13,7 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from app.reporting.coverage import STATE_MEANINGS
+from app.reporting.dossier import BASIS_LABELS, BASIS_MEANINGS, build_dossier
 from app.reporting.model import ReportModel
 from app.services.social_profiles import DISCOVERY_LABELS
 
@@ -39,6 +40,26 @@ def _environment() -> Environment:
 def render_html(model: ReportModel) -> str:
     """Render a self-contained HTML report (no external assets)."""
     return _environment().get_template("report.html.j2").render(model=model)
+
+
+def render_dossier(model: ReportModel) -> str:
+    """Render the investigator-facing report: the same model, arranged for a reader.
+
+    A fourth *renderer*, not a fourth report. It reads the identical
+    :class:`ReportModel` the HTML, Markdown and JSON exports read — see
+    :mod:`app.reporting.dossier` — so a claim in this document and the same
+    claim in the JSON export cannot disagree.
+    """
+    return (
+        _environment()
+        .get_template("dossier.html.j2")
+        .render(
+            model=model,
+            dossier=build_dossier(model),
+            basis_labels=BASIS_LABELS,
+            basis_meanings=BASIS_MEANINGS,
+        )
+    )
 
 
 def render_json(model: ReportModel) -> str:
@@ -856,4 +877,7 @@ RENDERERS: dict[str, Any] = {
     "html": render_html,
     "md": render_markdown,
     "json": render_json,
+    # Additive. The three formats above are byte-for-byte unaffected by this
+    # entry — a reader who was taking Markdown yesterday gets the same Markdown.
+    "dossier": render_dossier,
 }

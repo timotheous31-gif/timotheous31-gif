@@ -41,6 +41,7 @@ MEDIA_TYPES = {
     ReportFormat.HTML: "text/html; charset=utf-8",
     ReportFormat.MARKDOWN: "text/markdown; charset=utf-8",
     ReportFormat.JSON: "application/json",
+    ReportFormat.DOSSIER: "text/html; charset=utf-8",
 }
 
 #: Content-Security-Policy for a rendered report. The document is self-contained
@@ -67,6 +68,7 @@ EXTENSIONS = {
     ReportFormat.HTML: "html",
     ReportFormat.MARKDOWN: "md",
     ReportFormat.JSON: "json",
+    ReportFormat.DOSSIER: "html",
 }
 
 

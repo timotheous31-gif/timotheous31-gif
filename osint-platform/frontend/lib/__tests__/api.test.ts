@@ -207,6 +207,21 @@ describe("requests", () => {
       expect((await api.report("case-1", "md")).filename).toBe("example-case-report.md");
     });
 
+    it("can request the investigator-facing dossier the backend serves", async () => {
+      // It shipped unreachable: the backend registered `dossier`, and the
+      // client's format union did not include it, so no UI could ask for it.
+      const fetchMock = vi.fn(async () => reportResponse("<html>", "text/html"));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const document_ = await api.report("case-1", "dossier", {
+        max_classification: "PERSONAL",
+      });
+
+      expect(lastUrl(fetchMock)).toContain("format=dossier");
+      expect(lastInit(fetchMock).credentials).toBe("include");
+      expect(document_.contentType).toBe("text/html");
+    });
+
     it("cannot be reached through a URL-only helper any more", () => {
       // `reportUrl` returned a bare string, which invited exactly one mistake:
       // handing it to `fetch`, an anchor or `window.open`, none of which carry
