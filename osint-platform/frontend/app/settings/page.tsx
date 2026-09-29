@@ -3,6 +3,7 @@
 import { MfaSettings } from "@/components/mfa-settings";
 import { Badge, Card, CardHeader, ErrorNotice, Mono, Spinner } from "@/components/ui/primitives";
 import { useAsync } from "@/hooks/useApi";
+import { PageHeader } from "@/components/ui/page-header";
 import { API_BASE, api } from "@/lib/api";
 
 /**
@@ -40,14 +41,17 @@ export default function SettingsPage() {
 
   return (
     <div className="mx-auto max-w-4xl space-y-5">
-      <header>
-        <h1 className="text-xl font-semibold">Settings</h1>
-        <p className="mt-1 text-sm text-muted">
-          Your own sign-in security is below. Everything else lives in the backend&apos;s
-          environment: this page reports what is configured, and never displays or
-          accepts a deployment credential.
-        </p>
-      </header>
+      <PageHeader
+        eyebrow="Platform"
+        title="Settings"
+        subtitle={
+          <>
+            Your own sign-in security is below. Everything else lives in the backend&apos;s
+            environment: this page reports what is configured, and never displays or accepts a
+            deployment credential.
+          </>
+        }
+      />
 
       <section className="space-y-2">
         <h2 className="text-sm font-semibold">Your account</h2>

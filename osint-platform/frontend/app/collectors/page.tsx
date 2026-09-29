@@ -12,6 +12,7 @@ import {
   Th,
 } from "@/components/ui/primitives";
 import { useAsync } from "@/hooks/useApi";
+import { PageHeader } from "@/components/ui/page-header";
 import { api } from "@/lib/api";
 
 export default function CollectorsPage() {
@@ -19,13 +20,11 @@ export default function CollectorsPage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-5">
-      <header>
-        <h1 className="text-xl font-semibold">Collectors</h1>
-        <p className="mt-1 max-w-3xl text-sm text-muted">
-          Each collector is an adapter over one public source. A collector that cannot run says so
-          here rather than silently producing nothing.
-        </p>
-      </header>
+      <PageHeader
+        eyebrow="Platform"
+        title="Collectors"
+        subtitle="Each collector is an adapter over one public source. A collector that cannot run says so here rather than silently producing nothing."
+      />
 
       {collectors.error ? <ErrorNotice error={collectors.error} retry={collectors.reload} /> : null}
 

@@ -19,6 +19,7 @@ import {
   Th,
 } from "@/components/ui/primitives";
 import { useAsync } from "@/hooks/useApi";
+import { PageHeader } from "@/components/ui/page-header";
 import { useSession } from "@/components/session";
 import { api } from "@/lib/api";
 import { PERMISSION, can, deniedMessage } from "@/lib/permissions";
@@ -65,12 +66,11 @@ export default function CasesPage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
-      <header>
-        <h1 className="text-xl font-semibold">Cases</h1>
-        <p className="mt-1 text-sm text-muted">
-          Investigations group targets, findings, entities and evidence.
-        </p>
-      </header>
+      <PageHeader
+        eyebrow="Operations"
+        title="Cases"
+        subtitle="Investigations group targets, findings, entities and evidence."
+      />
 
       <Card>
         <CardHeader

@@ -3,38 +3,60 @@
 @tailwind utilities;
 
 @layer base {
+  /*
+   * One dark palette, declared once and consumed by name.
+   *
+   * The console is dark-only on purpose. A fusion-centre display that flips to
+   * white because the operator's laptop prefers light is not the product; and
+   * carrying two palettes means every contrast decision has to be made twice,
+   * which is how the old `text-white` on a mid-tone accent survived. Contrast
+   * is held against this palette instead, at WCAG AA or better.
+   *
+   * The printed dossier is unaffected: it ships its own self-contained
+   * stylesheet, because a report is read on paper, not in here.
+   */
   :root {
-    --bg: 255 255 255;
-    --panel: 247 248 250;
-    --line: 226 229 234;
-    --fg: 22 24 29;
-    --muted: 92 99 112;
-    --accent: 31 95 169;
-    --likely: 26 127 75;
-    --probable: 138 109 0;
-    --possible: 154 91 0;
-    --weak: 107 114 128;
-    --danger: 161 28 28;
-  }
+    color-scheme: dark;
 
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: 20 22 26;
-      --panel: 28 31 38;
-      --line: 42 46 54;
-      --fg: 230 232 236;
-      --muted: 154 161 173;
-      --accent: 110 168 255;
-      --likely: 76 195 138;
-      --probable: 217 176 60;
-      --possible: 224 138 60;
-      --weak: 154 161 173;
-      --danger: 255 107 107;
-    }
-  }
+    /* Surfaces, darkest to lightest. Depth comes from these four plus a thin
+       border — never from a drop shadow, which reads as a web page. */
+    --bg: 9 11 14;
+    --surface: 15 18 23;
+    --panel: 21 25 32;
+    --raised: 28 33 42;
 
-  html {
-    color-scheme: light dark;
+    --line: 38 44 55;
+    /* The boundary of an actual control (input, select, button). Light
+       enough to clear WCAG 1.4.11's 3:1 against every surface it sits on —
+       an input whose edge you cannot see is not an input. */
+    --line-strong: 94 108 131;
+
+    --fg: 226 232 240;
+    /* Three steps, and all three are real text: the lowest of them still
+       clears 4.5:1 on the lightest surface it is used on. Small caps at
+       10px is normal text, not large text, whatever it looks like. */
+    --muted: 158 169 185;
+    --faint: 124 136 156;
+
+    /* Restrained cyan. Used as a 1px rail, a 10% fill, or text — never as a
+       glowing block. Too dark for white text, so accent fills take --bg. */
+    --accent: 45 186 198;
+    --accent-soft: 14 60 68;
+
+    /* Status. Every one of these is paired with a label or a glyph in the UI;
+       none of them carries meaning alone. */
+    --ok: 62 190 126;
+    --caution: 224 166 62;
+    --danger: 240 108 108;
+    --info: 110 168 255;
+
+    /* Correlation bands. Kept as their own names because they mean something
+       specific in this product, and mapped onto the status palette so the
+       screen has one vocabulary of colour rather than two. */
+    --likely: 62 190 126;
+    --probable: 224 166 62;
+    --possible: 224 138 60;
+    --weak: 130 140 157;
   }
 
   body {
@@ -45,5 +67,35 @@
      keyboard while reading from other windows. */
   :focus-visible {
     @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-bg;
+  }
+
+  /* Headings are tightened rather than enlarged — density is the point. */
+  h1,
+  h2,
+  h3 {
+    @apply tracking-tight;
+  }
+
+  /* Long identifiers (hashes, URLs, canonical values) wrap inside their cell
+     instead of forcing the panel wider. */
+  .break-anywhere {
+    overflow-wrap: anywhere;
+  }
+}
+
+@layer utilities {
+  /* A hairline rule that reads as a seam between panels rather than a border. */
+  .rule-t {
+    box-shadow: inset 0 1px 0 0 rgb(var(--line) / 1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }
