@@ -38,12 +38,15 @@ export function CardHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4 border-b border-line px-4 py-3">
+    <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2 border-b border-line px-4 py-3">
       <div className="min-w-0">
         <h2 className="text-[13px] font-semibold uppercase tracking-label text-fg">{title}</h2>
         {description ? <p className="mt-1 text-xs text-muted">{description}</p> : null}
       </div>
-      {action ? <div className="shrink-0">{action}</div> : null}
+      {/* `shrink-0` keeps a short action from being squeezed; `max-w-full`
+          plus the row's `flex-wrap` lets a wide one drop to its own line
+          rather than pushing the page sideways on a phone. */}
+      {action ? <div className="max-w-full shrink-0">{action}</div> : null}
     </div>
   );
 }
@@ -175,13 +178,23 @@ export function Badge({
   children,
   title,
   className,
+  glyph: override,
 }: {
   tone?: string;
   children: ReactNode;
   title?: string;
   className?: string;
+  /**
+   * A glyph more specific than the tone's own — or `null` to suppress it.
+   *
+   * Tones are coarse: four candidate review states map onto three tones, and
+   * "awaiting review" deserves its own mark rather than borrowing the one
+   * caution uses for everything. Passing a glyph here replaces the tone's;
+   * passing `null` drops it.
+   */
+  glyph?: string | null;
 }) {
-  const glyph = tone ? BAND_GLYPHS[tone] : undefined;
+  const glyph = override === undefined ? (tone ? BAND_GLYPHS[tone] : undefined) : (override ?? undefined);
   return (
     <span
       title={title}

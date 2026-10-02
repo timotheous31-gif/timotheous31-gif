@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-import { Badge, Button } from "@/components/ui/primitives";
+import { Badge, Button, Input } from "@/components/ui/primitives";
 import { useSession } from "@/components/session";
 import { api } from "@/lib/api";
 import { PERMISSION, can, deniedMessage } from "@/lib/permissions";
@@ -80,26 +80,28 @@ export function AnalystDecisionControl({
         <button
           type="button"
           onClick={() => setOpen(!open)}
-          className="rounded-md border border-line px-1.5 py-0.5 text-[11px] text-muted hover:bg-line"
+          className="rounded border border-line-strong px-1.5 py-0.5 text-[11px] text-muted transition-colors hover:border-accent/60 hover:text-fg"
         >
           {open ? "Close" : "Review"}
         </button>
       ) : (
-        <span className="text-[10px] text-muted" title={deniedMessage(workspace, "record a decision")}>
+        <span className="text-[10px] text-faint" title={deniedMessage(workspace, "record a decision")}>
           read-only
         </span>
       )}
 
       {open ? (
-        <div className="basis-full space-y-1.5 rounded-md border border-line p-2">
-          <label className="block text-[11px]">
-            <span className="text-muted">Note (optional)</span>
-            <input
+        <div className="basis-full space-y-2 rounded border border-line bg-surface p-3">
+          <label className="block">
+            <span className="text-[10px] font-semibold uppercase tracking-label text-faint">
+              Note (optional)
+            </span>
+            <Input
               aria-label="Analyst note"
               value={note}
-              onChange={(event) => setNote(event.target.value)}
+              onChange={(event: React.ChangeEvent<HTMLInputElement>) => setNote(event.target.value)}
               placeholder="Why you reached this conclusion"
-              className="mt-0.5 w-full rounded-md border border-line bg-bg px-2 py-1 text-xs"
+              className="mt-1 text-xs"
             />
           </label>
           <div className="flex flex-wrap gap-1.5">
@@ -115,7 +117,7 @@ export function AnalystDecisionControl({
             ) : null}
           </div>
           <p className="text-[11px] text-muted">
-            Your decision is recorded separately and does not change the confidence the
+            Your decision is recorded separately and does not change the correlation score the
             platform computed.
           </p>
           {error ? <p className="text-[11px] text-danger">{error}</p> : null}

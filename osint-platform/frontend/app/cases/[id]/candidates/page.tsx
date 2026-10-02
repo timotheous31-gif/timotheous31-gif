@@ -1,20 +1,18 @@
 "use client";
 
-import { useCaseId } from "@/components/case/shell";
+import { CandidateCard } from "@/components/case/candidate-card";
+import { useCaseWorkspace } from "@/components/case/shell";
 import {
   Badge,
   Card,
   CardHeader,
   Empty,
-  ErrorNotice,
   Mono,
   Spinner,
   Table,
   Td,
   Th,
 } from "@/components/ui/primitives";
-import { useAsync } from "@/hooks/useApi";
-import { api } from "@/lib/api";
 import {
   partitionCandidates,
   rankCandidates,
@@ -22,6 +20,7 @@ import {
   withPlacements,
   type PersonCandidate,
 } from "@/lib/candidates";
+import { reviewState } from "@/lib/case-workspace";
 import { formatConfidence } from "@/lib/format";
 
 /**
@@ -32,29 +31,24 @@ import { formatConfidence } from "@/lib/format";
  * reasons against it as prominently as the reasons for it, and the sources that
  * produced nothing are listed too — an absent source is a gap in coverage, not
  * a negative result.
+ *
+ * The entities, runs and placements all come from the shell, which already
+ * loaded them for the header. Before, this page refetched the runs and the
+ * placements that the overview had just fetched.
  */
 export default function CandidatesPage() {
-  const caseId = useCaseId();
-  const entities = useAsync(
-    () => api.listEntities(caseId, { type: "PERSONA", limit: 500 }),
-    [caseId],
-  );
-  const runs = useAsync(() => api.listRuns(caseId), [caseId]);
-  // The placements — and the analyst decisions behind them — are computed by
-  // the backend and read here. The browser groups; it does not judge.
-  const groups = useAsync(() => api.listCandidateGroups(caseId), [caseId]);
+  const { runs, groups, personas, loading } = useCaseWorkspace();
 
-  const candidates = withPlacements(rankCandidates(entities.data?.items ?? []), groups.data);
+  const candidates = withPlacements(rankCandidates(personas), groups);
   const { primary, lowConfidence, rejected } = partitionCandidates(candidates);
   // Coverage counts every candidate a source produced, suppressed or not: what
   // a source found is a fact about the source, not about the presentation.
-  const sources = summariseRuns(runs.data ?? [], candidates);
+  const sources = summariseRuns(runs, candidates);
   const freeSources = sources.filter((source) => source.free);
   const paidSources = sources.filter((source) => !source.free);
-  const loading = entities.loading || runs.loading;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <Card>
         <CardHeader
           title="Free sources"
@@ -83,13 +77,12 @@ export default function CandidatesPage() {
               {freeSources.map((source) => (
                 <tr key={source.collector}>
                   <Td>
-                    <Mono>{source.collector}</Mono>{" "}
-                    <Badge tone="SUCCESS">free</Badge>
+                    <Mono>{source.collector}</Mono>
                   </Td>
                   <Td>
                     <Badge tone={source.status}>{source.status}</Badge>
                   </Td>
-                  <Td>{source.candidates}</Td>
+                  <Td className="font-mono tabular-nums">{source.candidates}</Td>
                   <Td className="max-w-md text-xs text-muted">{source.reason ?? "—"}</Td>
                 </tr>
               ))}
@@ -109,12 +102,11 @@ export default function CandidatesPage() {
         ) : null}
       </Card>
 
-      {entities.error ? <ErrorNotice error={entities.error} retry={entities.reload} /> : null}
-
       <Card>
         <CardHeader
           title="Candidates"
           description="Each is a public record carrying the name — a question, not an identification"
+          action={<Legend />}
         />
         {loading ? (
           <Spinner />
@@ -135,104 +127,8 @@ export default function CandidatesPage() {
         ) : (
           <ul className="divide-y divide-line">
             {primary.map((candidate) => (
-              <li key={candidate.id} className="space-y-2 p-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-medium">{candidate.name}</span>
-                  <Badge>{candidate.sourceLabel}</Badge>
-                  <Badge tone={candidate.corroboratedBy.length > 0 ? "SUCCESS" : "SKIPPED"}>
-                    {formatConfidence(candidate.confidence)}
-                  </Badge>
-                  {candidate.corroboratedBy.map((kind) => (
-                    <Badge key={kind} tone="SUCCESS">
-                      corroborated: {kind}
-                    </Badge>
-                  ))}
-                  {/*
-                    An identifier another index also carries, where independence
-                    could not be established. A separate badge from
-                    "corroborated" on purpose: one raised the score and the other
-                    deliberately did not.
-                  */}
-                  {candidate.sharedIdentifiers.map((shared) => (
-                    <Badge
-                      key={`${shared.identifier}:${shared.value}`}
-                      tone="PARTIAL"
-                      title={shared.reason}
-                    >
-                      shared {shared.identifier} · {shared.independence.toLowerCase()} lineage ·
-                      no score effect
-                    </Badge>
-                  ))}
-                </div>
-
-                {candidate.citizenshipClaims.length > 0 ? (
-                  <p className="text-xs text-muted">
-                    <span className="font-medium text-fg">Source-claimed citizenship:</span>{" "}
-                    {candidate.citizenshipClaims.join(", ")}{" "}
-                    <span>
-                      — stated by {candidate.sourceLabel}. Not inferred, not a residence, not a
-                      current location, and it corroborates no country or city you supplied.
-                    </span>
-                  </p>
-                ) : null}
-
-                {candidate.url ? (
-                  <a
-                    href={candidate.url}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    className="block text-xs text-muted underline"
-                  >
-                    {candidate.url}
-                  </a>
-                ) : null}
-
-                {candidate.affiliations.length > 0 || candidate.locations.length > 0 ? (
-                  <p className="text-xs text-muted">
-                    {candidate.affiliations.length > 0
-                      ? `Affiliations: ${candidate.affiliations.join(", ")}`
-                      : null}
-                    {candidate.affiliations.length > 0 && candidate.locations.length > 0
-                      ? " · "
-                      : null}
-                    {candidate.locations.length > 0
-                      ? `Places: ${candidate.locations.join(", ")}`
-                      : null}
-                  </p>
-                ) : null}
-
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <h3 className="text-xs font-medium uppercase tracking-wide text-muted">
-                      Why this may be them
-                    </h3>
-                    <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs">
-                      {candidate.matchReasons.map((reason) => (
-                        <li key={reason}>{reason}</li>
-                      ))}
-                    </ul>
-                  </div>
-                  <div>
-                    <h3 className="text-xs font-medium uppercase tracking-wide text-muted">
-                      Why it may not
-                    </h3>
-                    <ul className="mt-1 list-disc space-y-0.5 pl-4 text-xs text-muted">
-                      {candidate.mismatchReasons.map((reason) => (
-                        <li key={reason}>{reason}</li>
-                      ))}
-                    </ul>
-                  </div>
-                </div>
-
-                {Object.keys(candidate.identifiers).length > 0 ? (
-                  <p className="text-xs text-muted">
-                    {Object.entries(candidate.identifiers).map(([key, value]) => (
-                      <span key={key} className="mr-3">
-                        {key}: <Mono>{value}</Mono>
-                      </span>
-                    ))}
-                  </p>
-                ) : null}
+              <li key={candidate.id}>
+                <CandidateCard candidate={candidate} />
               </li>
             ))}
           </ul>
@@ -273,6 +169,37 @@ export default function CandidatesPage() {
 }
 
 /**
+ * What the four review states mean.
+ *
+ * Spelled out because the difference between "nobody has looked at this" and
+ * "someone looked and could not settle it" is the difference between work to do
+ * and work already done, and a colour cannot say that.
+ */
+function Legend() {
+  const states = (["CONFIRMED", "RULED_OUT", "AWAITING_REVIEW", "AUTOMATED_ONLY"] as const).map(
+    (state) =>
+      reviewState(
+        state === "CONFIRMED"
+          ? "CONFIRMED"
+          : state === "RULED_OUT"
+            ? "REJECTED"
+            : state === "AWAITING_REVIEW"
+              ? "NEEDS_REVIEW"
+              : null,
+      ),
+  );
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {states.map((review) => (
+        <Badge key={review.state} tone={review.tone} glyph={review.glyph} title={review.meaning}>
+          {review.label}
+        </Badge>
+      ))}
+    </div>
+  );
+}
+
+/**
  * A collapsed group of candidates the default view sets aside.
  *
  * Closed by default, with the count in the summary: the point is that an
@@ -296,18 +223,25 @@ function SuppressedCandidates({
   return (
     <Card>
       <details>
-        <summary className="cursor-pointer px-4 py-3 text-sm font-semibold">
-          {title} ({candidates.length})
-          <span className="ml-2 font-normal text-muted">— click to review</span>
+        <summary className="cursor-pointer px-4 py-3 text-[13px] font-semibold uppercase tracking-label marker:text-faint">
+          {title}
+          <span className="ml-2 font-mono text-xs normal-case tracking-normal text-accent">
+            {candidates.length}
+          </span>
+          <span className="ml-2 font-normal normal-case tracking-normal text-muted">
+            — click to review
+          </span>
         </summary>
         <p className="px-4 pb-3 text-xs text-muted">{hint}</p>
         <ul className="divide-y divide-line border-t border-line">
           {candidates.map((candidate) => (
-            <li key={candidate.id} className="space-y-1 p-4">
+            <li key={candidate.id} className="space-y-1.5 px-4 py-3">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="font-medium">{candidate.name}</span>
-                <Badge>{candidate.sourceLabel}</Badge>
-                <Badge tone="SKIPPED">{formatConfidence(candidate.confidence)}</Badge>
+                <span className="text-sm font-medium">{candidate.name}</span>
+                <Badge tone="NEUTRAL">{candidate.sourceLabel}</Badge>
+                <span className="ml-auto font-mono text-[12.5px] tabular-nums text-muted">
+                  {formatConfidence(candidate.confidence)}
+                </span>
               </div>
               {candidate.presentationReason ? (
                 <p className="text-xs text-muted">{candidate.presentationReason}</p>
@@ -317,7 +251,7 @@ function SuppressedCandidates({
                   href={candidate.url}
                   target="_blank"
                   rel="noreferrer noopener"
-                  className="block text-xs text-muted underline"
+                  className="block break-anywhere font-mono text-[11px] text-muted underline-offset-2 hover:text-accent hover:underline"
                 >
                   {candidate.url}
                 </a>
