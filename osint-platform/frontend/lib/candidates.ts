@@ -7,7 +7,13 @@
  * the collector actually wrote, not a second opinion invented in the browser.
  */
 
-import type { CandidateGroup, CandidatePresentation, CollectorRun, Entity } from "@/types/api";
+import type {
+  AnalystDecisionRecord,
+  CandidateGroup,
+  CandidatePresentation,
+  CollectorRun,
+  Entity,
+} from "@/types/api";
 
 /** Collector names that need no API key. Kept in step with the backend. */
 export const FREE_PERSON_COLLECTORS = [
@@ -63,6 +69,14 @@ export interface PersonCandidate {
   presentation: CandidatePresentation;
   /** The backend's sentence explaining that placement. */
   presentationReason: string;
+  /**
+   * What an analyst concluded, or null when nobody has looked.
+   *
+   * Kept strictly beside `confidence`, never merged into it: one is a rule
+   * engine's arithmetic and the other is a person's judgement, and a reader has
+   * to be able to tell which is which.
+   */
+  decision: AnalystDecisionRecord | null;
 }
 
 export interface SharedIdentifier {
@@ -139,6 +153,7 @@ export function toCandidate(entity: Entity): PersonCandidate {
     sharedIdentifiers: sharedIdentifiers(attributes["shared_identifiers"]),
     presentation: "PRIMARY",
     presentationReason: "",
+    decision: null,
   };
 }
 
@@ -169,6 +184,7 @@ export function withPlacements(
       ...candidate,
       presentation: group.presentation ?? "PRIMARY",
       presentationReason: group.presentation_reason ?? "",
+      decision: group.decision ?? null,
     };
   });
 }

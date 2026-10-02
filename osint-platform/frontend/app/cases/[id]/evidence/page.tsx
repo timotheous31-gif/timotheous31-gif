@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { EvidenceCard } from "@/components/case/evidence-card";
 import { useCaseId } from "@/components/case/shell";
 import {
   Badge,
@@ -10,15 +11,10 @@ import {
   CardHeader,
   Empty,
   ErrorNotice,
-  Mono,
   Spinner,
-  Table,
-  Td,
-  Th,
 } from "@/components/ui/primitives";
 import { useAsync } from "@/hooks/useApi";
 import { api } from "@/lib/api";
-import { formatBytes, formatDateTime } from "@/lib/format";
 import type { EvidenceVerification } from "@/types/api";
 
 export default function EvidencePage() {
@@ -85,45 +81,13 @@ export default function EvidencePage() {
         {evidence.loading ? (
           <Spinner />
         ) : evidence.data && evidence.data.items.length > 0 ? (
-          <Table>
-            <thead>
-              <tr>
-                <Th>SHA-256</Th>
-                <Th>Collector</Th>
-                <Th>Source</Th>
-                <Th>Size</Th>
-                <Th>Retrieved</Th>
-                <Th>Excerpt</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {evidence.data.items.map((item) => (
-                <tr key={item.id}>
-                  <Td>
-                    <Mono title={item.sha256}>{item.sha256.slice(0, 16)}…</Mono>
-                    {item.redacted ? (
-                      <Badge tone="SENSITIVE" className="ml-2">
-                        redacted
-                      </Badge>
-                    ) : null}
-                  </Td>
-                  <Td>
-                    <Mono>{item.collector}</Mono>
-                  </Td>
-                  <Td className="max-w-xs truncate text-xs text-muted" title={item.source_url ?? ""}>
-                    {item.source_url ?? "—"}
-                  </Td>
-                  <Td className="tabular-nums text-xs text-muted">{formatBytes(item.size_bytes)}</Td>
-                  <Td className="whitespace-nowrap text-xs text-muted">
-                    {formatDateTime(item.retrieved_at)}
-                  </Td>
-                  <Td className="max-w-sm text-xs text-muted">
-                    <span className="line-clamp-2 break-all">{item.excerpt ?? "—"}</span>
-                  </Td>
-                </tr>
-              ))}
-            </tbody>
-          </Table>
+          <ul className="divide-y divide-line">
+            {evidence.data.items.map((item) => (
+              <li key={item.id}>
+                <EvidenceCard item={item} />
+              </li>
+            ))}
+          </ul>
         ) : (
           <div className="p-4">
             <Empty title="No evidence stored yet" />
