@@ -427,6 +427,14 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   listCaseJobs: (caseId: string) => request<Job[]>(`/cases/${caseId}/jobs`),
+  /**
+   * Recent jobs across every workspace the caller belongs to.
+   *
+   * The API has served this since jobs existed; nothing here ever asked for
+   * it, so the overview could only ever report on one case at a time. The
+   * filtering is done in the backend query, not here — see `GET /jobs`.
+   */
+  jobs: (query?: Query) => request<Job[]>("/jobs", { query }),
   getJob: (jobId: string) => request<Job>(`/jobs/${jobId}`),
   cancelJob: (jobId: string) => request<Job>(`/jobs/${jobId}/cancel`, { method: "POST" }),
 
