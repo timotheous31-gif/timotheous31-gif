@@ -81,3 +81,15 @@ export function formatBytes(bytes: number): string {
 
 /** Classifications that mean "handle with care" in the UI. */
 export const RESTRICTIVE_CLASSIFICATIONS: Classification[] = ["SENSITIVE", "RESTRICTED"];
+
+/**
+ * A count as an instrument reads it: two digits, zero-padded.
+ *
+ * An idiom, not a claim — "03" is three. It exists so a row of readouts keeps
+ * a constant width and reads as a panel rather than as text that happens to be
+ * numeric. Anything already two digits or more is left alone.
+ */
+export function padCount(value: number | string): string {
+  const text = String(value);
+  return /^\d$/.test(text) ? `0${text}` : text;
+}

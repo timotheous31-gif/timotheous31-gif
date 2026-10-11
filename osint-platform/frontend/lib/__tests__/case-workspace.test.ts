@@ -417,7 +417,8 @@ describe("statusCells", () => {
 
   it("reports what a report would contain, and never grades it", () => {
     const report = cells().find((cell) => cell.key === "report")!;
-    expect(report.value).toBe("7 findings");
+    // Zero-padded as an instrument reads it; "07" is seven, not a grade.
+    expect(report.value).toBe("07 findings");
     expect(report.tone).toBe("NEUTRAL");
     expect(`${report.value} ${report.detail}`.toLowerCase()).not.toMatch(
       /ready|readiness|score|%|grade/,
