@@ -10,12 +10,17 @@ import type { TabCounts } from "@/lib/case-workspace";
 /**
  * The case's sections.
  *
+ * Module navigation: moving between intelligence tools, not switching panes.
+ *
  * Links, not ARIA tabs. Each one is a route with its own URL that an
  * investigator will bookmark and paste into a report, and dressing routes up
  * as `role="tab"` would promise arrow-key semantics the browser's history
  * does not have. So: a labelled `<nav>`, `aria-current` on the active link,
  * and the native tab order — which is also what a screen reader expects from
  * something that changes the address bar.
+ *
+ * No pills. Compact uppercase labels, a subdued count, and a single lit
+ * underline on the active module.
  *
  * Counts appear only where the platform has given us one. `undefined` draws no
  * badge at all, because an empty section and a section whose count has not
@@ -57,7 +62,7 @@ export function CaseTabs({ caseId, counts }: { caseId: string; counts: TabCounts
     <nav aria-label="Case sections" className="relative">
       <div
         ref={strip}
-        className="flex gap-0.5 overflow-x-auto border-b border-line pb-px [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="flex gap-4 overflow-x-auto border-b border-rule pb-px [scrollbar-width:none] [&::-webkit-scrollbar]:hidden xl:gap-5"
       >
         {TABS.map((tab) => {
           const href = tab.segment ? `${base}/${tab.segment}` : base;
@@ -71,32 +76,38 @@ export function CaseTabs({ caseId, counts }: { caseId: string; counts: TabCounts
               href={href}
               aria-current={active ? "page" : undefined}
               className={clsx(
-                "group relative flex shrink-0 items-center gap-1.5 whitespace-nowrap",
-                "border-b-2 px-3 py-2 text-[13px] transition-colors",
-                active
-                  ? "border-accent font-medium text-accent"
-                  : "border-transparent text-muted hover:border-line-strong hover:text-fg",
+                "relative flex shrink-0 items-baseline gap-1.5 whitespace-nowrap py-2.5",
+                "text-[11px] font-semibold uppercase tracking-[0.1em] transition-colors",
+                active ? "text-accent" : "text-faint hover:text-fg",
               )}
             >
               {tab.label}
               {count !== undefined ? (
                 <span
                   className={clsx(
-                    "rounded px-1 font-mono text-[10px] tabular-nums",
-                    active ? "bg-accent/15 text-accent" : "bg-raised text-faint",
+                    "font-mono text-[10px] tabular-nums",
+                    active ? "text-accent" : "text-faint",
                   )}
                 >
                   {count}
                 </span>
               ) : null}
+              {/* The active module is marked by a lit underline, not a pill:
+                  a row of filled capsules reads as a toolbar. */}
+              {active ? (
+                <span
+                  aria-hidden="true"
+                  className="absolute inset-x-0 -bottom-px h-0.5 bg-accent shadow-[0_0_10px_0_rgb(var(--accent)/0.7)]"
+                />
+              ) : null}
             </Link>
           );
         })}
       </div>
-      {/* A hint that the strip continues past the edge, on screens where it does. */}
+      {/* A hint that the strip continues past the edge, where it does. */}
       <span
         aria-hidden="true"
-        className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-bg to-transparent lg:hidden"
+        className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-bg to-transparent"
       />
     </nav>
   );

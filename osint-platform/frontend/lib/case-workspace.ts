@@ -13,6 +13,7 @@
 
 import { isCandidate } from "@/lib/candidates";
 import { displayState, stateLabel } from "@/lib/jobs";
+import { padCount } from "@/lib/format";
 import type {
   AnalystDecisionValue,
   CandidateGroup,
@@ -321,8 +322,8 @@ export function statusCells({
     },
     {
       key: "unresolved",
-      label: "Unresolved",
-      value: posture.total === 0 ? "—" : String(posture.unresolved),
+      label: "Review",
+      value: posture.total === 0 ? "—" : `${padCount(posture.unresolved)} open`,
       detail:
         posture.total === 0
           ? "No candidates have been produced."
@@ -333,7 +334,7 @@ export function statusCells({
     {
       key: "evidence",
       label: "Evidence",
-      value: String(evidence),
+      value: padCount(evidence),
       detail:
         evidence === 0
           ? "Nothing has been stored yet."
@@ -347,7 +348,7 @@ export function statusCells({
       // report would currently be built from.
       key: "report",
       label: "Report",
-      value: findings === 0 ? "Empty" : `${findings} findings`,
+      value: findings === 0 ? "Empty" : `${padCount(findings)} findings`,
       detail:
         findings === 0
           ? "A report would have nothing to describe until a collector runs."
@@ -492,14 +493,14 @@ const REVIEW: Record<ReviewState, ReviewBadge> = {
   },
   AWAITING_REVIEW: {
     state: "AWAITING_REVIEW",
-    label: "Awaiting review",
+    label: "Needs review",
     glyph: "◐",
     tone: "CAUTION",
     meaning: "An analyst looked at this and did not reach a conclusion.",
   },
   AUTOMATED_ONLY: {
     state: "AUTOMATED_ONLY",
-    label: "Automated only",
+    label: "Automated lead",
     glyph: "○",
     tone: "NEUTRAL",
     meaning: "No analyst has recorded a judgement. Only the correlation rules have run.",

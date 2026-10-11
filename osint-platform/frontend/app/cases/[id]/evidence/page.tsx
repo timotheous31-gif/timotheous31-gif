@@ -82,9 +82,9 @@ export default function EvidencePage() {
           <Spinner />
         ) : evidence.data && evidence.data.items.length > 0 ? (
           <ul className="divide-y divide-line">
-            {evidence.data.items.map((item) => (
+            {evidence.data.items.map((item, index) => (
               <li key={item.id}>
-                <EvidenceCard item={item} />
+                <EvidenceCard item={item} index={index + 1} />
               </li>
             ))}
           </ul>

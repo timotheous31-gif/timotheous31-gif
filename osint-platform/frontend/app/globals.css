@@ -4,89 +4,347 @@
 
 @layer base {
   /*
-   * One dark palette, declared once and consumed by name.
+   * The console's material system.
    *
-   * The console is dark-only on purpose. A fusion-centre display that flips to
-   * white because the operator's laptop prefers light is not the product; and
-   * carrying two palettes means every contrast decision has to be made twice,
-   * which is how the old `text-white` on a mid-tone accent survived. Contrast
-   * is held against this palette instead, at WCAG AA or better.
+   * Four surface classes, not one. Before this file, every panel in the
+   * product was the same fill behind the same 1px edge at the same radius —
+   * which is, precisely, the recipe for a dark admin template. Importance is
+   * now carried by *material*: how deep a surface sits, whether it is lit from
+   * above, whether it casts, and how loud its edge is.
    *
-   * The printed dossier is unaffected: it ships its own self-contained
-   * stylesheet, because a report is read on paper, not in here.
+   * Dark-only, as established in Phase 1: one palette means every contrast
+   * decision is made once. Every pair here is measured against WCAG AA.
    */
   :root {
     color-scheme: dark;
 
-    /* Surfaces, darkest to lightest. Depth comes from these four plus a thin
-       border — never from a drop shadow, which reads as a web page. */
-    --bg: 9 11 14;
-    --surface: 15 18 23;
-    --panel: 21 25 32;
-    --raised: 28 33 42;
+    /* --- the room ------------------------------------------------------- */
+    --bg: 7 9 12;
+    --bg-lift: 11 14 18;
 
-    --line: 38 44 55;
-    /* The boundary of an actual control (input, select, button). Light
-       enough to clear WCAG 1.4.11's 3:1 against every surface it sits on —
-       an input whose edge you cannot see is not an input. */
-    --line-strong: 94 108 131;
+    /* --- the four materials --------------------------------------------- */
+    /* A. Command — architecture. The shell, the hero, the dossier head. */
+    --command: 13 17 23;
+    --command-deep: 9 12 17;
+    /* B. Instrument — a lit panel that reads a live value. */
+    --instrument: 17 23 34;
+    --instrument-deep: 13 18 27;
+    /* C. Sheet — a quiet editorial page. Findings, evidence, records. */
+    --sheet: 19 24 32;
+    /* D. Telemetry — a recessed well. Logs, runs, timestamps. */
+    --telemetry: 9 13 18;
 
-    --fg: 226 232 240;
-    /* Three steps, and all three are real text: the lowest of them still
-       clears 4.5:1 on the lightest surface it is used on. Small caps at
-       10px is normal text, not large text, whatever it looks like. */
-    --muted: 158 169 185;
-    --faint: 124 136 156;
+    /* Kept for the few places that want a plain raised chip. */
+    --raised: 24 30 40;
 
-    /* Restrained cyan. Used as a 1px rail, a 10% fill, or text — never as a
-       glowing block. Too dark for white text, so accent fills take --bg. */
-    --accent: 45 186 198;
-    --accent-soft: 14 60 68;
+    /* --- edges, by how much they are meant to say ------------------------ */
+    /* A separator inside a surface: present, almost unnoticed. */
+    --rule-quiet: 26 32 42;
+    /* The edge of a structural surface. */
+    --rule: 38 46 58;
+    /* A division that organises a whole surface. */
+    --rule-strong: 62 74 92;
+    /* The boundary of an actual control. Light enough to clear 3:1 on every
+       material it sits on — an input whose edge you cannot see is not one. */
+    --edge: 96 110 133;
 
-    /* Status. Every one of these is paired with a label or a glyph in the UI;
-       none of them carries meaning alone. */
-    --ok: 62 190 126;
-    --caution: 224 166 62;
-    --danger: 240 108 108;
-    --info: 110 168 255;
+    /* --- text, three steps ---------------------------------------------- */
+    --text: 232 236 242;
+    --text-2: 152 164 180;
+    --text-3: 126 140 160;
 
-    /* Correlation bands. Kept as their own names because they mean something
-       specific in this product, and mapped onto the status palette so the
-       screen has one vocabulary of colour rather than two. */
-    --likely: 62 190 126;
-    --probable: 224 166 62;
-    --possible: 224 138 60;
-    --weak: 130 140 157;
+    /* --- cyan: intelligence and system ---------------------------------- */
+    --accent: 53 194 204;
+    --accent-dim: 74 142 150;
+    --blue: 110 168 255;
+
+    /* --- brass: prestige and editorial emphasis -------------------------- */
+    /* Never heavily alongside cyan in one component. Section numbering,
+       executive metadata, a selected artefact — and nothing else. */
+    --brass: 205 187 148;
+    --brass-dim: 160 144 108;
+
+    /* --- status --------------------------------------------------------- */
+    --ok: 78 182 132;
+    --caution: 217 164 65;
+    --alert: 222 110 110;
+
+    /* Correlation bands keep their own names because they mean something
+       specific here, and map onto the status palette so the screen speaks one
+       language of colour rather than two. */
+    --likely: 78 182 132;
+    --probable: 217 164 65;
+    --possible: 219 138 72;
+    --weak: 126 140 160;
+
+    /* --- corner language -------------------------------------------------
+       Machined, not bubbly: structural surfaces are nearly square, controls
+       are a hair softer, chips are tighter still. */
+    --r-surface: 3px;
+    --r-control: 4px;
+    --r-chip: 2px;
+
+    /* --- depth, three levels --------------------------------------------
+       Subtle on a dark UI: the shadow is doing separation, not drama. */
+    --shadow-recessed: inset 0 1px 3px 0 rgb(0 0 0 / 0.55), inset 0 0 0 1px rgb(0 0 0 / 0.25);
+    --shadow-raised: 0 1px 2px 0 rgb(0 0 0 / 0.55), 0 14px 30px -14px rgb(0 0 0 / 0.85);
+    --shadow-command: 0 2px 4px 0 rgb(0 0 0 / 0.55), 0 28px 56px -28px rgb(0 0 0 / 0.9);
+    /* Reserved for the one element that is live or selected. */
+    --bloom: 0 0 0 1px rgb(var(--accent) / 0.4), 0 0 22px -10px rgb(var(--accent) / 0.55);
   }
 
   body {
     @apply bg-bg text-fg antialiased;
+    font-feature-settings: "cv05" 1;
   }
 
-  /* Focus rings must stay visible: investigators use this dashboard with a
-     keyboard while reading from other windows. */
+  /*
+   * Atmosphere.
+   *
+   * Three layers, all of them meant to be felt rather than seen: a coordinate
+   * grid at 1.6% opacity, a cool wash lifting the top-left where the work
+   * happens, and a vignette closing the corners. Fixed and inert, so it costs
+   * nothing and never intercepts a click.
+   *
+   * What this is deliberately not: scanlines, rain, radar rings, map
+   * coordinates. If a reader can describe the background, it has failed.
+   */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(to right, rgb(var(--rule-strong) / 0.1) 1px, transparent 1px),
+      linear-gradient(to bottom, rgb(var(--rule-strong) / 0.1) 1px, transparent 1px),
+      radial-gradient(75% 65% at 18% -8%, rgb(var(--accent) / 0.085), transparent 68%),
+      radial-gradient(90% 75% at 105% 105%, rgb(var(--blue) / 0.05), transparent 70%),
+      radial-gradient(125% 125% at 50% 45%, transparent 50%, rgb(0 0 0 / 0.55) 100%);
+    background-size: 72px 72px, 72px 72px, 100% 100%, 100% 100%, 100% 100%;
+    /* The grid fades out before it reaches the edges, so it never reads as a
+       drawn rectangle — only as structure under the surface. */
+    mask-image: radial-gradient(115% 95% at 30% 10%, black 15%, transparent 78%);
+  }
+
+  /* A single grain pass, so large flat areas do not band on a cheap panel. */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.025;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* Focus rings stay loud: investigators drive this with a keyboard while
+     reading from another window. */
   :focus-visible {
     @apply outline-none ring-2 ring-accent ring-offset-2 ring-offset-bg;
   }
 
-  /* Headings are tightened rather than enlarged — density is the point. */
-  h1,
-  h2,
-  h3 {
-    @apply tracking-tight;
-  }
-
-  /* Long identifiers (hashes, URLs, canonical values) wrap inside their cell
-     instead of forcing the panel wider. */
+  /* Long identifiers wrap inside their cell rather than widening the panel. */
   .break-anywhere {
     overflow-wrap: anywhere;
   }
 }
 
-@layer utilities {
-  /* A hairline rule that reads as a seam between panels rather than a border. */
-  .rule-t {
-    box-shadow: inset 0 1px 0 0 rgb(var(--line) / 1);
+@layer components {
+  /*
+   * A. COMMAND — architectural, not a card.
+   *
+   * Lit from above by a cool wash, carries its own coordinate grid, casts the
+   * deepest shadow, and holds the strongest type. Used for the dashboard hero
+   * and the dossier header: the two surfaces that establish where you are.
+   */
+  .surface-command {
+    position: relative;
+    isolation: isolate;
+    border: 1px solid rgb(var(--rule));
+    border-radius: var(--r-surface);
+    background:
+      radial-gradient(110% 130% at 18% -20%, rgb(var(--accent) / 0.07), transparent 62%),
+      linear-gradient(176deg, rgb(var(--command)) 0%, rgb(var(--command-deep)) 100%);
+    box-shadow: var(--shadow-command);
+  }
+
+  .surface-command::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    pointer-events: none;
+    background-image:
+      linear-gradient(to right, rgb(var(--rule-strong) / 0.14) 1px, transparent 1px),
+      linear-gradient(to bottom, rgb(var(--rule-strong) / 0.14) 1px, transparent 1px);
+    background-size: 48px 48px;
+    mask-image: radial-gradient(120% 100% at 15% 0%, black, transparent 72%);
+  }
+
+  /* The lit top edge that makes a surface read as a face rather than a hole. */
+  .surface-command::after {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    border-radius: inherit;
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgb(var(--accent) / 0.4) 18%,
+      rgb(255 255 255 / 0.08) 55%,
+      transparent
+    );
+  }
+
+  /*
+   * B. INSTRUMENT — a lit panel that reads a live value.
+   *
+   * Raised, highlighted along its top edge, and the only material allowed an
+   * illuminated 2px rail when something on it is live or selected.
+   */
+  .surface-instrument {
+    position: relative;
+    border: 1px solid rgb(var(--rule));
+    border-radius: var(--r-surface);
+    background: linear-gradient(180deg, rgb(var(--instrument)) 0%, rgb(var(--instrument-deep)) 100%);
+    box-shadow: var(--shadow-raised), inset 0 1px 0 0 rgb(255 255 255 / 0.075);
+  }
+
+  /*
+   * C. SHEET — a page, not a card.
+   *
+   * Flat, quiet, no shadow and a near-invisible edge, so a column of findings
+   * reads as a dossier rather than a stack of widgets. Editorial spacing is
+   * applied by the component, not here.
+   */
+  .surface-sheet {
+    position: relative;
+    border: 0;
+    /* The provenance rail: the one edge a dossier page has, down its binding
+       side. It is what tells a sheet from a panel at a glance, since the two
+       fills sit within a couple of points of each other on purpose. */
+    border-left: 1px solid rgb(var(--rule-strong));
+    border-radius: 0 var(--r-surface) var(--r-surface) 0;
+    background: rgb(var(--sheet));
+  }
+
+  /* The one edge a sheet keeps: a hairline of light along the top, the way a
+     page catches the lamp. Everything else is read from the fill. */
+  .surface-sheet::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    border-radius: inherit;
+    background: linear-gradient(90deg, rgb(255 255 255 / 0.045), transparent 60%);
+  }
+
+  /*
+   * D. TELEMETRY — a recessed well.
+   *
+   * Darker than the content around it and pressed into the page, with
+   * separators instead of boxes. Logs, run history, timestamps, diagnostics.
+   */
+  .surface-telemetry {
+    position: relative;
+    border-radius: var(--r-surface);
+    background: rgb(var(--telemetry));
+    box-shadow: var(--shadow-recessed);
+  }
+
+  /*
+   * A machined corner.
+   *
+   * A 10px cut across one corner, drawn as a gradient rather than a clip-path
+   * so the surface keeps its shadow. Used on exactly two surfaces — the hero
+   * and the dossier head — because a notch on everything is a costume.
+   */
+  .notch-tr::after,
+  .notch-br::after {
+    content: "";
+    position: absolute;
+    width: 13px;
+    height: 13px;
+    z-index: 1;
+  }
+
+  .notch-tr::after {
+    top: -1px;
+    right: -1px;
+    background: linear-gradient(
+      45deg,
+      transparent 0 calc(50% - 0.5px),
+      rgb(var(--rule)) calc(50% - 0.5px) calc(50% + 0.5px),
+      rgb(var(--bg)) calc(50% + 0.5px) 100%
+    );
+  }
+
+  .notch-br::after {
+    bottom: -1px;
+    right: -1px;
+    background: linear-gradient(
+      -45deg,
+      transparent 0 calc(50% - 0.5px),
+      rgb(var(--rule)) calc(50% - 0.5px) calc(50% + 0.5px),
+      rgb(var(--bg)) calc(50% + 0.5px) 100%
+    );
+  }
+
+  /* The command surface's own ::after is the lit edge, so its notch needs a
+     separate element; this class is applied to that element instead. */
+  .notch-piece {
+    position: absolute;
+    top: -1px;
+    right: -1px;
+    width: 13px;
+    height: 13px;
+    z-index: 2;
+    pointer-events: none;
+    background: linear-gradient(
+      45deg,
+      transparent 0 calc(50% - 0.5px),
+      rgb(var(--rule-strong)) calc(50% - 0.5px) calc(50% + 0.5px),
+      rgb(var(--bg)) calc(50% + 0.5px) 100%
+    );
+  }
+
+  /*
+   * An illuminated rail.
+   *
+   * One lit side — never a glowing box. The brief's rule and the honest one:
+   * a border that glows all the way round says "decoration", a single lit edge
+   * says "this one".
+   */
+  .rail-live {
+    box-shadow: inset 2px 0 0 0 rgb(var(--accent)), var(--shadow-raised);
+  }
+
+  /* The eyebrow that labels an operational region. */
+  .eyebrow {
+    font-size: 10px;
+    line-height: 1.2;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    color: rgb(var(--text-3));
+  }
+
+  .eyebrow-accent {
+    color: rgb(var(--accent-dim));
+  }
+
+  .eyebrow-brass {
+    color: rgb(var(--brass-dim));
+  }
+
+  /* A large readout. Tabular so a changing number does not shuffle sideways. */
+  .readout {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+    font-weight: 500;
   }
 }
 
@@ -98,4 +356,20 @@
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/*
+ * The one genuine animation in the product: a live collector run.
+ *
+ * It exists because "is anything actually happening right now" is a real
+ * question an operator asks, and a static badge cannot answer it. Nothing
+ * decorative moves.
+ */
+@keyframes pulse-live {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.live-dot {
+  animation: pulse-live 2s ease-in-out infinite;
 }

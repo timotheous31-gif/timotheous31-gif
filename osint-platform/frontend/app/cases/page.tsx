@@ -68,8 +68,8 @@ export default function CasesPage() {
     <div className="mx-auto max-w-6xl space-y-6">
       <PageHeader
         eyebrow="Operations"
-        title="Cases"
-        subtitle="Investigations group targets, findings, entities and evidence."
+        title="Investigations"
+        subtitle="Each investigation groups its targets, findings, entities and evidence."
       />
 
       <Card>

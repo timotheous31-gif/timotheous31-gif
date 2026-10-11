@@ -8,6 +8,7 @@ import {
   formatDate,
   formatDateTime,
   humanise,
+  padCount,
   truncate,
 } from "@/lib/format";
 
@@ -74,5 +75,22 @@ describe("formatting helpers", () => {
     expect(formatBytes(512)).toBe("512 B");
     expect(formatBytes(2048)).toBe("2.0 KB");
     expect(formatBytes(5 * 1024 * 1024)).toBe("5.0 MB");
+  });
+});
+
+describe("padCount", () => {
+  it("pads a single digit so a row of readouts keeps its width", () => {
+    expect(padCount(3)).toBe("03");
+    expect(padCount(0)).toBe("00");
+  });
+
+  it("leaves anything wider alone", () => {
+    expect(padCount(12)).toBe("12");
+    expect(padCount(240)).toBe("240");
+  });
+
+  it("passes a non-numeric placeholder straight through", () => {
+    expect(padCount("—")).toBe("—");
+    expect(padCount("15/16")).toBe("15/16");
   });
 });

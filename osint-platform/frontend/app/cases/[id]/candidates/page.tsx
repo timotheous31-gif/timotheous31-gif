@@ -49,7 +49,7 @@ export default function CandidatesPage() {
 
   return (
     <div className="space-y-4">
-      <Card>
+      <Card material="telemetry">
         <CardHeader
           title="Free sources"
           description="Public sources that need no API key, and what each returned"

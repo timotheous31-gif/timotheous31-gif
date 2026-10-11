@@ -21,8 +21,8 @@ export default function CollectorsPage() {
   return (
     <div className="mx-auto max-w-6xl space-y-5">
       <PageHeader
-        eyebrow="Platform"
-        title="Collectors"
+        eyebrow="System"
+        title="Sources"
         subtitle="Each collector is an adapter over one public source. A collector that cannot run says so here rather than silently producing nothing."
       />
 

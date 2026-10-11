@@ -42,8 +42,8 @@ export default function SettingsPage() {
   return (
     <div className="mx-auto max-w-4xl space-y-5">
       <PageHeader
-        eyebrow="Platform"
-        title="Settings"
+        eyebrow="System"
+        title="System"
         subtitle={
           <>
             Your own sign-in security is below. Everything else lives in the backend&apos;s
